@@ -58,16 +58,24 @@ func TestListOpenIssuesExcludesPRs(t *testing.T) {
 	}
 }
 
-// TestParseSourceRef covers the ref encoding round-trip.
+// TestParseSourceRef covers the ref encoding round-trip: issue refs ("#")
+// and pull refs ("!") both decode with their kind.
 func TestParseSourceRef(t *testing.T) {
-	provider, repo, num, ok := ParseSourceRef("github:yusheng-g/agentwork#42")
-	if !ok || provider != "github" || repo != "yusheng-g/agentwork" || num != 42 {
-		t.Fatalf("parse: %q %d %v", repo, num, ok)
+	provider, repo, num, kind, ok := ParseSourceRef("github:yusheng-g/agentwork#42")
+	if !ok || provider != "github" || repo != "yusheng-g/agentwork" || num != 42 || kind != RefIssue {
+		t.Fatalf("parse issue ref: %q %d %s %v", repo, num, kind, ok)
 	}
-	if _, _, _, ok := ParseSourceRef("github:x/y"); ok {
-		t.Fatal("missing #number must fail")
+	provider, repo, num, kind, ok = ParseSourceRef("gitcode:yusheng-g/agentwork!7")
+	if !ok || provider != "gitcode" || repo != "yusheng-g/agentwork" || num != 7 || kind != RefPull {
+		t.Fatalf("parse pull ref: %q %d %s %v", repo, num, kind, ok)
 	}
-	if _, _, _, ok := ParseSourceRef("im://other"); ok {
+	if PullSourceRef("github", "x/y", 7) != "github:x/y!7" {
+		t.Fatal("PullSourceRef must encode with the ! suffix")
+	}
+	if _, _, _, _, ok := ParseSourceRef("github:x/y"); ok {
+		t.Fatal("missing number must fail")
+	}
+	if _, _, _, _, ok := ParseSourceRef("im://other"); ok {
 		t.Fatal("non-github ref must fail")
 	}
 }
@@ -464,5 +472,261 @@ func TestGitCodeWebhookTokenMode(t *testing.T) {
 	// github endpoint must NOT accept the gitcode token header.
 	if verifyWebhook("github", "pass123", body, "", "pass123") {
 		t.Fatal("github endpoint must reject the gitcode token header")
+	}
+}
+
+// mockPulls serves a canned /pulls list (the PR-poll trigger) and records
+// what was called. The issues endpoint returns an empty list — the poller's
+// issue side runs for issue-configured domains and must not EOF.
+func mockPulls(t *testing.T, pulls []map[string]any) (*httptest.Server, *[]string) {
+	t.Helper()
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls") && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(pulls)
+		case strings.HasSuffix(r.URL.Path, "/issues") && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode([]map[string]any{})
+		case strings.HasSuffix(r.URL.Path, "/comments") && r.Method == http.MethodPost:
+			var cm struct {
+				Body string `json:"body"`
+			}
+			json.NewDecoder(r.Body).Decode(&cm)
+			calls = append(calls, "BODY: "+cm.Body)
+			w.WriteHeader(http.StatusCreated)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	return srv, &calls
+}
+
+// TestPollerPullsCreateGoals: a domain with a PR assignee turns open PRs
+// into goals ONCE (source_ref carries the ! pull suffix); a domain without
+// one pulls nothing. Mirrors TestPollerCreatesGoalsIdempotently.
+func TestPollerPullsCreateGoals(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	bus := events.NewBus()
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO runtime (id,name,created_at) VALUES ('rt1','rt1',?)`, time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO agent (id,name,runtime_id,max_concurrent,created_at) VALUES ('a1','worker','rt1',1,?)`, time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	ds := service.NewDomainService(st, bus)
+	if _, err := ds.Create(ctx, service.Domain{
+		Name: "d1", GitURL: "https://e.com/d1.git",
+		IssueRepo: "x/y", PullAssignee: "a1", GitCredentials: "tok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	goalSvc := service.NewGoalService(st, bus)
+	runSvc := service.NewRunService(st, bus)
+	goalSvc.SetRunService(runSvc)
+	runSvc.SetGoalService(goalSvc)
+
+	srv, _ := mockPulls(t, []map[string]any{
+		{"number": 1, "title": "新增导出接口", "body": "实现 /export", "html_url": "https://github.com/x/y/pull/1",
+			"user": map[string]any{"login": "dev1"}, "head": map[string]any{"ref": "feat/export", "sha": "abc"}, "base": map[string]any{"ref": "main"}},
+	})
+	defer srv.Close()
+	p := NewPoller(st, goalSvc, runSvc)
+	p.newProvider = func(provider, token string) (Provider, error) {
+		c := NewClient(token)
+		c.http = srv.Client()
+		c.baseURL = srv.URL
+		return c, nil
+	}
+
+	n, err := p.Poll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 goal from the PR poll, got %d", n)
+	}
+	goals, err := goalSvc.List(ctx)
+	if err != nil || len(goals) != 1 {
+		t.Fatalf("goals: %d %v", len(goals), err)
+	}
+	if goals[0].SourceRef != "github:x/y!1" || goals[0].Status != "active" {
+		t.Fatalf("goal must carry the pull ref and be active: %+v", goals[0])
+	}
+	if goals[0].AssigneeID != "a1" {
+		t.Fatalf("goal must be assigned to the PR assignee: %+v", goals[0])
+	}
+	if !strings.Contains(goals[0].Description, "feat/export → main") {
+		t.Fatalf("description must carry the source/target branches: %q", goals[0].Description)
+	}
+	// Idempotent: second poll creates nothing.
+	n, err = p.Poll(ctx)
+	if err != nil || n != 0 {
+		t.Fatalf("second poll must be a no-op: n=%d err=%v", n, err)
+	}
+}
+
+// TestPollerSkipsPRsWhenNoPullAssignee: a domain configured for issues only
+// (pull_assignee='') must not pull the repo's PRs.
+func TestPollerSkipsPRsWhenNoPullAssignee(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	bus := events.NewBus()
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO runtime (id,name,created_at) VALUES ('rt1','rt1',?)`, time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO agent (id,name,runtime_id,max_concurrent,created_at) VALUES ('a1','worker','rt1',1,?)`, time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	ds := service.NewDomainService(st, bus)
+	if _, err := ds.Create(ctx, service.Domain{
+		Name: "d1", GitURL: "https://e.com/d1.git",
+		IssueRepo: "x/y", IssueAssignee: "a1", GitCredentials: "tok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	goalSvc := service.NewGoalService(st, bus)
+	runSvc := service.NewRunService(st, bus)
+	goalSvc.SetRunService(runSvc)
+	runSvc.SetGoalService(goalSvc)
+
+	srv, calls := mockPulls(t, []map[string]any{
+		{"number": 1, "title": "PR", "body": "", "html_url": "https://github.com/x/y/pull/1"},
+	})
+	defer srv.Close()
+	p := NewPoller(st, goalSvc, runSvc)
+	p.newProvider = func(provider, token string) (Provider, error) {
+		c := NewClient(token)
+		c.http = srv.Client()
+		c.baseURL = srv.URL
+		return c, nil
+	}
+	if _, err := p.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range *calls {
+		if strings.Contains(c, "/pulls") {
+			t.Fatalf("no pull_assignee: the PR list must not be fetched, calls: %v", *calls)
+		}
+	}
+	goals, _ := goalSvc.List(ctx)
+	if len(goals) != 0 {
+		t.Fatalf("no pull_assignee: no PR goals, got %d", len(goals))
+	}
+}
+
+// TestCloserOnDeliveredPullDoesNotClose: a delivered pull-sourced goal
+// comments on the PR but NEVER closes it — a PR is a pending code change,
+// its merge/close is the human's decision.
+func TestCloserOnDeliveredPullDoesNotClose(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	bus := events.NewBus()
+	ds := service.NewDomainService(st, bus)
+	dom, err := ds.Create(ctx, service.Domain{Name: "d1", GitURL: "https://e.com/d1.git", GitCredentials: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := service.NewGoalService(st, bus)
+	pullGoal, err := gs.Create(ctx, service.Goal{
+		Title: "x", DomainID: dom.ID, AssigneeType: "human",
+		SourceRef: "github:x/y!7",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv, calls := mockPulls(t, nil)
+	defer srv.Close()
+	c := NewCloser(st)
+	c.newProvider = func(provider, token string) (Provider, error) {
+		cl := NewClient(token)
+		cl.http = srv.Client()
+		cl.baseURL = srv.URL
+		return cl, nil
+	}
+	c.OnDelivered(ctx, pullGoal.ID, "审查完成：建议抽公共函数", nil)
+
+	joined := strings.Join(*calls, " ")
+	if strings.Contains(joined, "PATCH") {
+		t.Fatalf("a delivered PR goal must NOT close the PR, calls: %s", joined)
+	}
+	if !strings.Contains(joined, "POST /repos/x/y/issues/7/comments") {
+		t.Fatalf("the delivery comment must land on the PR (GitHub: the issues endpoint), calls: %s", joined)
+	}
+}
+
+// TestGitCodePullShape: GitCode's PR wire — number as int AND string both
+// decode (flexInt), drafts are skipped, and PR dialogue rides the dedicated
+// /pulls/:n/comments endpoint.
+func TestGitCodePullShape(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls") && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"number": 5, "title": "gitcode PR", "body": "b", "draft": false,
+					"head": map[string]any{"ref": "feat", "sha": "abc"}, "base": map[string]any{"ref": "main"}},
+				{"number": 6, "title": "草稿", "body": "", "draft": true,
+					"head": map[string]any{"ref": "wip", "sha": "def"}, "base": map[string]any{"ref": "main"}},
+				{"number": "7", "title": "string number", "body": "", // string shape must decode too
+					"head": map[string]any{"ref": "x", "sha": "0"}, "base": map[string]any{"ref": "main"}},
+			})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer srv.Close()
+	c := &GitCodeClient{token: "tok", http: srv.Client(), baseURL: srv.URL}
+
+	pulls, err := c.ListOpenPulls(context.Background(), "u/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pulls) != 2 || pulls[0].Number != 5 || pulls[1].Number != 7 {
+		t.Fatalf("draft must be skipped, string number must decode: %+v", pulls)
+	}
+	if pulls[0].SourceBranch != "feat" || pulls[0].TargetBranch != "main" {
+		t.Fatalf("branches must parse: %+v", pulls[0])
+	}
+	// PR comments: the DEDICATED /pulls/:n/comments endpoint (not /issues).
+	if err := c.CreatePullComment(context.Background(), "u/r", 5, "hi"); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(calls, " ")
+	if !strings.Contains(joined, "POST /repos/u/r/pulls/5/comments") {
+		t.Fatalf("PR comments must ride /pulls/:n/comments, calls: %s", joined)
+	}
+}
+
+// TestFlexInt: a JSON number and a digits-string both decode; garbage fails.
+func TestFlexInt(t *testing.T) {
+	var f flexInt
+	if err := json.Unmarshal([]byte(`7`), &f); err != nil || f != 7 {
+		t.Fatalf("number: %d %v", f, err)
+	}
+	if err := json.Unmarshal([]byte(`"9"`), &f); err != nil || f != 9 {
+		t.Fatalf("string: %d %v", f, err)
+	}
+	if err := json.Unmarshal([]byte(`""`), &f); err != nil || f != 0 {
+		t.Fatalf("empty: %d %v", f, err)
+	}
+	if err := json.Unmarshal([]byte(`"abc"`), &f); err == nil {
+		t.Fatal("garbage must fail")
 	}
 }
