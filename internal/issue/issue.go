@@ -35,6 +35,20 @@ type Issue struct {
 	PullRequest any `json:"pull_request"`
 }
 
+// Pull is one pull request (API shape, minimal). The head/target-branch
+// context lets a PR goal's run fetch the source branch and review the actual
+// diff — the platform never downloads the diff itself.
+type Pull struct {
+	Number       int    `json:"number"`
+	Title        string `json:"title"`
+	Body         string `json:"body"`
+	HTMLURL      string `json:"html_url"`
+	Author       string `json:"author"`
+	SourceBranch string `json:"source_branch"`
+	TargetBranch string `json:"target_branch"`
+	HeadSHA      string `json:"head_sha"`
+}
+
 // Comment is one issue comment (API shape, minimal).
 type Comment struct {
 	ID   int    `json:"id"`
@@ -130,6 +144,58 @@ func (c *Client) CommitURL(repo, sha string) string {
 	return "https://github.com/" + repo + "/commit/" + sha
 }
 
+// ── Pull-request surface (PR pull) ──
+
+// gitHubPull is the GitHub PR wire shape (minimal): number is an int, head
+// carries the source branch + SHA, base the target branch.
+type gitHubPull struct {
+	Number  int    `json:"number"`
+	Title   string `json:"title"`
+	Body    string `json:"body"`
+	HTMLURL string `json:"html_url"`
+	User    struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Head struct {
+		Ref string `json:"ref"`
+		SHA string `json:"sha"`
+	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+}
+
+// ListOpenPulls returns the repo's open pull requests. GitHub keeps PRs in
+// their own /pulls collection (they ALSO appear in the issues list — which
+// ListOpenIssues filters out — so the two never double-track one object).
+func (c *Client) ListOpenPulls(ctx context.Context, repo string) ([]Pull, error) {
+	var raw []gitHubPull
+	if err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/pulls?state=open&per_page=100", nil, &raw); err != nil {
+		return nil, err
+	}
+	out := []Pull{}
+	for _, pr := range raw {
+		out = append(out, Pull{
+			Number: pr.Number, Title: pr.Title, Body: pr.Body, HTMLURL: pr.HTMLURL,
+			Author: pr.User.Login, SourceBranch: pr.Head.Ref, TargetBranch: pr.Base.Ref,
+			HeadSHA: pr.Head.SHA,
+		})
+	}
+	return out, nil
+}
+
+// ListPullComments returns the PR's comments. GitHub serves PR dialogue
+// through the SAME issues-comments endpoint (a PR is an issue with a diff
+// attached) — forward to the issue method.
+func (c *Client) ListPullComments(ctx context.Context, repo string, number int) ([]Comment, error) {
+	return c.ListComments(ctx, repo, number)
+}
+
+// CreatePullComment posts a comment on the PR (the issues-comments endpoint).
+func (c *Client) CreatePullComment(ctx context.Context, repo string, number int, body string) error {
+	return c.CreateComment(ctx, repo, number, body)
+}
+
 // ── Poller: open issues → goals ──
 
 // Poller turns a domain's open issues into goals (one goal per issue,
@@ -147,24 +213,33 @@ func NewPoller(st *store.Store, goalSvc *service.GoalService, runSvc *service.Ru
 	return &Poller{st: st, goalSvc: goalSvc, runSvc: runSvc, newProvider: NewProvider}
 }
 
+// trackedDomain is one polling candidate row (Poll's domain query): the
+// issue handler and the PR handler ride the same repo/provider — only the
+// assignee differs ('' = that side doesn't poll).
+type trackedDomain struct {
+	id, provider, repo, assignee, assigneeType, token, pullAssignee, pullAssigneeType string
+}
+
 // Poll scans every tracking domain once. Returns how many goals were created.
 func (p *Poller) Poll(ctx context.Context) (int, error) {
 	rows, err := p.st.DB().QueryContext(ctx,
-		`SELECT id, issue_provider, issue_repo, issue_assignee, issue_assignee_type, git_credentials FROM domain
-		 WHERE issue_repo != '' AND issue_assignee != '' AND git_credentials != ''`)
+		`SELECT id, issue_provider, issue_repo, issue_assignee, issue_assignee_type, git_credentials, COALESCE(pull_assignee,''), COALESCE(pull_assignee_type,'') FROM domain
+		 WHERE issue_repo != '' AND git_credentials != '' AND (issue_assignee != '' OR COALESCE(pull_assignee,'') != '')`)
 	if err != nil {
 		return 0, err
 	}
-	type dom struct{ id, provider, repo, assignee, assigneeType, token string }
-	var doms []dom
+	var doms []trackedDomain
 	for rows.Next() {
-		var d dom
-		if err := rows.Scan(&d.id, &d.provider, &d.repo, &d.assignee, &d.assigneeType, &d.token); err != nil {
+		var d trackedDomain
+		if err := rows.Scan(&d.id, &d.provider, &d.repo, &d.assignee, &d.assigneeType, &d.token, &d.pullAssignee, &d.pullAssigneeType); err != nil {
 			rows.Close()
 			return 0, err
 		}
 		if d.assigneeType == "" {
 			d.assigneeType = "agent"
+		}
+		if d.pullAssigneeType == "" {
+			d.pullAssigneeType = "agent"
 		}
 		doms = append(doms, d)
 	}
@@ -181,7 +256,27 @@ func (p *Poller) Poll(ctx context.Context) (int, error) {
 	return created, nil
 }
 
-func (p *Poller) pollDomain(ctx context.Context, d struct{ id, provider, repo, assignee, assigneeType, token string }) (int, error) {
+func (p *Poller) pollDomain(ctx context.Context, d trackedDomain) (int, error) {
+	created := 0
+	if d.assignee != "" {
+		n, err := p.pollDomainIssues(ctx, d)
+		created += n
+		if err != nil {
+			return created, err
+		}
+	}
+	if d.pullAssignee != "" {
+		n, err := p.pollDomainPulls(ctx, d)
+		created += n
+		if err != nil {
+			return created, err
+		}
+	}
+	return created, nil
+}
+
+// pollDomainIssues turns the domain's open issues into goals.
+func (p *Poller) pollDomainIssues(ctx context.Context, d trackedDomain) (int, error) {
 	client, err := p.newProvider(d.provider, d.token)
 	if err != nil {
 		return 0, fmt.Errorf("domain %s: %w", d.id, err)
@@ -193,6 +288,31 @@ func (p *Poller) pollDomain(ctx context.Context, d struct{ id, provider, repo, a
 	created := 0
 	for _, iss := range issues {
 		ok, err := p.CreateGoalForIssue(ctx, d.id, d.assignee, d.assigneeType, d.provider, d.repo, iss)
+		if err != nil {
+			return created, err
+		}
+		if ok {
+			created++
+		}
+	}
+	return created, nil
+}
+
+// pollDomainPulls turns the domain's open pull requests into goals (M4-B PR
+// pull) — the pull-request analogue of pollDomainIssues, gated by the
+// domain's PR assignee (pull_assignee, '' = the repo's PRs are not tracked).
+func (p *Poller) pollDomainPulls(ctx context.Context, d trackedDomain) (int, error) {
+	client, err := p.newProvider(d.provider, d.token)
+	if err != nil {
+		return 0, fmt.Errorf("domain %s: %w", d.id, err)
+	}
+	pulls, err := client.ListOpenPulls(ctx, d.repo)
+	if err != nil {
+		return 0, fmt.Errorf("domain %s: %w", d.id, err)
+	}
+	created := 0
+	for _, pr := range pulls {
+		ok, err := p.CreateGoalForPull(ctx, d.id, d.pullAssignee, d.pullAssigneeType, d.provider, d.repo, pr)
 		if err != nil {
 			return created, err
 		}
@@ -257,6 +377,53 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
+// CreateGoalForPull turns one pull request into a goal (M4-B PR pull) — the
+// pull-request analogue of CreateGoalForIssue, idempotent via the unique
+// source_ref. The PR ref carries a "!" suffix (kind=pull): issue and PR
+// numbers are separate sequences on GitCode, so a bare "#" would collide.
+// The goal's description carries the PR context INCLUDING the source/target
+// branches — the run's prompt section points the agent at them (fetch the
+// source branch in the worktree to review the diff).
+func (p *Poller) CreateGoalForPull(ctx context.Context, domainID, assigneeID, assigneeType, provider, repo string, pr Pull) (bool, error) {
+	ref := PullSourceRef(provider, repo, pr.Number)
+	var exists int
+	if err := p.st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM goal WHERE source_ref=?`, ref).Scan(&exists); err != nil {
+		return false, err
+	}
+	if exists > 0 {
+		return false, nil // already tracked
+	}
+	title := pr.Title
+	if title == "" {
+		title = fmt.Sprintf("PR !%d", pr.Number)
+	}
+	desc := fmt.Sprintf("来自 %s PR !%d：%s\n%s", providerLabel(provider), pr.Number, pr.Title, truncate(pr.Body, 1500))
+	if pr.SourceBranch != "" || pr.TargetBranch != "" {
+		desc += fmt.Sprintf("\n\n分支：%s → %s", pr.SourceBranch, pr.TargetBranch)
+	}
+	_, err := p.goalSvc.Create(ctx, service.Goal{
+		Title:         title,
+		Description:   desc,
+		DomainID:      domainID,
+		AssigneeType:  assigneeType, // agent | squad (域配置决定谁处理 PR)
+		AssigneeID:    assigneeID,
+		Status:        "active",
+		CreatedByType: "system",
+		CreatedByID:   "pr-poll",
+		SourceRef:     ref,
+	})
+	if err != nil {
+		// A unique-source_ref violation is the idempotent outcome (another
+		// poll won the race) — not an error, same as CreateGoalForIssue.
+		if strings.Contains(err.Error(), "UNIQUE") {
+			return false, nil
+		}
+		return false, fmt.Errorf("create goal for %s: %w", ref, err)
+	}
+	return true, nil
+}
+
 // providerLabel maps a provider id to its human-facing platform name, so the
 // goal's description names the real source ("GitHub" | "GitCode") instead of
 // always saying GitHub.
@@ -285,30 +452,31 @@ func NewCloser(st *store.Store) *Closer {
 	return &Closer{st: st, newProvider: NewProvider}
 }
 
-// issueTarget is a resolved issue-sourced goal's outbound identity: the
-// provider client (holds the bot token) + the issue coordinates. resolve
-// returns ok=false when the goal is not issue-sourced (no source_ref) or the
-// domain/token is missing — the caller silently no-ops, same as OnDelivered
-// always has.
+// issueTarget is a resolved source-ref goal's outbound identity: the
+// provider client (holds the bot token) + the issue/PR coordinates. resolve
+// returns ok=false when the goal has no source_ref or the domain/token is
+// missing — the caller silently no-ops, same as OnDelivered always has.
 type issueTarget struct {
 	client   Provider
-	provider string // "github" | "gitcode" — log/diagnostic only
+	provider string        // "github" | "gitcode" — log/diagnostic only
+	kind     SourceRefKind // issue | pull — routes the writeback endpoint
 	repo     string
 	number   int
 }
 
 // resolveIssueTarget loads the goal's source_ref + the domain's bot token and
-// builds the provider client. Shared by every issue writeback path (delivered
-// close, failed/cancelled notice) so they all route through one lookup.
+// builds the provider client. Shared by every source-ref writeback path
+// (delivered close, failed/cancelled notice) so they all route through one
+// lookup.
 func (c *Closer) resolveIssueTarget(ctx context.Context, goalID string) (issueTarget, bool) {
 	var ref, token string
 	err := c.st.DB().QueryRowContext(ctx,
 		`SELECT g.source_ref, d.git_credentials FROM goal g JOIN domain d ON d.id=g.domain_id WHERE g.id=?`, goalID).
 		Scan(&ref, &token)
 	if err != nil || ref == "" {
-		return issueTarget{}, false // no domain or not issue-sourced
+		return issueTarget{}, false // no domain or not source-ref-tracked
 	}
-	provider, repo, number, ok := ParseSourceRef(ref)
+	provider, repo, number, kind, ok := ParseSourceRef(ref)
 	if !ok {
 		return issueTarget{}, false
 	}
@@ -316,23 +484,38 @@ func (c *Closer) resolveIssueTarget(ctx context.Context, goalID string) (issueTa
 	if err != nil {
 		return issueTarget{}, false
 	}
-	return issueTarget{client: client, provider: provider, repo: repo, number: number}, true
+	return issueTarget{client: client, provider: provider, kind: kind, repo: repo, number: number}, true
+}
+
+// postComment routes the writeback comment to the right API surface: a PR's
+// dialogue lives on a dedicated endpoint (GitHub: the issues-comments
+// endpoint; GitCode: /pulls/:n/comments) — the issues endpoint does not
+// cover PR comments on every provider.
+func (t issueTarget) postComment(ctx context.Context, body string) error {
+	if t.kind == RefPull {
+		return t.client.CreatePullComment(ctx, t.repo, t.number, body)
+	}
+	return t.client.CreateComment(ctx, t.repo, t.number, body)
 }
 
 // OnDelivered is the bus handler for goal:delivered. commits ("<full sha>
 // <title>", structured from the deliver — never parsed from the note text)
 // become clickable fix links, the way an open-source maintainer closes an
-// issue.
+// issue. Pull-request goals are NOT closed on delivery: a PR is a pending
+// code change, not a work request — its merge/close is the human's decision;
+// the delivery comment (fix evidence) lands on the PR instead.
 func (c *Closer) OnDelivered(ctx context.Context, goalID, note string, commits []string) {
 	t, ok := c.resolveIssueTarget(ctx, goalID)
 	if !ok {
 		return
 	}
-	if err := t.client.CloseIssue(ctx, t.repo, t.number); err != nil {
-		// Closing is best-effort: the work IS delivered; the issue closing can
-		// be retried by hand. Log only — never fail the deliver.
-		fmt.Printf("issue: close %s:%s#%d: %v\n", t.provider, t.repo, t.number, err)
-		return
+	if t.kind != RefPull {
+		if err := t.client.CloseIssue(ctx, t.repo, t.number); err != nil {
+			// Closing is best-effort: the work IS delivered; the issue closing can
+			// be retried by hand. Log only — never fail the deliver.
+			fmt.Printf("issue: close %s:%s#%d: %v\n", t.provider, t.repo, t.number, err)
+			return
+		}
 	}
 	comment := fmt.Sprintf("✅ 已由 agentwork 修复并合入（goal %s）。", short(goalID))
 	if trimmed := strings.TrimSpace(note); trimmed != "" {
@@ -345,7 +528,7 @@ func (c *Closer) OnDelivered(ctx context.Context, goalID, note string, commits [
 			comment += fmt.Sprintf("\n- [%s %s](%s)", sha[:8], title, t.client.CommitURL(t.repo, sha))
 		}
 	}
-	_ = t.client.CreateComment(ctx, t.repo, t.number, comment)
+	_ = t.postComment(ctx, comment)
 }
 
 // OnTerminal is the bus handler for goal:finished status=failed where the
@@ -368,7 +551,7 @@ func (c *Closer) OnTerminal(ctx context.Context, goalID, summary string) {
 	if !ok {
 		return
 	}
-	if err := t.client.CreateComment(ctx, t.repo, t.number, text); err != nil {
+	if err := t.postComment(ctx, text); err != nil {
 		fmt.Printf("issue: terminal comment %s:%s#%d: %v\n", t.provider, t.repo, t.number, err)
 	}
 }
@@ -390,7 +573,7 @@ func (c *Closer) OnAgentQuestion(ctx context.Context, goalID, question string) {
 	if !ok {
 		return
 	}
-	if err := t.client.CreateComment(ctx, t.repo, t.number, q); err != nil {
+	if err := t.postComment(ctx, q); err != nil {
 		fmt.Printf("issue: agent question %s:%s#%d: %v\n", t.provider, t.repo, t.number, err)
 	}
 }
