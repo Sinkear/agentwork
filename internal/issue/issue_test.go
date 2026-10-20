@@ -400,6 +400,271 @@ func TestWebhookHandle(t *testing.T) {
 	}
 }
 
+// webhookPRHarness wires a store + runtime + agent + domain (PR handler on
+// repo "x/y") + poller + webhook handler, mirroring TestWebhookHandle.
+func webhookPRHarness(t *testing.T, provider string) (context.Context, *store.Store, *service.GoalService, *service.RunService, *WebhookHandler) {
+	t.Helper()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	bus := events.NewBus()
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO runtime (id,name,created_at) VALUES ('rt1','rt1',?)`, time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO agent (id,name,runtime_id,max_concurrent,created_at) VALUES ('a1','worker','rt1',1,?)`, time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	ds := service.NewDomainService(st, bus)
+	if _, err := ds.Create(ctx, service.Domain{
+		Name: "d1", GitURL: "https://e.com/d1.git",
+		IssueRepo: "x/y", IssueProvider: provider, PullAssignee: "a1", GitCredentials: "tok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	goalSvc := service.NewGoalService(st, bus)
+	runSvc := service.NewRunService(st, bus)
+	goalSvc.SetRunService(runSvc)
+	runSvc.SetGoalService(goalSvc)
+	p := NewPoller(st, goalSvc, runSvc)
+	h := NewWebhookHandler(provider, st, p, func(context.Context) (string, error) { return "s3cret", nil })
+	return ctx, st, goalSvc, runSvc, h
+}
+
+// deliver signs and feeds one webhook payload to the handler.
+func deliver(t *testing.T, ctx context.Context, h *WebhookHandler, payload []byte) {
+	t.Helper()
+	sig := "sha256=" + hmacSHA256Hex("s3cret", payload)
+	if err := h.Handle(ctx, payload, sig, ""); err != nil {
+		t.Fatalf("valid delivery must succeed: %v", err)
+	}
+}
+
+// TestWebhookPullRequestEvents: a pull_request webhook creates the PR goal
+// (opened), refreshes the SAME goal on update (synchronize — never a second
+// goal, feed comment + owner wake), no-ops on a duplicate delivery, and
+// leaves close (the human's decision) alone.
+func TestWebhookPullRequestEvents(t *testing.T) {
+	ctx, st, goalSvc, _, h := webhookPRHarness(t, "github")
+
+	opened := []byte(`{"action":"opened","pull_request":{"number":7,"title":"feat/export","body":"the body","head":{"ref":"feat/webhook-pr-support","sha":"aaaa1111aaaa1111"},"base":{"ref":"main"}},"repository":{"full_name":"x/y"}}`)
+	deliver(t, ctx, h, opened)
+	goals, _ := goalSvc.List(ctx)
+	if len(goals) != 1 || goals[0].SourceRef != "github:x/y!7" {
+		t.Fatalf("opened must create the PR goal: %+v", goals)
+	}
+	if !strings.Contains(goals[0].Description, "aaaa1111") {
+		t.Fatalf("created goal must project the head SHA: %+v", goals[0].Description)
+	}
+	if !strings.Contains(goals[0].Description, "feat/webhook-pr-support → main") && !strings.Contains(goals[0].Description, "→") {
+		t.Fatalf("GitHub pull_request payload carries head.ref/base.ref — desc should show branches: %+v", goals[0].Description)
+	}
+
+	// Duplicate opened (webhook + poll racing) → no second goal.
+	deliver(t, ctx, h, opened)
+	goals, _ = goalSvc.List(ctx)
+	if len(goals) != 1 {
+		t.Fatalf("duplicate opened must not double-create, got %d", len(goals))
+	}
+
+	// synchronize (new head) → refresh the SAME goal: desc updated with the
+	// new head, feed comment appended, owner run enqueued.
+	sync := []byte(`{"action":"synchronize","pull_request":{"number":7,"title":"feat/export","body":"the body","head":{"sha":"bbbb2222bbbb2222"}},"repository":{"full_name":"x/y"}}`)
+	deliver(t, ctx, h, sync)
+	goals, _ = goalSvc.List(ctx)
+	if len(goals) != 1 {
+		t.Fatalf("synchronize must not create a second goal, got %d", len(goals))
+	}
+	if !strings.Contains(goals[0].Description, "bbbb2222") {
+		t.Fatalf("synchronize must refresh the description with the new head: %+v", goals[0].Description)
+	}
+	var comments, runs int
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM comment WHERE goal_id=? AND author_type='system' AND author_id='pr-webhook'`, goals[0].ID).Scan(&comments); err != nil {
+		t.Fatal(err)
+	}
+	if comments != 1 {
+		t.Fatalf("synchronize must append exactly one feed comment, got %d", comments)
+	}
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run WHERE goal_id=? AND role='owner'`, goals[0].ID).Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 {
+		t.Fatalf("synchronize must wake the owner once, got %d runs", runs)
+	}
+
+	// Duplicate synchronize (same head, same body) → no-op: no new comment,
+	// no new run.
+	deliver(t, ctx, h, sync)
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM comment WHERE goal_id=? AND author_type='system' AND author_id='pr-webhook'`, goals[0].ID).Scan(&comments); err != nil {
+		t.Fatal(err)
+	}
+	if comments != 1 {
+		t.Fatalf("duplicate synchronize must not append a comment, got %d", comments)
+	}
+
+	// Title-only edit (head + body unchanged) → refresh fires (the title
+	// changed) with the 标题有修改 comment — never empty （）.
+	titleOnly := []byte(`{"action":"edited","pull_request":{"number":7,"title":"feat/export v2","body":"the body","head":{"ref":"feat/webhook-pr-support","sha":"bbbb2222bbbb2222"},"base":{"ref":"main"}},"repository":{"full_name":"x/y"}}`)
+	deliver(t, ctx, h, titleOnly)
+	goals, _ = goalSvc.List(ctx)
+	if len(goals) != 1 || goals[0].Title != "feat/export v2" {
+		t.Fatalf("title-only edit must refresh the goal title: %+v", goals)
+	}
+	var lastComment string
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT content FROM comment WHERE goal_id=? AND author_type='system' AND author_id='pr-webhook' ORDER BY created_at DESC LIMIT 1`, goals[0].ID).Scan(&lastComment); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(lastComment, "（）") {
+		t.Fatalf("title-only edit must not render empty parens: %+v", lastComment)
+	}
+	if !strings.Contains(lastComment, "标题有修改") {
+		t.Fatalf("title-only edit must say 标题有修改: %+v", lastComment)
+	}
+
+	// closed → no-op (the human merges/closes; the goal stays). The feed
+	// carries the synchronize + title-edit comments (the creation comment is
+	// author_id='pr-poll', filtered out) — closed must not add another.
+	closed := []byte(`{"action":"closed","pull_request":{"number":7,"title":"feat/export v2","body":"the body","head":{"sha":"bbbb2222bbbb2222"}},"repository":{"full_name":"x/y"}}`)
+	deliver(t, ctx, h, closed)
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM comment WHERE goal_id=? AND author_type='system' AND author_id='pr-webhook'`, goals[0].ID).Scan(&comments); err != nil {
+		t.Fatal(err)
+	}
+	if comments != 2 {
+		t.Fatalf("closed must not touch the goal, got %d comments", comments)
+	}
+
+	// Terminal goal: an update refreshes the desc but must NOT wake (a re-run
+	// after a push is the human's decision).
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE goal SET status='done' WHERE id=?`, goals[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	done := []byte(`{"action":"synchronize","pull_request":{"number":7,"title":"feat/export","body":"the body","head":{"sha":"cccc3333cccc3333"}},"repository":{"full_name":"x/y"}}`)
+	deliver(t, ctx, h, done)
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run WHERE goal_id=? AND role='owner'`, goals[0].ID).Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 {
+		t.Fatalf("terminal goal must not be woken, got %d runs", runs)
+	}
+	var desc string
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT description FROM goal WHERE id=?`, goals[0].ID).Scan(&desc); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(desc, "cccc3333") {
+		t.Fatalf("terminal goal description must still refresh: %+v", desc)
+	}
+}
+
+// TestWebhookGitCodeMRConversion: GitCode's merge_request webhook (completely
+// different shape) converts — open→create, update→refresh; the ref is the
+// gitcode !N form and the head SHA comes from last_commit.id.
+func TestWebhookGitCodeMRConversion(t *testing.T) {
+	ctx, _, goalSvc, _, h := webhookPRHarness(t, "gitcode")
+
+	opened := []byte(`{"event_type":"merge_request","object_kind":"merge_request","merge_request":{"action":"open","iid":3,"title":"mr title","description":"mr body","url":"https://gitcode.com/x/y/-/merge_requests/3","last_commit":{"id":"dddd4444dddd4444"}},"project":{"path_with_namespace":"x/y"}}`)
+	deliver(t, ctx, h, opened)
+	goals, _ := goalSvc.List(ctx)
+	if len(goals) != 1 || goals[0].SourceRef != "gitcode:x/y!3" {
+		t.Fatalf("gitcode MR must create the PR goal: %+v", goals)
+	}
+	if !strings.Contains(goals[0].Description, "dddd4444") {
+		t.Fatalf("created goal must project the last_commit id: %+v", goals[0].Description)
+	}
+
+	// update → synchronize → refresh the SAME goal (no second goal).
+	updated := []byte(`{"event_type":"merge_request","object_kind":"merge_request","merge_request":{"action":"update","iid":3,"title":"mr title","description":"mr body","url":"https://gitcode.com/x/y/-/merge_requests/3","last_commit":{"id":"eeee5555eeee5555"}},"project":{"path_with_namespace":"x/y"}}`)
+	deliver(t, ctx, h, updated)
+	goals, _ = goalSvc.List(ctx)
+	if len(goals) != 1 {
+		t.Fatalf("gitcode update must not create a second goal, got %d", len(goals))
+	}
+	if !strings.Contains(goals[0].Description, "eeee5555") {
+		t.Fatalf("gitcode update must refresh the description: %+v", goals[0].Description)
+	}
+
+	// close → no-op (the human's decision).
+	closed := []byte(`{"event_type":"merge_request","object_kind":"merge_request","merge_request":{"action":"close","iid":3,"title":"mr title","description":"mr body"},"project":{"path_with_namespace":"x/y"}}`)
+	deliver(t, ctx, h, closed)
+	goals, _ = goalSvc.List(ctx)
+	if len(goals) != 1 {
+		t.Fatalf("gitcode close must not create, got %d", len(goals))
+	}
+}
+
+// TestWebhookPullSkippedWhenNoPullAssignee: a domain with pull_assignee=''
+// takes issues only — PR events (any action) must not create or refresh.
+func TestWebhookPullSkippedWhenNoPullAssignee(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	bus := events.NewBus()
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO runtime (id,name,created_at) VALUES ('rt1','rt1',?)`, time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO agent (id,name,runtime_id,max_concurrent,created_at) VALUES ('a1','worker','rt1',1,?)`, time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	ds := service.NewDomainService(st, bus)
+	if _, err := ds.Create(ctx, service.Domain{
+		Name: "d1", GitURL: "https://e.com/d1.git",
+		IssueRepo: "x/y", IssueAssignee: "a1", GitCredentials: "tok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	goalSvc := service.NewGoalService(st, bus)
+	runSvc := service.NewRunService(st, bus)
+	goalSvc.SetRunService(runSvc)
+	runSvc.SetGoalService(goalSvc)
+	p := NewPoller(st, goalSvc, runSvc)
+	h := NewWebhookHandler("github", st, p, func(context.Context) (string, error) { return "s3cret", nil })
+
+	opened := []byte(`{"action":"opened","pull_request":{"number":7,"title":"t","body":"b","head":{"sha":"aaaa1111aaaa1111"}},"repository":{"full_name":"x/y"}}`)
+	deliver(t, ctx, h, opened)
+	goals, _ := goalSvc.List(ctx)
+	if len(goals) != 0 {
+		t.Fatalf("no pull_assignee must not create PR goals, got %d", len(goals))
+	}
+}
+
+// TestUpdateGoalForPullFallbackToCreate: an update for a goal that does not
+// exist yet (the `opened` webhook was missed) self-heals into a create.
+func TestUpdateGoalForPullFallbackToCreate(t *testing.T) {
+	ctx, st, goalSvc, runSvc, _ := webhookPRHarness(t, "github")
+	p := NewPoller(st, goalSvc, runSvc)
+	var domainID string
+	if err := st.DB().QueryRowContext(ctx, `SELECT id FROM domain WHERE name='d1'`).Scan(&domainID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := p.UpdateGoalForPull(ctx, domainID, "a1", "agent", "github", "x/y", Pull{
+		Number: 9, Title: "late pr", Body: "b", HeadSHA: "ffff6666ffff6666",
+	})
+	if err != nil || !created {
+		t.Fatalf("update on a missing goal must create: created=%v err=%v", created, err)
+	}
+	goals, _ := goalSvc.List(ctx)
+	if len(goals) != 1 || goals[0].SourceRef != "github:x/y!9" {
+		t.Fatalf("fallback must create the PR goal: %+v", goals)
+	}
+	if !strings.Contains(goals[0].Description, "ffff6666") {
+		t.Fatalf("fallback goal must carry the fresh state: %+v", goals[0].Description)
+	}
+}
+
 // TestGitCodeClient: the v5 API shape — access_token query, close via
 // PATCH /repos/{owner}/issues/{number} formData (repo in the form, not the
 // path).
@@ -523,7 +788,7 @@ func TestPollerPullsCreateGoals(t *testing.T) {
 	ds := service.NewDomainService(st, bus)
 	if _, err := ds.Create(ctx, service.Domain{
 		Name: "d1", GitURL: "https://e.com/d1.git",
-		IssueRepo: "x/y", PullAssignee: "a1", GitCredentials: "tok",
+		IssueRepo: "x/y", IssueProvider: "github", PullAssignee: "a1", GitCredentials: "tok",
 	}); err != nil {
 		t.Fatal(err)
 	}

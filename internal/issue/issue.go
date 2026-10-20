@@ -11,15 +11,19 @@ package issue
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/eushing/agentwork/internal/logging"
 	"github.com/eushing/agentwork/internal/service"
 	"github.com/eushing/agentwork/internal/store"
 )
@@ -394,14 +398,8 @@ func (p *Poller) CreateGoalForPull(ctx context.Context, domainID, assigneeID, as
 	if exists > 0 {
 		return false, nil // already tracked
 	}
-	title := pr.Title
-	if title == "" {
-		title = fmt.Sprintf("PR !%d", pr.Number)
-	}
-	desc := fmt.Sprintf("来自 %s PR !%d：%s\n%s", providerLabel(provider), pr.Number, pr.Title, truncate(pr.Body, 1500))
-	if pr.SourceBranch != "" || pr.TargetBranch != "" {
-		desc += fmt.Sprintf("\n\n分支：%s → %s", pr.SourceBranch, pr.TargetBranch)
-	}
+	title := pullGoalTitle(pr)
+	desc := pullGoalDescription(provider, pr)
 	_, err := p.goalSvc.Create(ctx, service.Goal{
 		Title:         title,
 		Description:   desc,
@@ -422,6 +420,195 @@ func (p *Poller) CreateGoalForPull(ctx context.Context, domainID, assigneeID, as
 		return false, fmt.Errorf("create goal for %s: %w", ref, err)
 	}
 	return true, nil
+}
+
+// pullGoalTitle is the goal title for a PR — the PR's own title, or a
+// numbered fallback when the payload carries none.
+func pullGoalTitle(pr Pull) string {
+	if pr.Title != "" {
+		return pr.Title
+	}
+	return fmt.Sprintf("PR !%d", pr.Number)
+}
+
+// pullGoalDescription builds the goal description for a PR — the projection of
+// the PR's current state (title/body + branches + head SHA). Shared by the
+// create and the update path so an update's fresh description is byte-identical
+// to what a create would write: the equality IS the duplicate-delivery check,
+// and the head-SHA line is what makes a synchronize push (new head, same body)
+// a real change rather than a silent no-op.
+func pullGoalDescription(provider string, pr Pull) string {
+	desc := fmt.Sprintf("来自 %s PR !%d：%s\n%s", providerLabel(provider), pr.Number, pr.Title, truncate(pr.Body, 1500))
+	if pr.SourceBranch != "" || pr.TargetBranch != "" {
+		desc += fmt.Sprintf("\n\n分支：%s → %s", pr.SourceBranch, pr.TargetBranch)
+	}
+	if pr.HeadSHA != "" {
+		desc += fmt.Sprintf("\n\n最新提交：%s", shortSHA(pr.HeadSHA))
+	}
+	return desc
+}
+
+// shortSHA is the human-clickable short form of a commit SHA (8 hex chars),
+// guarded against short input.
+func shortSHA(sha string) string {
+	if len(sha) < 8 {
+		return sha
+	}
+	return sha[:8]
+}
+
+// descBodyPart is the description minus its title line and head-SHA suffix —
+// the body + branch part only, so the update detection can tell a title edit
+// (the desc's first line carries the title) from a body/branch edit.
+func descBodyPart(desc string) string {
+	if i := strings.Index(desc, "\n"); i >= 0 {
+		desc = desc[i+1:]
+	}
+	return stripHeadLine(desc)
+}
+
+// pullGoalUpdateComment is the goal-feed comment a PR update appends — the
+// audit trail of what changed and the trigger the owner wake carries.
+func pullGoalUpdateComment(pr Pull, titleChanged, headChanged, bodyChanged bool) string {
+	var changes []string
+	if headChanged {
+		changes = append(changes, "新提交 "+shortSHA(pr.HeadSHA))
+	}
+	if bodyChanged {
+		changes = append(changes, "描述有修改")
+	}
+	if titleChanged {
+		changes = append(changes, "标题有修改")
+	}
+	return fmt.Sprintf("PR !%d 已更新（%s）——请重新拉取最新状态后继续。", pr.Number, strings.Join(changes, "，"))
+}
+
+// descHeadLine extracts the 最新提交 line's SHA from a goal description (''
+// when the description predates the head-SHA line or carries none).
+func descHeadLine(desc string) string {
+	const marker = "\n\n最新提交："
+	if i := strings.LastIndex(desc, marker); i >= 0 {
+		return desc[i+len(marker):]
+	}
+	return ""
+}
+
+// stripHeadLine removes the 最新提交 suffix from a goal description, so the
+// update detection can tell a push (head line changed) from a description
+// edit (head line unchanged) without re-deriving the old payload.
+func stripHeadLine(desc string) string {
+	if i := strings.LastIndex(desc, "\n\n最新提交："); i >= 0 {
+		return desc[:i]
+	}
+	return desc
+}
+
+// webhookCommentID is a fresh feed-comment id (16 random bytes hex — the same
+// shape the CommentService's newID writes; the poller holds no CommentService,
+// and a system comment needs no mention-dispatch, so the insert is direct SQL).
+func webhookCommentID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// UpdateGoalForPull refreshes the goal tracking an UPDATED pull request (the
+// webhook's synchronize/edited deliveries): the same PR pushed new commits or
+// edited its description. The goal is the PR's persistent tracker — one goal
+// per PR (source_ref unique) — so an update NEVER creates a second goal. The
+// refresh rewrites the goal's title/description (the projection of the PR's
+// current state: body + branches + head SHA) and appends a system comment to
+// the goal feed (the audit trail + the update signal the owner wake carries).
+// A duplicate delivery (same head AND body — the fresh description is
+// byte-identical to the stored one) is a no-op. A goal that does not exist
+// yet falls back to CreateGoalForPull (a missed `opened` delivery self-heals
+// here). Returns whether the goal was refreshed.
+func (p *Poller) UpdateGoalForPull(ctx context.Context, domainID, assigneeID, assigneeType, provider, repo string, pr Pull) (bool, error) {
+	ref := PullSourceRef(provider, repo, pr.Number)
+	var goalID, existingTitle, existingDesc, status string
+	err := p.st.DB().QueryRowContext(ctx,
+		`SELECT id, title, description, status FROM goal WHERE source_ref=?`, ref).
+		Scan(&goalID, &existingTitle, &existingDesc, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		// The goal does not exist (the `opened` webhook was missed): create it
+		// with the FRESH state — the update self-heals into a create.
+		return p.CreateGoalForPull(ctx, domainID, assigneeID, assigneeType, provider, repo, pr)
+	}
+	if err != nil {
+		return false, err
+	}
+	title := pullGoalTitle(pr)
+	fresh := pullGoalDescription(provider, pr)
+	if title == existingTitle && fresh == existingDesc {
+		return false, nil // duplicate delivery (same head AND body) — nothing to do
+	}
+	// What changed, for the feed comment: a moved head SHA is a push, a
+	// changed body part is a description/branch edit, a changed title line is
+	// a title edit.
+	titleChanged := title != existingTitle
+	headChanged := pr.HeadSHA != "" && shortSHA(pr.HeadSHA) != descHeadLine(existingDesc)
+	bodyChanged := descBodyPart(existingDesc) != descBodyPart(fresh)
+	if _, err := p.st.DB().ExecContext(ctx,
+		`UPDATE goal SET title=?, description=? WHERE id=?`, title, fresh, goalID); err != nil {
+		return false, fmt.Errorf("refresh goal for %s: %w", ref, err)
+	}
+	// Append the update to the goal feed (audit trail + the wake trigger).
+	// System author: no human-reply routing applies to it.
+	commentID, cErr := p.insertSystemComment(ctx, goalID, pullGoalUpdateComment(pr, titleChanged, headChanged, bodyChanged))
+	if cErr != nil {
+		// The feed row is the audit trail; the goal is already fresh. Log
+		// only — never fail the delivery on a feed write.
+		logging.Infof("pr-update: feed comment for %s: %v", ref, cErr)
+	}
+	// Wake the goal's owner (agent assignee or squad leader) so the RUNNING
+	// team learns the PR changed — the leader holds the context and decides
+	// how to re-route (one message per push, into the leader session). Terminal
+	// goals are NOT woken or reopened: a re-run after a push is the human's
+	// decision.
+	p.wakeGoalOwner(ctx, goalID, assigneeID, assigneeType, commentID, status, ref)
+	return true, nil
+}
+
+// insertSystemComment appends a platform system comment to the goal feed
+// (author_type='system'): the update audit trail + the trigger the owner wake
+// carries. Direct SQL — the poller holds no CommentService, and a system
+// comment must never trigger the mention dispatch a CommentService.Create
+// would run.
+func (p *Poller) insertSystemComment(ctx context.Context, goalID, content string) (string, error) {
+	id := webhookCommentID()
+	var parentID any // NULL — the update is a top-level feed entry, not a reply
+	_, err := p.st.DB().ExecContext(ctx,
+		`INSERT INTO comment (id, goal_id, author_type, author_id, parent_id, content, created_at, run_id, ask_human)
+		 VALUES (?, ?, 'system', 'pr-webhook', ?, ?, ?, '', 0)`,
+		id, goalID, parentID, content, time.Now().UTC().Format(time.RFC3339Nano))
+	return id, err
+}
+
+// wakeGoalOwner wakes the goal's assignee (agent) or squad leader with the
+// update comment as the trigger — the same owner-resume routing a human reply
+// uses (persistent workdir + session resume). Best-effort: the update is
+// already recorded; a failed wake must not fail the delivery. Terminal and
+// backlog goals are skipped — a re-run after a push is the human's decision.
+func (p *Poller) wakeGoalOwner(ctx context.Context, goalID, assigneeID, assigneeType, commentID, status, ref string) {
+	if p.runSvc == nil || commentID == "" || status != "active" {
+		return
+	}
+	ownerAgentID := ""
+	switch assigneeType {
+	case "agent":
+		ownerAgentID = assigneeID
+	case "squad":
+		_ = p.st.DB().QueryRowContext(ctx,
+			`SELECT leader_id FROM squad WHERE id=?`, assigneeID).Scan(&ownerAgentID)
+	}
+	if ownerAgentID == "" {
+		return
+	}
+	if _, err := p.runSvc.EnqueueForMentionRole(ctx, goalID, ownerAgentID, commentID, "owner"); err != nil {
+		logging.Infof("pr-update: owner wake for %s: %v", ref, err)
+	} else {
+		logging.Infof("pr-update: owner wake goal=%s agent=%s (%s)", goalID, ownerAgentID, ref)
+	}
 }
 
 // providerLabel maps a provider id to its human-facing platform name, so the
@@ -630,13 +817,35 @@ func NewWebhookHandler(provider string, st *store.Store, poller *Poller, getSecr
 	return &WebhookHandler{provider: provider, st: st, poller: poller, getSecret: getSecret}
 }
 
-// webhookEvent is the GitHub `issues` event payload (minimal shape).
+// webhookEvent is the GitHub `issues` / `pull_request` event payload
+// (minimal shape). PullRequest is non-nil for PR events.
 type webhookEvent struct {
-	Action     string `json:"action"`
-	Issue      Issue  `json:"issue"`
-	Repository struct {
+	Action      string              `json:"action"`
+	Issue       Issue               `json:"issue"`
+	PullRequest *pullRequestPayload `json:"pull_request"`
+	Repository  struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
+}
+
+// pullRequestPayload is the PR object inside a `pull_request` webhook event
+// (GitHub) or the GitCode merge_request conversion. Head.SHA is the PR's head
+// commit AFTER the update — the update-detection signal (a synchronize push
+// moves it; an edited description does not). Head.Ref/Base.Ref are the
+// source/target branches (GitHub carries them; the GitCode conversion leaves
+// them empty).
+type pullRequestPayload struct {
+	Number  int    `json:"number"`
+	Title   string `json:"title"`
+	Body    string `json:"body"`
+	HTMLURL string `json:"html_url"`
+	Head    struct {
+		SHA string `json:"sha"`
+		Ref string `json:"ref"`
+	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
 }
 
 // Handle processes one webhook delivery. Returns an HTTP status + a
@@ -657,6 +866,58 @@ func (h *WebhookHandler) Handle(ctx context.Context, body []byte, signature, tok
 	var ev webhookEvent
 	if err := json.Unmarshal(body, &ev); err != nil {
 		return fmt.Errorf("parse webhook payload: %w", err)
+	}
+	// GitCode merge_request webhooks use a completely different payload
+	// format from GitHub. If the standard parse yielded nothing, try the
+	// GitCode shape (event_type/object_kind = merge_request, iid,
+	// project.path_with_namespace) and convert it into the standard shapes.
+	if ev.Action == "" && ev.Issue.Number == 0 && ev.PullRequest == nil {
+		var gc gitCodeWebhookEvent
+		if err := json.Unmarshal(body, &gc); err == nil &&
+			(gc.EventType == "merge_request" || gc.ObjectKind == "merge_request") && gc.MergeRequest.IID > 0 {
+			// Map GitCode's MR action to the standard vocabulary: open→opened,
+			// reopen→reopened, update→synchronize (the update signal); close and
+			// merge pass through and are filtered below — the human's decisions.
+			action := gc.MergeRequest.Action
+			switch action {
+			case "open":
+				action = "opened"
+			case "reopen", "reopened":
+				action = "reopened"
+			case "update":
+				action = "synchronize"
+			}
+			ev.Action = action
+			repo := gc.Project.PathWithNamespace
+			if repo == "" {
+				repo = gc.Repository.FullName
+			}
+			ev.Repository.FullName = repo
+			ev.PullRequest = &pullRequestPayload{
+				Number:  gc.MergeRequest.IID,
+				Title:   gc.MergeRequest.Title,
+				Body:    gc.MergeRequest.Description,
+				HTMLURL: gc.MergeRequest.URL,
+			}
+			ev.PullRequest.Head.SHA = gc.MergeRequest.LastCommit.ID
+		}
+	}
+	if ev.PullRequest != nil && ev.PullRequest.Number > 0 {
+		// PR event — the shared Pull shape (branches + head SHA drive the
+		// goal's description and the update detection).
+		pr := Pull{
+			Number:       ev.PullRequest.Number,
+			Title:        ev.PullRequest.Title,
+			Body:         ev.PullRequest.Body,
+			HTMLURL:      ev.PullRequest.HTMLURL,
+			SourceBranch: ev.PullRequest.Head.Ref,
+			TargetBranch: ev.PullRequest.Base.Ref,
+			HeadSHA:      ev.PullRequest.Head.SHA,
+		}
+		if ev.Repository.FullName == "" {
+			return nil
+		}
+		return h.handlePullDelivery(ctx, ev.Action, ev.Repository.FullName, pr)
 	}
 	if ev.Action != "opened" && ev.Action != "reopened" {
 		return nil // only issue creation triggers goals
@@ -681,6 +942,64 @@ func (h *WebhookHandler) Handle(ctx context.Context, body []byte, signature, tok
 	}
 	_, err = h.poller.CreateGoalForIssue(ctx, domainID, assignee, assigneeType, h.provider, ev.Repository.FullName, ev.Issue)
 	return err
+}
+
+// gitCodeWebhookEvent is GitCode's proprietary merge_request webhook payload —
+// a completely different shape from GitHub's pull_request event (verified
+// against live GitCode deliveries): event_type/object_kind = "merge_request",
+// the MR under merge_request (iid, action, title, description, last_commit),
+// the repo under project.path_with_namespace.
+type gitCodeWebhookEvent struct {
+	EventType    string `json:"event_type"`
+	ObjectKind   string `json:"object_kind"`
+	MergeRequest struct {
+		Action      string `json:"action"`
+		IID         int    `json:"iid"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		URL         string `json:"url"`
+		LastCommit  struct {
+			ID string `json:"id"`
+		} `json:"last_commit"`
+	} `json:"merge_request"`
+	Project struct {
+		PathWithNamespace string `json:"path_with_namespace"`
+	} `json:"project"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+}
+
+// handlePullDelivery routes one PR webhook delivery: opened/reopened create
+// the goal (idempotent — the poller's safety net converges on the same
+// source_ref); synchronize/edited refresh the EXISTING goal (the same PR
+// pushed new commits or edited its description — never a second goal).
+// close/merge and everything else is the human's decision, not ours.
+// The domain's PR 拉取处理方 column (pull_assignee) decides whether this
+// domain takes PRs at all.
+func (h *WebhookHandler) handlePullDelivery(ctx context.Context, action, repo string, pr Pull) error {
+	var domainID, assignee, assigneeType string
+	err := h.st.DB().QueryRowContext(ctx,
+		`SELECT id, COALESCE(pull_assignee,''), COALESCE(pull_assignee_type,'') FROM domain WHERE issue_repo=? AND issue_provider=?`, repo, h.provider).
+		Scan(&domainID, &assignee, &assigneeType)
+	if err != nil {
+		return nil // repo not tracked — nothing to do (not an error)
+	}
+	if assignee == "" {
+		return nil // no PR handler configured — the domain takes issues only
+	}
+	if assigneeType == "" {
+		assigneeType = "agent"
+	}
+	switch action {
+	case "opened", "reopened":
+		_, err := h.poller.CreateGoalForPull(ctx, domainID, assignee, assigneeType, h.provider, repo, pr)
+		return err
+	case "synchronize", "edited":
+		_, err := h.poller.UpdateGoalForPull(ctx, domainID, assignee, assigneeType, h.provider, repo, pr)
+		return err
+	}
+	return nil
 }
 
 // verifySignature checks X-Hub-Signature-256 ("sha256=<hex HMAC-SHA256>").
