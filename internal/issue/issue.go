@@ -525,10 +525,9 @@ func webhookCommentID() string {
 // here). Returns whether the goal was refreshed.
 func (p *Poller) UpdateGoalForPull(ctx context.Context, domainID, assigneeID, assigneeType, provider, repo string, pr Pull) (bool, error) {
 	ref := PullSourceRef(provider, repo, pr.Number)
-	var goalID, existingTitle, existingDesc, status string
+	var goalID string
 	err := p.st.DB().QueryRowContext(ctx,
-		`SELECT id, title, description, status FROM goal WHERE source_ref=?`, ref).
-		Scan(&goalID, &existingTitle, &existingDesc, &status)
+		`SELECT id FROM goal WHERE source_ref=?`, ref).Scan(&goalID)
 	if errors.Is(err, sql.ErrNoRows) {
 		// The goal does not exist (the `opened` webhook was missed): create it
 		// with the FRESH state — the update self-heals into a create.
@@ -539,26 +538,50 @@ func (p *Poller) UpdateGoalForPull(ctx context.Context, domainID, assigneeID, as
 	}
 	title := pullGoalTitle(pr)
 	fresh := pullGoalDescription(provider, pr)
-	if title == existingTitle && fresh == existingDesc {
-		return false, nil // duplicate delivery (same head AND body) — nothing to do
+	// M3: the dedupe+update is check-then-act — serialize it with the same
+	// per-goal lock Relaunch takes, so two concurrent deliveries of the same
+	// PR (platform retry) cannot both pass the dedupe and double-insert the
+	// feed comment. The lock is released BEFORE the wake: wakeGoalOwner's
+	// Relaunch takes the same lock (sync.Mutex is not reentrant).
+	updated, commentID, status, err := func() (bool, string, string, error) {
+		unlock := p.goalSvc.LockGoal(goalID)
+		defer unlock()
+		// Re-read under the lock: the state may have moved between the first
+		// read and the lock (the reconcile, another delivery).
+		var existingTitle, existingDesc, status string
+		if err := p.st.DB().QueryRowContext(ctx,
+			`SELECT title, description, status FROM goal WHERE id=?`, goalID).
+			Scan(&existingTitle, &existingDesc, &status); err != nil {
+			return false, "", "", err
+		}
+		if title == existingTitle && fresh == existingDesc {
+			return false, "", status, nil // duplicate delivery (same head AND body) — nothing to do
+		}
+		// What changed, for the feed comment: a moved head SHA is a push, a
+		// changed body part is a description/branch edit, a changed title line
+		// is a title edit.
+		titleChanged := title != existingTitle
+		headChanged := pr.HeadSHA != "" && shortSHA(pr.HeadSHA) != descHeadLine(existingDesc)
+		bodyChanged := descBodyPart(existingDesc) != descBodyPart(fresh)
+		if _, err := p.st.DB().ExecContext(ctx,
+			`UPDATE goal SET title=?, description=? WHERE id=?`, title, fresh, goalID); err != nil {
+			return false, "", "", fmt.Errorf("refresh goal for %s: %w", ref, err)
+		}
+		// Append the update to the goal feed (audit trail + the wake trigger).
+		// System author: no human-reply routing applies to it.
+		commentID, cErr := p.insertSystemComment(ctx, goalID, pullGoalUpdateComment(pr, titleChanged, headChanged, bodyChanged))
+		if cErr != nil {
+			// The feed row is the audit trail; the goal is already fresh. Log
+			// only — never fail the delivery on a feed write.
+			logging.Infof("pr-update: feed comment for %s: %v", ref, cErr)
+		}
+		return true, commentID, status, nil
+	}()
+	if err != nil {
+		return false, err
 	}
-	// What changed, for the feed comment: a moved head SHA is a push, a
-	// changed body part is a description/branch edit, a changed title line is
-	// a title edit.
-	titleChanged := title != existingTitle
-	headChanged := pr.HeadSHA != "" && shortSHA(pr.HeadSHA) != descHeadLine(existingDesc)
-	bodyChanged := descBodyPart(existingDesc) != descBodyPart(fresh)
-	if _, err := p.st.DB().ExecContext(ctx,
-		`UPDATE goal SET title=?, description=? WHERE id=?`, title, fresh, goalID); err != nil {
-		return false, fmt.Errorf("refresh goal for %s: %w", ref, err)
-	}
-	// Append the update to the goal feed (audit trail + the wake trigger).
-	// System author: no human-reply routing applies to it.
-	commentID, cErr := p.insertSystemComment(ctx, goalID, pullGoalUpdateComment(pr, titleChanged, headChanged, bodyChanged))
-	if cErr != nil {
-		// The feed row is the audit trail; the goal is already fresh. Log
-		// only — never fail the delivery on a feed write.
-		logging.Infof("pr-update: feed comment for %s: %v", ref, cErr)
+	if !updated {
+		return false, nil
 	}
 	// Wake the goal's owner (agent assignee or squad leader) so the RUNNING
 	// team learns the PR changed — the leader holds the context and decides
@@ -584,13 +607,31 @@ func (p *Poller) insertSystemComment(ctx context.Context, goalID, content string
 	return id, err
 }
 
-// wakeGoalOwner wakes the goal's assignee (agent) or squad leader with the
-// update comment as the trigger — the same owner-resume routing a human reply
-// uses (persistent workdir + session resume). Best-effort: the update is
-// already recorded; a failed wake must not fail the delivery. Terminal and
-// backlog goals are skipped — a re-run after a push is the human's decision.
+// wakeGoalOwner re-launches the goal's work on a PR update — in EVERY state
+// (the PR-update requirement: a fresh push always re-launches the work, no
+// state exempt). active → wake the assignee (agent) or squad leader with the
+// update comment as the trigger (the same owner-resume routing a human reply
+// uses, coalesced on the pending pair); every other state (backlog, review,
+// done, failed, cancelled) → Relaunch: back to active with a fresh owner run
+// in one transaction. Best-effort: the update is already recorded; a failed
+// wake must not fail the delivery. Human-assigned goals get no run (no agent
+// to auto-run) — the update is still recorded.
 func (p *Poller) wakeGoalOwner(ctx context.Context, goalID, assigneeID, assigneeType, commentID, status, ref string) {
-	if p.runSvc == nil || commentID == "" || status != "active" {
+	if p.runSvc == nil || commentID == "" {
+		return
+	}
+	if status != "active" {
+		// Relaunch: the goal is re-runnable from any non-active state — the
+		// fresh push supersedes whatever the goal reached (a parked review,
+		// a done/cancelled terminal, a backlog item). The pr-webhook update
+		// comment is already the reason and the run's trigger.
+		if p.goalSvc != nil {
+			if _, err := p.goalSvc.Relaunch(ctx, goalID, "", commentID, "system"); err != nil {
+				logging.Infof("pr-update: relaunch %s from %s: %v", ref, status, err)
+			} else {
+				logging.Infof("pr-update: relaunched goal=%s from %s (%s)", goalID, status, ref)
+			}
+		}
 		return
 	}
 	ownerAgentID := ""

@@ -71,9 +71,11 @@ export function GoalActions({ goal }: { goal: Goal }) {
         />
       )}
 
-      {(assign.isError || cancel.isError || deleteGoal.isError || cont.isError) && (
+      {(assign.isError || cancel.isError || deleteGoal.isError || cont.isError ||
+        reopen.isError || activate.isError) && (
         <p className="text-sm text-red-500 w-full">
-          {String(assign.error ?? cancel.error ?? deleteGoal.error ?? cont.error)}
+          {String(assign.error ?? cancel.error ?? deleteGoal.error ?? cont.error ??
+            reopen.error ?? activate.error)}
         </p>
       )}
     </div>

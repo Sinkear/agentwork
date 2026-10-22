@@ -541,20 +541,39 @@ func TestWebhookPullRequestEvents(t *testing.T) {
 		t.Fatalf("closed must not touch the goal, got %d comments", comments)
 	}
 
-	// Terminal goal: an update refreshes the desc but must NOT wake (a re-run
-	// after a push is the human's decision).
+	// Terminal goal: an update RE-LAUNCHES the work (the PR-update
+	// requirement: a fresh push always re-launches, no state exempt) — back
+	// to active with a fresh owner run (Relaunch), the desc still refreshing.
+	// The still-queued run from the first wake COALESCES (no double-spawn
+	// while one is pending) — the count stays 1.
 	if _, err := st.DB().ExecContext(ctx,
 		`UPDATE goal SET status='done' WHERE id=?`, goals[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	done := []byte(`{"action":"synchronize","pull_request":{"number":7,"title":"feat/export","body":"the body","head":{"sha":"cccc3333cccc3333"}},"repository":{"full_name":"x/y"}}`)
 	deliver(t, ctx, h, done)
+	var status string
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT status FROM goal WHERE id=?`, goals[0].ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "active" {
+		t.Fatalf("PR update on a done goal must relaunch it to active, got %s", status)
+	}
 	if err := st.DB().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM run WHERE goal_id=? AND role='owner'`, goals[0].ID).Scan(&runs); err != nil {
 		t.Fatal(err)
 	}
 	if runs != 1 {
-		t.Fatalf("terminal goal must not be woken, got %d runs", runs)
+		t.Fatalf("done-goal relaunch must coalesce into the pending run, got %d", runs)
+	}
+	var relaunches int
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM activity_log WHERE goal_id=? AND action='reopened' AND actor_type='system'`, goals[0].ID).Scan(&relaunches); err != nil {
+		t.Fatal(err)
+	}
+	if relaunches != 1 {
+		t.Fatalf("relaunch must audit action=reopened actor=system, got %d", relaunches)
 	}
 	var desc string
 	if err := st.DB().QueryRowContext(ctx,
@@ -562,7 +581,150 @@ func TestWebhookPullRequestEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(desc, "cccc3333") {
-		t.Fatalf("terminal goal description must still refresh: %+v", desc)
+		t.Fatalf("relaunched goal description must still refresh: %+v", desc)
+	}
+
+	// Simulate the daemon finishing the pending run; the NEXT update spawns
+	// a FRESH owner run (nothing pending to coalesce into) — the wake path,
+	// so no second relaunch activity row.
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE run SET status='done' WHERE goal_id=? AND role='owner'`, goals[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	next := []byte(`{"action":"synchronize","pull_request":{"number":7,"title":"feat/export","body":"the body","head":{"sha":"dddd7777dddd7777"}},"repository":{"full_name":"x/y"}}`)
+	deliver(t, ctx, h, next)
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run WHERE goal_id=? AND role='owner'`, goals[0].ID).Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 2 {
+		t.Fatalf("update after the pending run finished must spawn a fresh owner run, got %d", runs)
+	}
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM activity_log WHERE goal_id=? AND action='reopened' AND actor_type='system'`, goals[0].ID).Scan(&relaunches); err != nil {
+		t.Fatal(err)
+	}
+	if relaunches != 1 {
+		t.Fatalf("the active wake path must not add relaunch activity, got %d", relaunches)
+	}
+}
+
+// TestWebhookPullUpdateRelaunchesAnyState: the PR-update requirement is that
+// a fresh push re-launches the work in EVERY state — review (a parked
+// approval), backlog, failed, cancelled — each back to active with a fresh
+// owner run; review also clears the pending review_request.
+func TestWebhookPullUpdateRelaunchesAnyState(t *testing.T) {
+	for _, tc := range []struct{ state, name string }{
+		{"review", "parked review"}, {"backlog", "backlog"},
+		{"failed", "failed"}, {"cancelled", "cancelled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, st, goalSvc, _, h := webhookPRHarness(t, "github")
+			opened := []byte(`{"action":"opened","pull_request":{"number":9,"title":"feat/any","body":"the body","head":{"sha":"eeee5555eeee5555"}},"repository":{"full_name":"x/y"}}`)
+			deliver(t, ctx, h, opened)
+			goals, _ := goalSvc.List(ctx)
+			if len(goals) != 1 {
+				t.Fatalf("opened must create the goal: %+v", goals)
+			}
+			// Finish the creation run so the relaunch's fresh spawn is
+			// observable (a pending run would coalesce).
+			if _, err := st.DB().ExecContext(ctx,
+				`UPDATE run SET status='done' WHERE goal_id=?`, goals[0].ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.DB().ExecContext(ctx,
+				`UPDATE goal SET status=?, review_request=? WHERE id=?`, tc.state, "old evidence", goals[0].ID); err != nil {
+				t.Fatal(err)
+			}
+			sync := []byte(`{"action":"synchronize","pull_request":{"number":9,"title":"feat/any","body":"the body","head":{"sha":"ffff6666ffff6666"}},"repository":{"full_name":"x/y"}}`)
+			deliver(t, ctx, h, sync)
+			var status, reviewReq string
+			if err := st.DB().QueryRowContext(ctx,
+				`SELECT status, review_request FROM goal WHERE id=?`, goals[0].ID).Scan(&status, &reviewReq); err != nil {
+				t.Fatal(err)
+			}
+			if status != "active" {
+				t.Fatalf("PR update on a %s goal must relaunch it to active, got %s", tc.state, status)
+			}
+			if reviewReq != "" {
+				t.Fatalf("relaunch must clear the pending review_request, got %q", reviewReq)
+			}
+			var runs int
+			if err := st.DB().QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM run WHERE goal_id=? AND role='owner' AND status='queued'`, goals[0].ID).Scan(&runs); err != nil {
+				t.Fatal(err)
+			}
+			if runs != 1 {
+				t.Fatalf("%s relaunch must spawn a fresh queued owner run, got %d", tc.state, runs)
+			}
+		})
+	}
+}
+
+// TestWebhookPullUpdateCancelsStaleReviewRuns: a parked review's pending
+// role='review' runs must NOT survive the relaunch — the Claim guard admits
+// ANY role on an active goal, so a stale review run would fire an expired
+// review cycle (spurious gate_decision → deliver pipeline) while the fresh
+// owner run works. Relaunch cancels them inside the relaunch transaction.
+func TestWebhookPullUpdateCancelsStaleReviewRuns(t *testing.T) {
+	ctx, st, goalSvc, _, h := webhookPRHarness(t, "github")
+	opened := []byte(`{"action":"opened","pull_request":{"number":10,"title":"feat/stale","body":"the body","head":{"sha":"aaaa1111aaaa1111"}},"repository":{"full_name":"x/y"}}`)
+	deliver(t, ctx, h, opened)
+	goals, _ := goalSvc.List(ctx)
+	if len(goals) != 1 {
+		t.Fatalf("opened must create the goal: %+v", goals)
+	}
+	// Park the goal in review WITH pending review runs (queued + running) —
+	// the exact state the relaunch must clean up.
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE run SET status='done' WHERE goal_id=?`, goals[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO run (id, goal_id, agent_id, role, status, created_at, queued_at) VALUES
+			('stale-q', ?, 'a1', 'review', 'queued', ?, ?),
+			('stale-r', ?, 'a1', 'review', 'running', ?, ?)`,
+		goals[0].ID, now, now, goals[0].ID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE goal SET status='review', review_request='old evidence' WHERE id=?`, goals[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	sync := []byte(`{"action":"synchronize","pull_request":{"number":10,"title":"feat/stale","body":"the body","head":{"sha":"bbbb2222bbbb2222"}},"repository":{"full_name":"x/y"}}`)
+	deliver(t, ctx, h, sync)
+	var status string
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT status FROM goal WHERE id=?`, goals[0].ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "active" {
+		t.Fatalf("PR update must relaunch the reviewing goal, got %s", status)
+	}
+	var cancelled int
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run WHERE goal_id=? AND role='review' AND status='cancelled' AND cancel_reason='superseded'`, goals[0].ID).Scan(&cancelled); err != nil {
+		t.Fatal(err)
+	}
+	if cancelled != 2 {
+		t.Fatalf("relaunch must cancel both pending review runs as superseded, got %d", cancelled)
+	}
+	var liveStale int
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run WHERE goal_id=? AND role='review' AND status IN ('queued','running')`, goals[0].ID).Scan(&liveStale); err != nil {
+		t.Fatal(err)
+	}
+	if liveStale != 0 {
+		t.Fatalf("no stale review run may survive the relaunch, got %d", liveStale)
+	}
+	var ownerRuns int
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run WHERE goal_id=? AND role='owner' AND status='queued'`, goals[0].ID).Scan(&ownerRuns); err != nil {
+		t.Fatal(err)
+	}
+	if ownerRuns != 1 {
+		t.Fatalf("relaunch must still spawn the fresh owner run, got %d", ownerRuns)
 	}
 }
 

@@ -82,11 +82,17 @@ export default function SquadsPage() {
       {deleteTarget && (
         <ConfirmDialog
           title="确认删除"
-          message="确定要删除此 Squad 吗？"
+          message="确定要删除此 Squad 吗？被 goal/schedule 引用时会被拒绝。"
           onConfirm={() => deleteSquad.mutate(deleteTarget, { onSuccess: () => setDeleteTarget(null) })}
           onClose={() => setDeleteTarget(null)}
           loading={deleteSquad.isPending}
         />
+      )}
+
+      {/* 删除失败必须显示——后端守卫（squad 被 goal/schedule 引用）返回
+          400 coded error，静默等于「点了没反应」。 */}
+      {deleteSquad.isError && (
+        <p className="text-sm text-red-500 mt-3">{String(deleteSquad.error)}</p>
       )}
     </div>
   );

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useGoals, useAgents, useSquads, useDomains, useCreateGoal, useGoalEvents } from "@/lib/queries";
+import { useGoals, useAgents, useSquads, useDomains, useCreateGoal, useCancelGoal, useReopenGoal, useDeleteGoal, useGoalEvents } from "@/lib/queries";
 import { Badge, AttentionChip, ReviewPhaseBadge, Button, PageHeader, Empty, Dialog, Field, inputCls } from "@/components/ui";
 import { GoalStats } from "@/components/goal-stats";
 import type { Goal, GoalStatus } from "@/lib/types";
@@ -37,6 +37,9 @@ export default function GoalsPage() {
   const { data: squads } = useSquads();
   const { data: domains } = useDomains();
   const createGoal = useCreateGoal();
+  const cancelGoal = useCancelGoal();
+  const reopenGoal = useReopenGoal();
+  const deleteGoalMut = useDeleteGoal();
   const [filter, setFilter] = useState<GoalStatus | "all">("all");
   const [showForm, setShowForm] = useState(false);
 
@@ -144,6 +147,42 @@ export default function GoalsPage() {
                   {g.status === "done" && <span className="text-emerald-500 font-medium">✓ 已完成</span>}
                   {g.status === "failed" && <span className="text-red-500 font-medium">✕ 失败</span>}
                 </div>
+                {/* 行内操作：取消 / 重开 / 删除。卡片整体是 Link，
+                    按钮必须 preventDefault + stopPropagation 阻止跳转。
+                    cancel：非终态（backlog/active/review）；reopen：终态
+                    （done/failed/cancelled，人类接管路径）；delete：任意状态
+                    （级联删 run/评论/子目标，confirm 后执行）。 */}
+                <div className="mt-2 flex items-center gap-3 justify-end">
+                  {(g.status === "active" || g.status === "backlog" || g.status === "review") && (
+                    <button
+                      className="text-xs text-zinc-400 hover:text-amber-600 transition-colors disabled:opacity-50"
+                      disabled={cancelGoal.isPending}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); cancelGoal.mutate(g.id); }}
+                    >
+                      取消
+                    </button>
+                  )}
+                  {(g.status === "done" || g.status === "failed" || g.status === "cancelled") && (
+                    <button
+                      className="text-xs text-zinc-400 hover:text-indigo-600 transition-colors disabled:opacity-50"
+                      disabled={reopenGoal.isPending}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); reopenGoal.mutate(g.id); }}
+                    >
+                      重开
+                    </button>
+                  )}
+                  <button
+                    className="text-xs text-zinc-400 hover:text-red-500 transition-colors disabled:opacity-50"
+                    disabled={deleteGoalMut.isPending}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (confirm(`删除 Goal「${g.title}」？级联删除其全部 run/评论/子目标，不可恢复。`)) deleteGoalMut.mutate(g.id);
+                    }}
+                  >
+                    删除
+                  </button>
+                </div>
               </div>
             </Link>
           ))}
@@ -155,6 +194,11 @@ export default function GoalsPage() {
 
       {createGoal.isError && (
         <p className="text-sm text-red-500 mt-2">{String(createGoal.error)}</p>
+      )}
+      {(cancelGoal.isError || reopenGoal.isError || deleteGoalMut.isError) && (
+        <p className="text-sm text-red-500 mt-2">
+          {String(cancelGoal.error ?? reopenGoal.error ?? deleteGoalMut.error)}
+        </p>
       )}
     </div>
   );
