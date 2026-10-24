@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useGoals, useAgents, useSquads, useDomains, useCreateGoal, useCancelGoal, useReopenGoal, useDeleteGoal, useGoalEvents } from "@/lib/queries";
 import { Badge, AttentionChip, ReviewPhaseBadge, Button, PageHeader, Empty, Dialog, Field, inputCls } from "@/components/ui";
 import { GoalStats } from "@/components/goal-stats";
@@ -31,6 +32,15 @@ const STATUS_BAR: Record<string, string> = {
 const initials = (name: string) => (name ? name.slice(0, 1).toUpperCase() : "?");
 
 export default function GoalsPage() {
+  // useSearchParams 要求 Suspense 边界，否则静态渲染时 CSR bailout 会让构建失败。
+  return (
+    <Suspense fallback={<div className="p-8 text-sm text-zinc-400">加载中…</div>}>
+      <GoalsPageInner />
+    </Suspense>
+  );
+}
+
+function GoalsPageInner() {
   useGoalEvents();
   const { data: goals, isLoading } = useGoals();
   const { data: agents } = useAgents();
@@ -40,7 +50,16 @@ export default function GoalsPage() {
   const cancelGoal = useCancelGoal();
   const reopenGoal = useReopenGoal();
   const deleteGoalMut = useDeleteGoal();
-  const [filter, setFilter] = useState<GoalStatus | "all">("all");
+  // 筛选状态放 URL（?status=review）：点卡片进详情再「返回列表」不丢筛选，
+  // 刷新/分享链接也能还原。无效值回退「全部」。
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const statusParam = searchParams.get("status");
+  const filter = (
+    STATUS_TABS.some((t) => t.value === statusParam) ? statusParam : "all"
+  ) as GoalStatus | "all";
+  const setFilter = (v: GoalStatus | "all") =>
+    router.replace(v === "all" ? "/goals" : `/goals?status=${v}`, { scroll: false });
   const [showForm, setShowForm] = useState(false);
 
   const agentName = (aid: string) => agents?.find((a) => a.id === aid)?.name ?? aid;
@@ -100,7 +119,7 @@ export default function GoalsPage() {
           {filtered.map((g: Goal) => (
             <Link
               key={g.id}
-              href={`/goals/${g.id}`}
+              href={`/goals/${g.id}${filter === "all" ? "" : `?status=${filter}`}`}
               className="group relative flex bg-white rounded-2xl border border-zinc-200/80 shadow-sm overflow-hidden hover:shadow-lg hover:shadow-indigo-500/5 hover:-translate-y-0.5 hover:border-indigo-200 transition-all duration-200"
             >
               {/* 状态在左侧：竖向渐变条（一眼可扫） */}

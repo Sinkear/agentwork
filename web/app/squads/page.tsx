@@ -122,6 +122,8 @@ function NewSquadForm({
     if (!next.includes(reviewerId)) setReviewerId("");
   };
 
+  const [memberFailures, setMemberFailures] = useState<string[]>([]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     createSquad.mutate(
@@ -129,20 +131,25 @@ function NewSquadForm({
       {
         onSuccess: (sq) => {
           const rest = members.filter((m) => m !== leaderId);
+          const failures: string[] = [];
           const enqueue = (i: number) => {
             if (i >= rest.length) {
-              onClose();
+              // 全部成员入队完毕：有失败留在弹窗里展示，全成功才关。
+              if (failures.length > 0) setMemberFailures(failures);
+              else onClose();
               return;
             }
             const m = rest[i];
+            const mname = agents?.find((a) => a.id === m)?.name ?? m;
             addMember.mutate(
               { squadId: sq.id, member_type: "agent", member_id: m, role: m === reviewerId ? "reviewer" : "member" },
-              { onSuccess: () => enqueue(i + 1), onError: () => enqueue(i + 1) }
+              { onSuccess: () => enqueue(i + 1), onError: () => { failures.push(mname); enqueue(i + 1); } }
             );
           };
           enqueue(0);
         },
-        onError: () => onClose(),
+        // 创建失败：弹窗保持打开，错误已在表单内展示（createSquad.isError）。
+        // 原来这里 onClose() 会把错误信息和已填的表单一起吞掉。
       }
     );
   };
@@ -198,6 +205,11 @@ function NewSquadForm({
         </Field>
         {createSquad.isError && (
           <p className="text-sm text-red-500">{String(createSquad.error)}</p>
+        )}
+        {memberFailures.length > 0 && (
+          <p className="text-sm text-amber-600">
+            Squad 已创建，但以下成员加入失败：{memberFailures.join("、")}。可稍后在 Squad 详情页手动添加。
+          </p>
         )}
       </form>
     </Dialog>

@@ -306,7 +306,7 @@ function ReviewPanel({ goal }: { goal: Goal }) {
           </div>
         </form>
       )}
-      {resolve.isError && <p className="text-sm text-red-500">{String(resolve.error)}</p>}
+      {/* resolve.isError 已在上面以「✗ 决策未生效」展示——这里不再重复渲染。 */}
       </div>
     </div>
   );

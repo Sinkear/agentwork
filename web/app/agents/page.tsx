@@ -171,6 +171,10 @@ export default function AgentsPage() {
           {del.isError && (
             <p className="text-sm text-red-500 mt-3">{String(del.error)}</p>
           )}
+          {/* 固定/取消固定失败同样要显示（侧栏按钮无任何反馈路径）。 */}
+          {toggle.isError && (
+            <p className="text-sm text-red-500 mt-3">{String(toggle.error)}</p>
+          )}
         </div>
       </div>
 
