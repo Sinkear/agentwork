@@ -6,6 +6,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useGoals, useAgents, useSquads, useDomains, useCreateGoal, useCancelGoal, useReopenGoal, useDeleteGoal, useGoalEvents } from "@/lib/queries";
 import { Badge, AttentionChip, ReviewPhaseBadge, Button, PageHeader, Empty, Dialog, Field, inputCls } from "@/components/ui";
 import { GoalStats } from "@/components/goal-stats";
+import { GoalBatchBar, GoalSelectCheckbox, CheckIcon } from "@/components/goal-batch-bar";
+import { cn } from "@/lib/utils";
 import type { Goal, GoalStatus } from "@/lib/types";
 
 const STATUS_TABS: { label: string; value: GoalStatus | "all" }[] = [
@@ -67,6 +69,34 @@ function GoalsPageInner() {
 
   const filtered = goals?.filter((g) => filter === "all" || g.status === filter) ?? [];
 
+  // 多选批量操作（决策 7-6）：Set<goal id>，跨 tab 切换持久（Gmail 式），
+  // 底部浮动批量条对选中项批量执行。batchBusy = 批量执行中（格子禁点）。
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchBusyId, setBatchBusyId] = useState<string | null>(null);
+  const batchBusy = batchBusyId !== null;
+  const toggleSelect = (id: string) => {
+    if (batchBusy) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const allFilteredSelected = filtered.length > 0 && filtered.every((g) => selected.has(g.id));
+  const selectAllFiltered = () => {
+    if (batchBusy) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        for (const g of filtered) next.delete(g.id);
+      } else {
+        for (const g of filtered) next.add(g.id);
+      }
+      return next;
+    });
+  };
+
   return (
     <div className="p-8 page-enter">
       <PageHeader
@@ -79,32 +109,52 @@ function GoalsPageInner() {
       {/* Stats cards */}
       <GoalStats goals={goals} loading={isLoading} />
 
-      {/* Status filter tabs */}
-      <div className="flex gap-1 mb-4 flex-wrap">
-        {STATUS_TABS.map((tab) => {
-          const active = filter === tab.value;
-          const count = tab.value === "all"
-            ? goals?.length ?? 0
-            : goals?.filter((g) => g.status === tab.value).length ?? 0;
-          return (
-            <button
-              key={tab.value}
-              onClick={() => setFilter(tab.value)}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                active
-                  ? "bg-zinc-900 text-white"
-                  : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
-              }`}
-            >
-              {tab.label}
-              {count > 0 && (
-                <span className={`ml-1.5 ${active ? "text-zinc-300" : "text-zinc-400"}`}>
-                  {count}
-                </span>
+      {/* Status filter tabs + 全选（作用于当前筛选，配合多选批量条） */}
+      <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+        <div className="flex gap-1 flex-wrap">
+          {STATUS_TABS.map((tab) => {
+            const active = filter === tab.value;
+            const count = tab.value === "all"
+              ? goals?.length ?? 0
+              : goals?.filter((g) => g.status === tab.value).length ?? 0;
+            return (
+              <button
+                key={tab.value}
+                onClick={() => setFilter(tab.value)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  active
+                    ? "bg-zinc-900 text-white"
+                    : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                }`}
+              >
+                {tab.label}
+                {count > 0 && (
+                  <span className={`ml-1.5 ${active ? "text-zinc-300" : "text-zinc-400"}`}>
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {filtered.length > 0 && (
+          <button
+            type="button"
+            disabled={batchBusy}
+            onClick={selectAllFiltered}
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-medium text-zinc-500 hover:text-indigo-700 hover:bg-indigo-50/60 transition-colors disabled:opacity-50 disabled:hover:text-zinc-500 disabled:hover:bg-transparent"
+          >
+            <span
+              className={cn(
+                "h-4 w-4 rounded border flex items-center justify-center transition-colors",
+                allFilteredSelected ? "bg-indigo-500 border-indigo-500 text-white" : "bg-white border-zinc-300"
               )}
-            </button>
-          );
-        })}
+            >
+              {allFilteredSelected && <CheckIcon className="h-2.5 w-2.5" />}
+            </span>
+            {allFilteredSelected ? "取消全选" : "全选"}
+          </button>
+        )}
       </div>
 
       {/* Goals — 卡片：状态色条 + 谁在干 + 元信息（不是表格的伪卡片） */}
@@ -115,20 +165,32 @@ function GoalsPageInner() {
           {filter === "all" ? "暂无 Goal，点击「+ 新建」创建第一个。" : "没有符合条件的 Goal。"}
         </Empty>
       ) : (
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className={cn("grid gap-3 md:grid-cols-2", batchBusy && "pointer-events-none")}>
           {filtered.map((g: Goal) => (
             <Link
               key={g.id}
               href={`/goals/${g.id}${filter === "all" ? "" : `?status=${filter}`}`}
-              className="group relative flex bg-white rounded-2xl border border-zinc-200/80 shadow-sm overflow-hidden hover:shadow-lg hover:shadow-indigo-500/5 hover:-translate-y-0.5 hover:border-indigo-200 transition-all duration-200"
+              className={cn(
+                "group relative flex bg-white rounded-2xl border border-zinc-200/80 shadow-sm overflow-hidden hover:shadow-lg hover:shadow-indigo-500/5 hover:-translate-y-0.5 hover:border-indigo-200 transition-all duration-200",
+                selected.has(g.id) && "border-indigo-300 bg-indigo-50/30",
+                batchBusyId === g.id && "ring-2 ring-indigo-400 border-indigo-300",
+                batchBusy && batchBusyId !== g.id && "opacity-60"
+              )}
             >
               {/* 状态在左侧：竖向渐变条（一眼可扫） */}
               <div className={`w-1.5 shrink-0 bg-gradient-to-b ${STATUS_BAR[g.status] ?? "from-zinc-300 to-zinc-400"}`} />
               <div className="p-4 flex-1 min-w-0">
                 <div className="flex items-start justify-between gap-3">
-                  <h3 className="font-medium text-zinc-900 group-hover:text-indigo-700 transition-colors">
-                    {g.title}
-                  </h3>
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <GoalSelectCheckbox
+                      checked={selected.has(g.id)}
+                      disabled={batchBusy}
+                      onToggle={() => toggleSelect(g.id)}
+                    />
+                    <h3 className="font-medium text-zinc-900 group-hover:text-indigo-700 transition-colors min-w-0">
+                      {g.title}
+                    </h3>
+                  </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <AttentionChip attention={g.attention} />
                     {g.status === "review" ? (
@@ -219,6 +281,15 @@ function GoalsPageInner() {
           {String(cancelGoal.error ?? reopenGoal.error ?? deleteGoalMut.error)}
         </p>
       )}
+
+      {/* 多选批量操作条（决策 7-6）：选中项 > 0 时出现，浮动底部 */}
+      <GoalBatchBar
+        goals={goals ?? []}
+        selected={selected}
+        onClear={() => setSelected(new Set())}
+        onSelectionChange={setSelected}
+        onBusyChange={setBatchBusyId}
+      />
     </div>
   );
 }
