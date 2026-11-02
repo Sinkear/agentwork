@@ -6,6 +6,10 @@ import type { NextConfig } from "next";
 // upgrade；若部署形态不支持，则在反代层加一条 /ws → 127.0.0.1:7373/ws
 // （需 Upgrade/Connection 头透传）。
 const nextConfig: NextConfig = {
+  output: "standalone",
+  // 锁定 standalone 产物根目录：不设的话 Turbopack 会按仓库路径嵌套
+  // （.next/standalone/<user>/<path>/web/...），打包脚本没法用固定路径取产物。
+  turbopack: { root: __dirname },
   async rewrites() {
     return [
       { source: "/ws", destination: "http://localhost:7373/ws" },
