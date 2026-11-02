@@ -1,35 +1,114 @@
 @import "tailwindcss";
 
-:root {
-  --background: #f7f7f8;
-  --foreground: #18181b;
-  --border: #e4e4e7;
+/* ══════════════════════════════════════════════════════════════
+   agentwork — Terminal Studio theme (dark IDE)
+
+   Design tokens: the single source of truth. Components use
+   semantic classes (bg-surface-1, text-ink-2, border-line) instead
+   of raw palette values, so the theme can be retuned in one file.
+
+   Accent policy: ONE accent (run-green). Green means "alive /
+   actionable" — active nav, running state, primary action, focus.
+   Everything else is neutral slate.
+   ══════════════════════════════════════════════════════════════ */
+
+@theme {
+  /* ── Surfaces (dark → light, bottom of the stack first) ── */
+  --color-surface-0: #0b1220; /* page background */
+  --color-surface-1: #101a2e; /* panels / cards */
+  --color-surface-2: #16223a; /* raised fill, hover, inputs */
+  --color-surface-3: #1d2b47; /* active / hover-strong */
+
+  /* ── Ink (light text on dark, primary → muted) ── */
+  --color-ink: #e8edf6;
+  --color-ink-2: #9fb0cc;
+  --color-ink-3: #64748b;
+
+  /* ── Lines ── */
+  --color-line: #1e2a44;
+  --color-line-strong: #2a3a5c;
+
+  /* ── Accent: run-green, used sparingly ── */
+  --color-accent: #22c55e; /* on it: accent-ink text */
+  --color-accent-dim: #16a34a;
+  --color-accent-ink: #052e16;
+  --color-accent-soft: rgba(34, 197, 94, 0.12); /* tint bg */
+
+  /* ── Status (dark-tuned; dots use the 400/500 stops directly) ── */
+  --color-ok: #34d399;
+  --color-warn: #fbbf24;
+  --color-err: #f87171;
+  --color-info: #7dd3fc;
+  --color-review: #c4b5fd;
+
+  /* ── Motion tokens ── */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fast: 150ms;
+  --duration-enter: 250ms;
 }
 
+/* Fonts resolve at runtime from next/font variables on <html>. */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-plex-sans), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
 }
 
-/* Light, consistent UI — no auto dark-mode flip. */
 html {
-  color-scheme: light;
+  color-scheme: dark;
 }
 
-/* 页面背景：zinc 底 + 顶部一道 indigo 光晕，平铺感换成有呼吸的层次。 */
 body {
-  background:
-    radial-gradient(1100px 380px at 18% -12%, rgba(99, 102, 241, 0.09), transparent 65%),
-    radial-gradient(900px 320px at 88% -8%, rgba(168, 85, 247, 0.07), transparent 60%),
-    var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  /* Flat terminal background — no glow, no gradient. */
+  background: var(--color-surface-0);
+  color: var(--color-ink);
+  font-family: var(--font-plex-sans), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* 页面进入：轻微上浮淡入，不夸张但去除"啪一下出现"的生硬。 */
+/* Restore Tailwind v3 default border color so bare `border` = line,
+   not currentColor (v4 breaking change). */
+@layer base {
+  *,
+  ::after,
+  ::before {
+    border-color: var(--color-line);
+  }
+
+  /* Form controls: dark fill, visible line, green focus. */
+  input,
+  textarea,
+  select {
+    background-color: var(--color-surface-2);
+    color: var(--color-ink);
+    border-color: var(--color-line-strong);
+  }
+  input:focus,
+  textarea:focus,
+  select:focus {
+    outline: none;
+    border-color: var(--color-accent-dim);
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-ink-3);
+  }
+
+  /* Keyboard focus visible on interactive elements (not form fields,
+     which have their own focus treatment above). */
+  a:focus-visible,
+  button:focus-visible,
+  [role="button"]:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+/* ══════════ Motion ══════════ */
+
+/* Page enter: slight rise + fade, one tier only. */
 @keyframes fade-rise {
   from {
     opacity: 0;
@@ -41,35 +120,69 @@ body {
   }
 }
 .page-enter {
-  animation: fade-rise 0.25s ease-out;
+  animation: fade-rise var(--duration-enter) var(--ease-out-soft);
 }
 
-/* Restore Tailwind v3 default border color so bare `border` = zinc-200,
-   not currentColor (v4 breaking change). */
-@layer base {
-  *,
-  ::after,
-  ::before {
-    border-color: var(--border);
+/* List stagger: put .list-enter on a container of siblings.
+   Children rise in sequence — no JS needed. */
+@keyframes list-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
   }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.list-enter > * {
+  animation: list-rise 0.3s var(--ease-out-soft) both;
+}
+.list-enter > *:nth-child(1) { animation-delay: 0ms; }
+.list-enter > *:nth-child(2) { animation-delay: 30ms; }
+.list-enter > *:nth-child(3) { animation-delay: 60ms; }
+.list-enter > *:nth-child(4) { animation-delay: 90ms; }
+.list-enter > *:nth-child(5) { animation-delay: 120ms; }
+.list-enter > *:nth-child(6) { animation-delay: 150ms; }
+.list-enter > *:nth-child(7) { animation-delay: 180ms; }
+.list-enter > *:nth-child(8) { animation-delay: 210ms; }
+.list-enter > *:nth-child(9) { animation-delay: 240ms; }
+.list-enter > *:nth-child(10) { animation-delay: 270ms; }
+.list-enter > *:nth-child(n + 11) { animation-delay: 300ms; }
 
-  /* Form controls: always dark text on white, visible border, focus ring. */
-  input,
-  textarea,
-  select {
-    background-color: #fff;
-    color: #18181b;
-    border-color: #d4d4d8;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
-  input:focus,
-  textarea:focus,
-  select:focus {
-    outline: none;
-    border-color: #6366f1;
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.14);
-  }
-  input::placeholder,
-  textarea::placeholder {
-    color: #a1a1aa;
-  }
+}
+
+/* ══════════ Scrollbars (thin IDE style) ══════════ */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #35496f;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Selection: green tint instead of browser default. */
+::selection {
+  background: rgba(34, 197, 94, 0.25);
+  color: var(--color-ink);
 }

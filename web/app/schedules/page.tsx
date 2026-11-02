@@ -34,14 +34,14 @@ export default function SchedulesPage() {
       />
 
       {isLoading ? (
-        <div className="text-sm text-zinc-400 py-16 text-center">加载中…</div>
+        <div className="text-sm text-ink-3 py-16 text-center">加载中…</div>
       ) : !schedules || schedules.length === 0 ? (
         <Empty>暂无定时任务。点「+ 新建」创建一个。</Empty>
       ) : (
-        <div className="bg-white rounded-xl border border-zinc-200 overflow-x-auto">
+        <div className="bg-surface-1 rounded-xl border border-line overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-zinc-100 bg-zinc-50/50 text-left text-xs font-medium text-zinc-500 uppercase tracking-wide">
+              <tr className="border-b border-line bg-surface-0/50 text-left text-xs font-medium text-ink-3 uppercase tracking-wide">
                 <th className="px-4 py-3">名称</th>
                 <th className="px-4 py-3">Cron</th>
                 <th className="px-4 py-3">负责人</th>
@@ -54,25 +54,25 @@ export default function SchedulesPage() {
             </thead>
             <tbody>
               {schedules.map((s: Schedule) => (
-                <tr key={s.id} className="border-b border-zinc-50 last:border-0 hover:bg-zinc-50/60">
+                <tr key={s.id} className="border-b border-line last:border-0 hover:bg-surface-0/60">
                   <td className="px-4 py-3">
                     <button
                       onClick={() => setDetail(s)}
-                      className="font-medium text-zinc-900 hover:text-indigo-700 hover:underline transition-colors text-left"
+                      className="font-medium text-ink hover:text-accent hover:underline transition-colors text-left"
                     >
                       {s.name}
                     </button>
                   </td>
                   <td className="px-4 py-3">
-                    <code className="text-xs bg-zinc-100 px-1.5 py-0.5 rounded text-zinc-700">{s.cron_expression}</code>
+                    <code className="text-xs bg-surface-2 px-1.5 py-0.5 rounded text-ink-2">{s.cron_expression}</code>
                   </td>
-                  <td className="px-4 py-3 text-zinc-600">{assigneeLabel(s)}</td>
-                  <td className="px-4 py-3 text-zinc-600">{domainName(s.domain_id)}</td>
-                  <td className="px-4 py-3 text-zinc-500">{s.timezone || "UTC"}</td>
-                  <td className="px-4 py-3 text-zinc-400 text-xs">
+                  <td className="px-4 py-3 text-ink-2">{assigneeLabel(s)}</td>
+                  <td className="px-4 py-3 text-ink-2">{domainName(s.domain_id)}</td>
+                  <td className="px-4 py-3 text-ink-3">{s.timezone || "UTC"}</td>
+                  <td className="px-4 py-3 text-ink-3 text-xs">
                     {s.next_run_at ? new Date(s.next_run_at).toLocaleString("zh-CN") : "-"}
                   </td>
-                  <td className="px-4 py-3 text-zinc-400 text-xs">
+                  <td className="px-4 py-3 text-ink-3 text-xs">
                     {new Date(s.created_at).toLocaleString("zh-CN")}
                   </td>
                   <td className="px-4 py-3 text-right space-x-3">
@@ -80,14 +80,14 @@ export default function SchedulesPage() {
                       onClick={() => setEnabled.mutate({ id: s.id, enabled: !s.enabled })}
                       disabled={setEnabled.isPending && setEnabled.variables?.id === s.id}
                       className={`text-xs transition-colors disabled:opacity-50 ${
-                        s.enabled ? "text-emerald-600 hover:text-emerald-700" : "text-zinc-400 hover:text-zinc-600"
+                        s.enabled ? "text-emerald-400 hover:text-emerald-300" : "text-ink-3 hover:text-ink-2"
                       }`}
                     >
                       {s.enabled ? "启用中" : "已停用"}
                     </button>
                     <button
                       onClick={() => setDeleteTarget(s.id)}
-                      className="text-xs text-zinc-400 hover:text-red-600 transition-colors"
+                      className="text-xs text-ink-3 hover:text-red-400 transition-colors"
                     >
                       删除
                     </button>
@@ -131,7 +131,7 @@ export default function SchedulesPage() {
 
       {/* 启停/删除失败必须显示——静默等于「点了没反应」。 */}
       {(setEnabled.isError || deleteSchedule.isError) && (
-        <p className="text-sm text-red-500 mt-3">
+        <p className="text-sm text-red-400 mt-3">
           {String(setEnabled.error ?? deleteSchedule.error)}
         </p>
       )}
@@ -174,42 +174,42 @@ function ScheduleDetail({
     >
       <div className="space-y-3">
         {/* Template config */}
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm text-zinc-600">
-          <span><span className="text-zinc-400 text-xs">Cron：</span><code className="text-xs bg-zinc-100 px-1.5 py-0.5 rounded">{schedule.cron_expression}</code>（{schedule.timezone || "UTC"}）</span>
-          <span><span className="text-zinc-400 text-xs">负责人：</span>{assigneeLabel}</span>
-          <span><span className="text-zinc-400 text-xs">项目：</span>{domainName(schedule.domain_id)}</span>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm text-ink-2">
+          <span><span className="text-ink-3 text-xs">Cron：</span><code className="text-xs bg-surface-2 px-1.5 py-0.5 rounded">{schedule.cron_expression}</code>（{schedule.timezone || "UTC"}）</span>
+          <span><span className="text-ink-3 text-xs">负责人：</span>{assigneeLabel}</span>
+          <span><span className="text-ink-3 text-xs">项目：</span>{domainName(schedule.domain_id)}</span>
           <span>
-            <span className="text-zinc-400 text-xs">状态：</span>
+            <span className="text-ink-3 text-xs">状态：</span>
             <Badge status={schedule.enabled ? "running" : "cancelled"} className="scale-90" />
           </span>
-          <span><span className="text-zinc-400 text-xs">下次触发：</span>{schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString("zh-CN") : "-"}</span>
-          <span><span className="text-zinc-400 text-xs">上次触发：</span>{schedule.last_run_at ? new Date(schedule.last_run_at).toLocaleString("zh-CN") : "从未"}</span>
+          <span><span className="text-ink-3 text-xs">下次触发：</span>{schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString("zh-CN") : "-"}</span>
+          <span><span className="text-ink-3 text-xs">上次触发：</span>{schedule.last_run_at ? new Date(schedule.last_run_at).toLocaleString("zh-CN") : "从未"}</span>
         </div>
         {schedule.title_template && (
-          <p className="text-xs text-zinc-500">
-            <span className="text-zinc-400">标题模板：</span>{schedule.title_template}
+          <p className="text-xs text-ink-3">
+            <span className="text-ink-3">标题模板：</span>{schedule.title_template}
           </p>
         )}
 
         {/* Firing history */}
-        <div className="border-t border-zinc-100 pt-2">
-          <p className="text-xs font-medium text-zinc-500 uppercase tracking-wide mb-2">
+        <div className="border-t border-line pt-2">
+          <p className="text-xs font-medium text-ink-3 uppercase tracking-wide mb-2">
             触发历史{runs && runs.length > 0 && `（${runs.length}）`}
           </p>
           {isLoading ? (
-            <p className="text-xs text-zinc-400 py-3">加载中…</p>
+            <p className="text-xs text-ink-3 py-3">加载中…</p>
           ) : !runs || runs.length === 0 ? (
-            <p className="text-xs text-zinc-400 py-3">还没有触发过。</p>
+            <p className="text-xs text-ink-3 py-3">还没有触发过。</p>
           ) : (
             <ul className="space-y-1 max-h-64 overflow-y-auto">
               {runs.map((r) => (
                 <li key={r.id} className="flex items-center gap-2 text-xs">
-                  <span className="text-zinc-400 shrink-0">{new Date(r.planned_at).toLocaleString("zh-CN")}</span>
+                  <span className="text-ink-3 shrink-0">{new Date(r.planned_at).toLocaleString("zh-CN")}</span>
                   <Badge status={r.goal_status || "cancelled"} className="scale-90 shrink-0" />
                   <Link
                     href={`/goals/${r.goal_id}`}
                     onClick={onClose}
-                    className="text-zinc-700 hover:text-indigo-700 hover:underline truncate"
+                    className="text-ink-2 hover:text-accent hover:underline truncate"
                   >
                     {r.goal_title || r.goal_id.slice(0, 8)}
                   </Link>
@@ -344,7 +344,7 @@ function NewScheduleForm({
       <form id="schedule-form" onSubmit={handleSubmit} className="space-y-4">
         <ScheduleFormFields form={form} set={set} agents={agents} squads={squads} domains={domains} />
         {createSchedule.isError && (
-          <p className="text-sm text-red-500">{String(createSchedule.error)}</p>
+          <p className="text-sm text-red-400">{String(createSchedule.error)}</p>
         )}
       </form>
     </Dialog>
@@ -404,12 +404,12 @@ function EditScheduleDialog({
       <form id="schedule-edit-form" onSubmit={handleSubmit} className="space-y-4">
         <ScheduleFormFields form={form} set={set} agents={agents} squads={squads} domains={domains} />
         {(assigneeChanged || domainChanged) && (
-          <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+          <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
             改动负责人或项目仅影响<strong>后续触发</strong>，已派生的 goal 保持原值不变。
           </p>
         )}
         {updateSchedule.isError && (
-          <p className="text-sm text-red-500">{String(updateSchedule.error)}</p>
+          <p className="text-sm text-red-400">{String(updateSchedule.error)}</p>
         )}
       </form>
     </Dialog>

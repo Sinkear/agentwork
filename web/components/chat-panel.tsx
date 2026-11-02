@@ -182,22 +182,22 @@ export function ChatPanel({ agentId, agentName, onClose }: { agentId: string; ag
       footer={<Button variant="outline" onClick={onClose}>关闭</Button>}
     >
       <div className="flex flex-col h-[480px]">
-        {error && <p className="text-xs text-red-500 mb-2">{error}</p>}
-        {phase === "connecting" && <p className="text-sm text-zinc-400">连接中…</p>}
+        {error && <p className="text-xs text-red-400 mb-2">{error}</p>}
+        {phase === "connecting" && <p className="text-sm text-ink-3">连接中…</p>}
 
         {phase === "pick" && (
           <div className="flex-1 overflow-y-auto space-y-2">
             <Button onClick={newSession} disabled={busy}>＋ 新建会话</Button>
-            {sessions.length > 0 && <p className="text-xs text-zinc-400 pt-2">历史会话（agent CLI 的会话存储，刷新不丢）：</p>}
+            {sessions.length > 0 && <p className="text-xs text-ink-3 pt-2">历史会话（agent CLI 的会话存储，刷新不丢）：</p>}
             {sessions.map((s) => (
               <button
                 key={s.sessionId}
                 onClick={() => openSession(s)}
                 disabled={busy}
-                className="block w-full text-left px-3 py-2 rounded-lg border border-zinc-200 hover:border-indigo-300 text-sm disabled:opacity-50"
+                className="block w-full text-left px-3 py-2 rounded-lg border border-line hover:border-accent/50 text-sm disabled:opacity-50"
               >
-                <span className="font-medium text-zinc-800">{s.title || s.sessionId.slice(0, 12)}</span>
-                <span className="ml-2 text-xs text-zinc-400">{s.updatedAt ? new Date(s.updatedAt).toLocaleString() : ""}</span>
+                <span className="font-medium text-ink">{s.title || s.sessionId.slice(0, 12)}</span>
+                <span className="ml-2 text-xs text-ink-3">{s.updatedAt ? new Date(s.updatedAt).toLocaleString() : ""}</span>
               </button>
             ))}
           </div>
@@ -205,7 +205,7 @@ export function ChatPanel({ agentId, agentName, onClose }: { agentId: string; ag
 
         {phase === "chat" && (
           <>
-            <div className="flex-1 overflow-y-auto space-y-2 rounded-lg bg-zinc-50 border border-zinc-200 p-3">
+            <div className="flex-1 overflow-y-auto space-y-2 rounded-lg bg-surface-0 border border-line p-3">
               {messages.map((m) => {
                 // User + agent text stay as chat bubbles (the conversational
                 // surface). Thought + tool render as collapsible StreamCards
@@ -239,8 +239,8 @@ export function ChatPanel({ agentId, agentName, onClose }: { agentId: string; ag
                     <span
                       className={`inline-block max-w-[85%] px-3 py-1.5 rounded-xl text-sm whitespace-pre-wrap break-words ${
                         m.kind === "user"
-                          ? "bg-indigo-600 text-white"
-                          : "bg-white border border-zinc-200 text-zinc-800"
+                          ? "bg-accent text-accent-ink"
+                          : "bg-surface-1 border border-line text-ink"
                       }`}
                     >
                       {m.text}
@@ -250,13 +250,13 @@ export function ChatPanel({ agentId, agentName, onClose }: { agentId: string; ag
               })}
               {busy && (
                 <div className="flex items-center gap-3">
-                  <p className="text-xs text-zinc-400">agent 思考中…</p>
+                  <p className="text-xs text-ink-3">agent 思考中…</p>
                   <button
                     onClick={() => {
                       const client = clientRef.current;
                       if (client && current) client.cancel(current);
                     }}
-                    className="text-xs text-red-500 hover:text-red-700"
+                    className="text-xs text-red-400 hover:text-red-300"
                   >
                     停止
                   </button>
@@ -279,9 +279,9 @@ export function ChatPanel({ agentId, agentName, onClose }: { agentId: string; ag
 
       {perm && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl border border-zinc-200 p-4 w-96 shadow-lg">
-            <p className="text-sm font-medium text-zinc-800">agent 请求权限</p>
-            <p className="mt-1 text-xs text-zinc-500">
+          <div className="bg-surface-1 rounded-xl border border-line p-4 w-96 shadow-lg">
+            <p className="text-sm font-medium text-ink">agent 请求权限</p>
+            <p className="mt-1 text-xs text-ink-3">
               {perm.req.toolCall?.title || "tool"}（{perm.req.toolCall?.kind || "unknown"}）
             </p>
             <div className="mt-3 flex gap-2 justify-end">

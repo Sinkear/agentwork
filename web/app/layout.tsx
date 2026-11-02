@@ -1,18 +1,19 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { IBM_Plex_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 import { Nav } from "@/components/nav";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ChatAssistant } from "@/components/chat-assistant";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const plexSans = IBM_Plex_Sans({
+  variable: "--font-plex-sans",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const jetbrainsMono = JetBrains_Mono({
+  variable: "--font-jetbrains-mono",
   subsets: ["latin"],
 });
 
@@ -29,9 +30,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${plexSans.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-row bg-zinc-50">
+      <body className="min-h-full flex flex-row bg-surface-0">
         <Providers>
           <Nav />
           <main className="flex-1 overflow-auto">

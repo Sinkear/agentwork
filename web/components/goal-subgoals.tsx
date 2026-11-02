@@ -7,13 +7,13 @@ import { Button, Dialog, Field, inputCls, Empty } from "@/components/ui";
 import type { SubGoal, VerificationResult } from "@/lib/types";
 
 const SUBGOAL_STATUS_COLORS: Record<string, string> = {
-  running: "bg-blue-50 text-blue-700 dot-blue",
-  verifying: "bg-amber-50 text-amber-700 dot-amber",
-  verified: "bg-emerald-50 text-emerald-700 dot-emerald",
-  rejected: "bg-orange-50 text-orange-700 dot-amber",
-  cancelled: "bg-zinc-100 text-zinc-400 dot-zinc",
-  failed: "bg-red-50 text-red-700 dot-red",
-  done: "bg-emerald-50 text-emerald-700 dot-emerald",
+  running: "bg-blue-500/10 text-blue-300 dot-blue",
+  verifying: "bg-amber-500/10 text-amber-300 dot-amber",
+  verified: "bg-emerald-500/10 text-emerald-300 dot-emerald",
+  rejected: "bg-orange-500/10 text-orange-300 dot-amber",
+  cancelled: "bg-surface-2 text-ink-3 dot-zinc",
+  failed: "bg-red-500/10 text-red-300 dot-red",
+  done: "bg-emerald-500/10 text-emerald-300 dot-emerald",
 };
 
 const SUBGOAL_STATUS_LABEL: Record<string, string> = {
@@ -28,7 +28,7 @@ const SUBGOAL_STATUS_LABEL: Record<string, string> = {
 
 // SubGoalStatus renders the sub-goal's lightweight lifecycle state.
 function SubGoalStatus({ status }: { status: string }) {
-  const colors = SUBGOAL_STATUS_COLORS[status] ?? "bg-zinc-100 text-zinc-600 dot-zinc";
+  const colors = SUBGOAL_STATUS_COLORS[status] ?? "bg-surface-2 text-ink-2 dot-zinc";
   return (
     <span
       className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-medium rounded-full ${colors.replace(/ dot-\S+/, "")}`}
@@ -43,32 +43,32 @@ function SubGoalStatus({ status }: { status: string }) {
 // machine checks or an agent verifier's structured verdict, newest first.
 function Verifications({ goalId, subGoalId }: { goalId: string; subGoalId: string }) {
   const { data: verifications, isLoading } = useSubGoalVerifications(goalId, subGoalId);
-  if (isLoading) return <p className="text-xs text-zinc-400 px-3 pb-3">验证记录加载中…</p>;
+  if (isLoading) return <p className="text-xs text-ink-3 px-3 pb-3">验证记录加载中…</p>;
   if (!verifications || verifications.length === 0) {
-    return <p className="text-xs text-zinc-400 px-3 pb-3">暂无验证记录。</p>;
+    return <p className="text-xs text-ink-3 px-3 pb-3">暂无验证记录。</p>;
   }
   return (
-    <div className="px-3 pb-3 pt-1 space-y-2 border-t border-zinc-100">
+    <div className="px-3 pb-3 pt-1 space-y-2 border-t border-line">
       {verifications.map((v: VerificationResult) => (
         <div key={v.id} className="text-xs">
           <div className="flex items-center gap-2">
             <span
               className={`px-1.5 py-px rounded-full text-[10px] font-medium ${
-                v.status === "passed" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+                v.status === "passed" ? "bg-emerald-500/10 text-emerald-300" : "bg-red-500/10 text-red-300"
               }`}
             >
               {v.status === "passed" ? "通过" : "驳回"}
             </span>
-            <span className="text-zinc-400">
+            <span className="text-ink-3">
               {v.verifier_run_id ? "agent 验证" : "机器验证"} ·{" "}
               {new Date(v.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
             </span>
           </div>
-          {v.summary && <p className="mt-1 text-zinc-600 whitespace-pre-wrap">{v.summary}</p>}
+          {v.summary && <p className="mt-1 text-ink-2 whitespace-pre-wrap">{v.summary}</p>}
           {v.evidence && (
             <details className="mt-1">
-              <summary className="text-zinc-400 cursor-pointer hover:text-zinc-600">证据</summary>
-              <p className="mt-1 text-zinc-500 whitespace-pre-wrap">{v.evidence}</p>
+              <summary className="text-ink-3 cursor-pointer hover:text-ink-2">证据</summary>
+              <p className="mt-1 text-ink-3 whitespace-pre-wrap">{v.evidence}</p>
             </details>
           )}
         </div>
@@ -99,9 +99,9 @@ export function GoalSubGoals({ goalId }: { goalId: string }) {
   const agentName = (id: string) => agents?.find((a) => a.id === id)?.name ?? id.slice(0, 8);
 
   return (
-    <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-zinc-100 flex items-center justify-between">
-        <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">
+    <div className="bg-surface-1 rounded-xl border border-line overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-line flex items-center justify-between">
+        <span className="text-xs font-medium text-ink-3 uppercase tracking-wide">
           子任务{subGoals && subGoals.length > 0 && `（${subGoals.length}）`}
         </span>
         <Button variant="outline" onClick={() => setShowForm(true)}>+ 拆子任务</Button>
@@ -114,28 +114,28 @@ export function GoalSubGoals({ goalId }: { goalId: string }) {
             {subGoals.map((sg: SubGoal) => {
               const expanded = expandedId === sg.id;
               return (
-                <li key={sg.id} className="text-sm border border-zinc-100 rounded-lg">
+                <li key={sg.id} className="text-sm border border-line rounded-lg">
                   <button
                     onClick={() => setExpandedId(expanded ? "" : sg.id)}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-zinc-50/60 rounded-lg transition-colors"
+                    className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-0/60 rounded-lg transition-colors"
                   >
-                    <span className={`transition-transform text-zinc-400 ${expanded ? "rotate-90" : ""}`}>▸</span>
-                    <span className="font-medium text-zinc-900 truncate max-w-[30%]">{sg.title}</span>
+                    <span className={`transition-transform text-ink-3 ${expanded ? "rotate-90" : ""}`}>▸</span>
+                    <span className="font-medium text-ink truncate max-w-[30%]">{sg.title}</span>
                     <SubGoalStatus status={sg.status} />
-                    <span className="text-zinc-400 text-xs">{agentName(sg.assignee_id)}</span>
+                    <span className="text-ink-3 text-xs">{agentName(sg.assignee_id)}</span>
                     {sg.verifier_id && (
-                      <span className="text-zinc-400 text-xs">· 验证：{agentName(sg.verifier_id)}</span>
+                      <span className="text-ink-3 text-xs">· 验证：{agentName(sg.verifier_id)}</span>
                     )}
                     {sg.execution_attempt > 0 && (
-                      <span className="text-zinc-400 text-xs">· 机器重试 {sg.execution_attempt}</span>
+                      <span className="text-ink-3 text-xs">· 机器重试 {sg.execution_attempt}</span>
                     )}
                     {sg.quality_iteration > 0 && (
-                      <span className="text-zinc-400 text-xs">· 质量迭代 {sg.quality_iteration}</span>
+                      <span className="text-ink-3 text-xs">· 质量迭代 {sg.quality_iteration}</span>
                     )}
                   </button>
                   {expanded && (
                     <div className="px-3 pb-3 pt-1 space-y-2">
-                      {sg.description && <p className="text-xs text-zinc-500 whitespace-pre-wrap">{sg.description}</p>}
+                      {sg.description && <p className="text-xs text-ink-3 whitespace-pre-wrap">{sg.description}</p>}
                       <Verifications goalId={goalId} subGoalId={sg.id} />
                     </div>
                   )}
@@ -220,7 +220,7 @@ function NewSubGoalForm({
           </select>
         </Field>
         {createSubGoal.isError && (
-          <p className="text-sm text-red-500">{String(createSubGoal.error)}</p>
+          <p className="text-sm text-red-400">{String(createSubGoal.error)}</p>
         )}
       </form>
     </Dialog>

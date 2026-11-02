@@ -56,15 +56,15 @@ export function GoalComments({ goalId }: { goalId: string }) {
   }, [goalId, createComment, replyTo]);
 
   return (
-    <div className="bg-white rounded-2xl border border-zinc-200/80 shadow-sm overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-zinc-100 text-xs font-medium text-zinc-500 uppercase tracking-wide">
+    <div className="bg-surface-1 rounded-2xl border border-line/80 shadow-sm overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-line text-xs font-medium text-ink-3 uppercase tracking-wide">
         评论{allComments.length > 0 && `（${allComments.length}）`}
       </div>
 
       {/* Comment list */}
-      <div ref={scrollRef} className="p-4 max-h-[40vh] overflow-y-auto space-y-3 bg-zinc-50/30">
+      <div ref={scrollRef} className="p-4 max-h-[40vh] overflow-y-auto space-y-3 bg-surface-0/30">
         {isLoading ? (
-          <div className="text-sm text-zinc-400 text-center py-8">加载中…</div>
+          <div className="text-sm text-ink-3 text-center py-8">加载中…</div>
         ) : allComments.length === 0 ? (
           <Empty>暂无评论。</Empty>
         ) : (
@@ -81,32 +81,32 @@ export function GoalComments({ goalId }: { goalId: string }) {
               ? parent.content.replace(/\[@[^\]]*\]\(mention:[^)]*\)/g, "").trim().slice(0, 60)
               : "";
             return (
-              <div key={c.id} className="bg-white rounded-lg border border-zinc-100 p-3 group">
+              <div key={c.id} className="bg-surface-1 rounded-lg border border-line p-3 group">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-sm font-medium text-zinc-800">{author}</span>
-                  <span className="text-xs px-1.5 py-0.5 rounded bg-zinc-100 text-zinc-500">
+                  <span className="text-sm font-medium text-ink">{author}</span>
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-surface-2 text-ink-3">
                     {c.author_type === "human" ? "human" : c.author_type === "system" ? "system" : "agent"}
                   </span>
-                  <span className="text-xs text-zinc-400">
+                  <span className="text-xs text-ink-3">
                     {c.created_at ? new Date(c.created_at).toLocaleString("zh-CN") : ""}
                   </span>
                   <button
                     type="button"
                     onClick={() => setReplyTo(replyTo?.id === c.id ? null : c)}
-                    className="ml-auto text-[11px] text-zinc-400 hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                    className="ml-auto text-[11px] text-ink-3 hover:text-accent opacity-0 group-hover:opacity-100 transition-opacity"
                   >
                     {replyTo?.id === c.id ? "取消回复" : "回复"}
                   </button>
                 </div>
                 {parent && (
-                  <div className="mb-1.5 px-2 py-1 rounded bg-zinc-50 border-l-2 border-zinc-300 text-[11px] text-zinc-500 truncate">
+                  <div className="mb-1.5 px-2 py-1 rounded bg-surface-0 border-l-2 border-line-strong text-[11px] text-ink-3 truncate">
                     回复 {parentAuthor}：{parentText}
                   </div>
                 )}
                 <Markdown
                   content={c.ask_human ? `[@你](mention://human/ui) ${c.content}` : c.content}
                   agentName={agentName}
-                  className="text-zinc-600"
+                  className="text-ink-2"
                 />
               </div>
             );
@@ -116,20 +116,20 @@ export function GoalComments({ goalId }: { goalId: string }) {
 
       {/* Comment input — @ 自动弹出可 mention 列表 */}
       {replyTo && (
-        <div className="px-4 pt-3 -mb-2 flex items-center gap-2 text-xs text-zinc-500">
-          <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full px-2 py-0.5">
+        <div className="px-4 pt-3 -mb-2 flex items-center gap-2 text-xs text-ink-3">
+          <span className="bg-accent/10 text-accent border border-accent/30 rounded-full px-2 py-0.5">
             回复 {replyTo.author_type === "human" ? "你" : replyTo.author_type === "system" ? "系统" : agentName(replyTo.author_id)}
           </span>
-          <span className="truncate text-zinc-400">
+          <span className="truncate text-ink-3">
             {replyTo.content.replace(/\[@[^\]]*\]\(mention:[^)]*\)/g, "").trim().slice(0, 40)}
           </span>
-          <button type="button" onClick={() => setReplyTo(null)} className="ml-auto text-zinc-400 hover:text-zinc-600">✕</button>
+          <button type="button" onClick={() => setReplyTo(null)} className="ml-auto text-ink-3 hover:text-ink-2">✕</button>
         </div>
       )}
       <MentionComposer onSubmit={handleSubmit} pending={createComment.isPending} />
 
       {createComment.isError && (
-        <p className="px-4 pb-2 text-sm text-red-500">{String(createComment.error)}</p>
+        <p className="px-4 pb-2 text-sm text-red-400">{String(createComment.error)}</p>
       )}
     </div>
   );
@@ -236,12 +236,12 @@ function MentionComposer({
   const overlayRef = useRef<HTMLDivElement>(null);
 
   return (
-    <div className="border-t border-zinc-100 p-4">
+    <div className="border-t border-line p-4">
       <div className="relative">
         {/* 白底 + 边框由容器承担；textarea 透明背景。
             下层高亮层渲染与 textarea 完全相同的内容（字符一致 → 不错位），
             文字透明只露紫色背景——@名字在输入框里就是高亮的。 */}
-        <div className="absolute inset-0 bg-white rounded-lg border border-zinc-300 transition group-focus-within:border-indigo-400 group-focus-within:ring-2 group-focus-within:ring-indigo-100" />
+        <div className="absolute inset-0 bg-surface-1 rounded-lg border border-line-strong transition group-focus-within:border-accent/60 group-focus-within:ring-2 group-focus-within:ring-accent/20" />
         <div
           ref={overlayRef}
           aria-hidden
@@ -268,11 +268,11 @@ function MentionComposer({
             }}
             rows={2}
             placeholder="添加评论…（输入 @ 可提及 agent / squad）"
-            className="relative w-full px-3 py-2 text-sm leading-6 bg-transparent text-zinc-900 placeholder:text-zinc-400 focus:outline-none resize-none"
+            className="relative w-full px-3 py-2 text-sm leading-6 bg-transparent text-ink placeholder:text-ink-3 focus:outline-none resize-none"
           />
         </div>
         {menuOpen && (
-          <div className="absolute left-0 right-0 bottom-full mb-1.5 bg-white rounded-xl border border-zinc-200 shadow-xl overflow-hidden z-20">
+          <div className="absolute left-0 right-0 bottom-full mb-1.5 bg-surface-1 rounded-xl border border-line shadow-xl overflow-hidden z-20">
             {matches.map((r, i) => (
               <button
                 key={r.type + r.id}
@@ -282,18 +282,18 @@ function MentionComposer({
                   insertMention(r);
                 }}
                 className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2.5 ${
-                  i === index ? "bg-indigo-50 text-indigo-700" : "text-zinc-700"
+                  i === index ? "bg-accent/10 text-accent" : "text-ink-2"
                 }`}
               >
                 <span
                   className={`inline-block h-5 w-5 rounded-full text-[10px] leading-5 text-center font-medium shrink-0 ${
-                    r.type === "squad" ? "bg-purple-100 text-purple-600" : "bg-indigo-100 text-indigo-600"
+                    r.type === "squad" ? "bg-purple-500/15 text-purple-400" : "bg-accent/15 text-accent"
                   }`}
                 >
                   {r.type === "squad" ? "队" : r.name.slice(0, 1).toUpperCase()}
                 </span>
                 {r.name}
-                <span className="ml-auto text-[10px] text-zinc-400 uppercase">{r.type}</span>
+                <span className="ml-auto text-[10px] text-ink-3 uppercase">{r.type}</span>
               </button>
             ))}
           </div>
@@ -338,7 +338,7 @@ function highlightMentions(text: string, roster: { name: string }[]): React.Reac
       // 只加背景色——padding/文字色都会让两层错位或叠字。
       // violet→purple 渐变（与紫色主按钮同系，但输入框内保持轻透）。
       return (
-        <span key={i} className="rounded-sm bg-gradient-to-r from-violet-200 to-purple-200">
+        <span key={i} className="rounded-sm bg-purple-400/25 text-purple-200 font-medium">
           @{part}
         </span>
       );

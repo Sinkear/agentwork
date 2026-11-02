@@ -12,7 +12,7 @@ export default function SkillsPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-4">
       <PageHeader title="Skills" />
-      <p className="text-sm text-gray-500 -mt-3">
+      <p className="text-sm text-ink-3 -mt-3">
         平台技能库：上传 skill 包（SKILL.md 指令），勾选给 agent 后下发到它所在机器；run 启动时按原名装入工作目录的项目级 skills 目录（.claude/skills / .opencode/skill / .agents/skills，取决于 agent CLI），不碰你机器上手动装的全局 skills。
       </p>
       <div className="mb-4">
@@ -20,17 +20,17 @@ export default function SkillsPage() {
       </div>
 
       {isLoading ? (
-        <p className="text-gray-500 text-sm">加载中…</p>
+        <p className="text-ink-3 text-sm">加载中…</p>
       ) : !skills?.length ? (
         <Empty>技能库为空——上传一个 skill 包开始。</Empty>
       ) : (
         <div className="space-y-3">
           {skills.map((sk) => (
-            <div key={sk.id} className="rounded-xl border border-zinc-200/80 bg-white shadow-sm p-4">
+            <div key={sk.id} className="rounded-xl border border-line/80 bg-surface-1 shadow-sm p-4">
               <div className="flex items-center gap-3">
-                <span className="font-medium text-sm text-zinc-900">{sk.name}</span>
-                {sk.description && <span className="text-xs text-zinc-500">— {sk.description}</span>}
-                <span className="ml-auto text-xs text-zinc-400">{new Date(sk.created_at).toLocaleString("zh-CN")}</span>
+                <span className="font-medium text-sm text-ink">{sk.name}</span>
+                {sk.description && <span className="text-xs text-ink-3">— {sk.description}</span>}
+                <span className="ml-auto text-xs text-ink-3">{new Date(sk.created_at).toLocaleString("zh-CN")}</span>
                 <Button
                   variant="danger"
                   className="!px-2.5 !py-1 text-xs"
@@ -44,7 +44,7 @@ export default function SkillsPage() {
               </div>
               {/* 错误只挂到对应行——全局 isPending/isError 会扩散到所有行。 */}
               {del.isError && del.variables === sk.id && (
-                <p className="text-xs text-red-500 mt-1">{String(del.error)}</p>
+                <p className="text-xs text-red-400 mt-1">{String(del.error)}</p>
               )}
             </div>
           ))}
@@ -94,12 +94,12 @@ function CreateSkillDialog({ onClose }: { onClose: () => void }) {
             type="file"
             accept=".zip"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            className={`${inputCls} file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-50 file:px-3 file:py-1 file:text-sm file:text-indigo-700`}
+            className={`${inputCls} file:mr-3 file:rounded-lg file:border-0 file:bg-accent/10 file:px-3 file:py-1 file:text-sm file:text-accent`}
             required
           />
-          {file && <p className="text-xs text-zinc-500">已选择：{file.name}（{(file.size / 1024).toFixed(0)} KB）</p>}
+          {file && <p className="text-xs text-ink-3">已选择：{file.name}（{(file.size / 1024).toFixed(0)} KB）</p>}
         </Field>
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-ink-3">
           SKILL.md 示例：<br />
           <code className="font-mono">{"---"}</code><br />
           <code className="font-mono">name: code-review-checklist</code><br />
@@ -107,7 +107,7 @@ function CreateSkillDialog({ onClose }: { onClose: () => void }) {
           <code className="font-mono">{"---"}</code><br />
           （以下是 skill 指令正文）
         </p>
-        {create.isError && <p className="text-sm text-red-500">{String(create.error)}</p>}
+        {create.isError && <p className="text-sm text-red-400">{String(create.error)}</p>}
       </form>
     </Dialog>
   );

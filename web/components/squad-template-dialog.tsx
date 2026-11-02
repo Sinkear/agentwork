@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, RefreshCw, Users, CheckCircle2, XCircle, Loader2, Search } from "lucide-react";
+import { ChevronDown, RefreshCw, Users, CheckCircle2, XCircle, Loader2, Search, Package } from "lucide-react";
 import { Button, Dialog, Field, inputCls, Empty } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { useTemplates, useTemplate, useRefreshTemplates, useApplySquadTemplate } from "@/lib/queries";
@@ -107,7 +107,7 @@ export function SquadTemplateDialog({ onClose }: { onClose: () => void }) {
         ) : (
           <>
             {applyError && (
-              <span className="mr-auto text-xs text-red-500 max-w-[60%] truncate" title={applyError}>
+              <span className="mr-auto text-xs text-red-400 max-w-[60%] truncate" title={applyError}>
                 {applyError}
               </span>
             )}
@@ -129,7 +129,7 @@ export function SquadTemplateDialog({ onClose }: { onClose: () => void }) {
         <div className="space-y-4">
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-ink-3" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -149,9 +149,9 @@ export function SquadTemplateDialog({ onClose }: { onClose: () => void }) {
           </div>
 
           {loadingList ? (
-            <div className="text-sm text-zinc-400 py-10 text-center">加载模板中…</div>
+            <div className="text-sm text-ink-3 py-10 text-center">加载模板中…</div>
           ) : !filtered.length ? (
-            <Empty icon="📦">暂无可用小队模板 — 点击「刷新」从模板仓库拉取</Empty>
+            <Empty icon={<Package className="h-5 w-5" />}>暂无可用小队模板 — 点击「刷新」从模板仓库拉取</Empty>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {filtered.map((t) => (
@@ -168,20 +168,20 @@ export function SquadTemplateDialog({ onClose }: { onClose: () => void }) {
           {selectedId && (
             <form id="squad-tpl-form" onSubmit={handleSubmit} className="space-y-4">
               {detail.isLoading ? (
-                <div className="text-sm text-zinc-400 py-4 text-center">加载模板详情…</div>
+                <div className="text-sm text-ink-3 py-4 text-center">加载模板详情…</div>
               ) : spec ? (
                 <>
                   <div>
                     <button
                       type="button"
                       onClick={() => setShowYaml((v) => !v)}
-                      className="flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-700"
+                      className="flex items-center gap-1 text-xs font-medium text-ink-3 hover:text-ink-2"
                     >
                       <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", showYaml && "rotate-180")} />
                       {showYaml ? "收起" : "查看"}模板 YAML
                     </button>
                     {showYaml && (
-                      <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-zinc-50 p-3 text-[11px] leading-relaxed text-zinc-600 whitespace-pre-wrap break-all">
+                      <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-surface-0 p-3 text-[11px] leading-relaxed text-ink-2 whitespace-pre-wrap break-all">
                         {rawYaml || "（详情加载中…）"}
                       </pre>
                     )}
@@ -200,13 +200,13 @@ export function SquadTemplateDialog({ onClose }: { onClose: () => void }) {
                   </Field>
 
                   {specAgents.length > 0 && (
-                    <fieldset className="border border-zinc-200 rounded-lg p-3 space-y-2">
-                      <legend className="text-xs font-medium text-zinc-500 px-1">
+                    <fieldset className="border border-line rounded-lg p-3 space-y-2">
+                      <legend className="text-xs font-medium text-ink-3 px-1">
                         Agent 命名（留空 = 用模板默认名）
                       </legend>
                       {specAgents.map((a) => (
                         <div key={a.name} className="flex items-center gap-2">
-                          <span className="w-28 shrink-0 truncate text-xs text-zinc-500" title={a.name}>{a.name}</span>
+                          <span className="w-28 shrink-0 truncate text-xs text-ink-3" title={a.name}>{a.name}</span>
                           <input
                             value={agentNames[a.name] ?? ""}
                             onChange={(e) => setAgentNames((m) => ({ ...m, [a.name]: e.target.value }))}
@@ -243,22 +243,22 @@ function SquadCard({
       className={cn(
         "text-left p-3 rounded-lg border transition",
         selected
-          ? "border-indigo-400 bg-indigo-50/60 ring-1 ring-indigo-200"
-          : "border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50"
+          ? "border-accent/60 bg-accent/10 ring-1 ring-accent/30"
+          : "border-line hover:border-line-strong hover:bg-surface-0"
       )}
     >
       <div className="flex items-start gap-2">
         {t.icon && <span className="text-lg leading-none">{t.icon}</span>}
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
-            <span className="font-medium text-sm text-zinc-900 truncate">{t.name}</span>
-            <span className="text-[10px] text-zinc-400 shrink-0">v{t.version}</span>
+            <span className="font-medium text-sm text-ink truncate">{t.name}</span>
+            <span className="text-[10px] text-ink-3 shrink-0">v{t.version}</span>
           </div>
-          <p className="text-xs text-zinc-500 line-clamp-2 mt-0.5">{t.description}</p>
+          <p className="text-xs text-ink-3 line-clamp-2 mt-0.5">{t.description}</p>
           {t.tags?.length ? (
             <div className="mt-1.5 flex flex-wrap gap-1">
               {t.tags.map((tag) => (
-                <span key={tag} className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500">{tag}</span>
+                <span key={tag} className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-ink-3">{tag}</span>
               ))}
             </div>
           ) : null}
@@ -276,12 +276,12 @@ function PreviewBox({ spec }: { spec: SquadTemplateSpec }) {
   );
 
   return (
-    <div className="border border-zinc-200 rounded-lg p-3 space-y-2 bg-zinc-50/40">
-      <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-700">
+    <div className="border border-line rounded-lg p-3 space-y-2 bg-surface-0/40">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-ink-2">
         <Users className="h-3.5 w-3.5" />
         将创建
       </div>
-      <p className="text-xs text-zinc-600">
+      <p className="text-xs text-ink-2">
         Leader：{squad?.leader || "—"}
         {members.length ? ` ｜ 成员：${members.map((m) => m.name).join("、")}` : ""}
         {skills.length ? ` ｜ 引用 skill：${skills.join("、")}` : ""}
@@ -289,13 +289,13 @@ function PreviewBox({ spec }: { spec: SquadTemplateSpec }) {
       <div className="space-y-1.5">
         {spec.agents.map((a) => (
           <div key={a.name} className="text-xs">
-            <span className="font-medium text-zinc-800">
+            <span className="font-medium text-ink">
               {a.name}
               {a.name === squad?.leader && (
-                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 text-[10px]">leader</span>
+                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded bg-accent/10 text-accent text-[10px]">leader</span>
               )}
             </span>
-            {a.description && <p className="text-zinc-500 line-clamp-1">{a.description}</p>}
+            {a.description && <p className="text-ink-3 line-clamp-1">{a.description}</p>}
           </div>
         ))}
       </div>
@@ -326,7 +326,7 @@ function DoneView({
       <div
         className={cn(
           "rounded-lg p-3 text-sm",
-          success ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+          success ? "bg-emerald-500/10 text-emerald-300" : "bg-amber-500/10 text-amber-300"
         )}
       >
         {success ? (
@@ -340,7 +340,7 @@ function DoneView({
           </div>
         )}
       </div>
-      {error && <p className="text-xs text-red-500">{error}</p>}
+      {error && <p className="text-xs text-red-400">{error}</p>}
       {items.length > 0 && (
         <ul className="space-y-1.5">
           {items.map((it, i) => {
@@ -348,13 +348,13 @@ function DoneView({
             return (
               <li key={i} className="flex items-start gap-2 text-sm">
                 {failed ? (
-                  <XCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
+                  <XCircle className="h-4 w-4 text-red-400 mt-0.5 shrink-0" />
                 ) : (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500 mt-0.5 shrink-0" />
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400 mt-0.5 shrink-0" />
                 )}
-                <span className="font-medium text-zinc-800">{it.name}</span>
-                <span className="text-xs text-zinc-400">{it.kind}</span>
-                <span className={cn("ml-auto text-xs", failed ? "text-red-500" : "text-zinc-500")}>
+                <span className="font-medium text-ink">{it.name}</span>
+                <span className="text-xs text-ink-3">{it.kind}</span>
+                <span className={cn("ml-auto text-xs", failed ? "text-red-400" : "text-ink-3")}>
                   {ACTION_LABELS[it.action] ?? it.action}
                   {it.error ? `：${it.error}` : ""}
                 </span>

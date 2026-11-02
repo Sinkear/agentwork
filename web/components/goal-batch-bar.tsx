@@ -29,11 +29,11 @@ const ACTION_STATUSES: Record<GoalBatchAction, (s: string) => boolean> = {
 const ACTIONS: GoalBatchAction[] = ["approve", "activate", "cancel", "reopen", "delete"];
 
 const ACTION_META: Record<GoalBatchAction, { label: string; btnCls: string }> = {
-  approve: { label: "批准合入", btnCls: "bg-indigo-500 hover:bg-indigo-400 text-white shadow-sm shadow-indigo-500/30" },
-  activate: { label: "激活", btnCls: "border border-zinc-600 text-zinc-200 hover:border-zinc-400 hover:text-white" },
-  cancel: { label: "取消", btnCls: "border border-zinc-600 text-zinc-200 hover:border-amber-400 hover:text-amber-300" },
-  reopen: { label: "重开", btnCls: "border border-zinc-600 text-zinc-200 hover:border-indigo-400 hover:text-indigo-300" },
-  delete: { label: "删除", btnCls: "bg-red-500/90 hover:bg-red-500 text-white shadow-sm shadow-red-500/30" },
+  approve: { label: "批准合入", btnCls: "bg-accent hover:bg-accent/90 text-white shadow-sm shadow-black/20" },
+  activate: { label: "激活", btnCls: "border border-line-strong text-ink-2 hover:border-accent/60 hover:text-ink" },
+  cancel: { label: "取消", btnCls: "border border-line-strong text-ink hover:border-amber-500/50 hover:text-amber-300" },
+  reopen: { label: "重开", btnCls: "border border-line-strong text-ink hover:border-accent/60 hover:text-accent/80" },
+  delete: { label: "删除", btnCls: "bg-red-500/90 hover:bg-red-500 text-white shadow-sm shadow-black/20" },
 };
 
 export function CheckIcon({ className }: { className?: string }) {
@@ -70,8 +70,8 @@ export function GoalSelectCheckbox({
       className={cn(
         "mt-0.5 h-5 w-5 shrink-0 rounded-md border flex items-center justify-center transition-all duration-150",
         checked
-          ? "bg-indigo-500 border-indigo-500 text-white shadow-sm shadow-indigo-500/25"
-          : "bg-white border-zinc-300 hover:border-indigo-400 hover:bg-indigo-50/50",
+          ? "bg-accent border-accent text-accent-ink shadow-sm shadow-black/20"
+          : "bg-surface-1 border-line-strong hover:border-accent/60 hover:bg-accent/10",
         disabled && "opacity-50 cursor-not-allowed"
       )}
     >
@@ -207,24 +207,24 @@ export function GoalBatchBar({
     <>
       {/* 浮动批量操作条（Gmail 式） */}
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 px-4 w-full sm:w-auto sm:px-0">
-        <div className="flex items-center gap-3 bg-zinc-900 text-white rounded-2xl shadow-2xl border border-zinc-700 px-4 py-2.5">
+        <div className="flex items-center gap-3 bg-surface-3 text-ink rounded-2xl shadow-2xl border border-line-strong px-4 py-2.5">
           {running ? (
             <>
               <span className="text-sm font-medium whitespace-nowrap">
                 {ACTION_META[running.action].label}中… {running.done}/{running.total}
               </span>
-              <div className="w-32 sm:w-44 h-1.5 bg-zinc-700 rounded-full overflow-hidden shrink-0">
+              <div className="w-32 sm:w-44 h-1.5 bg-black/40 rounded-full overflow-hidden shrink-0">
                 <div
-                  className="h-full bg-indigo-400 rounded-full transition-all duration-200"
+                  className="h-full bg-accent rounded-full transition-all duration-200"
                   style={{ width: `${running.total ? (running.done / running.total) * 100 : 0}%` }}
                 />
               </div>
-              <span className="text-xs text-zinc-400 max-w-[12rem] truncate hidden sm:block">{running.current}</span>
+              <span className="text-xs text-ink-3 max-w-[12rem] truncate hidden sm:block">{running.current}</span>
             </>
           ) : (
             <>
               <span className="text-sm font-medium whitespace-nowrap">已选 {selected.size} 项</span>
-              <div className="h-5 w-px bg-zinc-700 shrink-0" />
+              <div className="h-5 w-px bg-black/40 shrink-0" />
               <div className="flex items-center gap-1.5 flex-wrap">
                 {ACTIONS.filter((a) => counts[a] > 0).map((a) => (
                   <button
@@ -245,7 +245,7 @@ export function GoalBatchBar({
               <button
                 type="button"
                 onClick={onClear}
-                className="text-xs text-zinc-400 hover:text-white transition-colors ml-1 shrink-0"
+                className="text-xs text-ink-3 hover:text-ink transition-colors ml-1 shrink-0"
               >
                 清空
               </button>
@@ -272,7 +272,7 @@ export function GoalBatchBar({
             </>
           }
         >
-          <p className="text-sm text-zinc-600">{confirmMsg(pending.action, pending.ids)}</p>
+          <p className="text-sm text-ink-2">{confirmMsg(pending.action, pending.ids)}</p>
         </Dialog>
       )}
 
@@ -299,20 +299,20 @@ export function GoalBatchBar({
           }
         >
           <div className="space-y-2.5">
-            <p className="text-sm font-medium text-zinc-900">
+            <p className="text-sm font-medium text-ink">
               成功 {result.outcome.ok.length} 项
-              {result.outcome.failed.length > 0 && <span className="text-red-600"> · 失败 {result.outcome.failed.length} 项</span>}
-              {result.outcome.skipped.length > 0 && <span className="text-zinc-400"> · 跳过 {result.outcome.skipped.length} 项</span>}
+              {result.outcome.failed.length > 0 && <span className="text-red-400"> · 失败 {result.outcome.failed.length} 项</span>}
+              {result.outcome.skipped.length > 0 && <span className="text-ink-3"> · 跳过 {result.outcome.skipped.length} 项</span>}
             </p>
             {(result.outcome.failed.length > 0 || result.outcome.skipped.length > 0) && (
               <div className="max-h-56 overflow-y-auto space-y-1.5 text-xs">
                 {result.outcome.failed.map((f) => (
-                  <p key={f.id} className="text-red-600">
+                  <p key={f.id} className="text-red-400">
                     ✕ 「{f.title}」{f.error}
                   </p>
                 ))}
                 {result.outcome.skipped.map((s) => (
-                  <p key={s.id} className="text-zinc-400">
+                  <p key={s.id} className="text-ink-3">
                     → 「{s.title}」{s.reason}
                   </p>
                 ))}

@@ -33,7 +33,7 @@ export function Markdown({
                     : String(children).replace(/^@/, "");
               return (
                 <span
-                  className="inline-flex items-center px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 ring-1 ring-purple-200 text-xs font-medium mx-0.5"
+                  className="inline-flex items-center px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300 ring-1 ring-purple-500/30 text-xs font-medium mx-0.5"
                   title={`mention ${m[1]}`}
                 >
                   @{label}
@@ -41,7 +41,7 @@ export function Markdown({
               );
             }
             return (
-              <a href={href} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">
+              <a href={href} target="_blank" rel="noreferrer" className="text-accent hover:underline">
                 {children}
               </a>
             );
@@ -70,18 +70,18 @@ export function Markdown({
               return <code className={className}>{children}</code>;
             }
             return (
-              <code className="px-1 py-0.5 rounded bg-zinc-100 text-zinc-800 text-[12px] font-mono">
+              <code className="px-1 py-0.5 rounded bg-surface-2 text-ink text-[12px] font-mono">
                 {children}
               </code>
             );
           },
           pre: ({ children }) => (
-            <pre className="my-2 p-3 rounded-lg bg-zinc-900 text-zinc-100 text-[12px] font-mono overflow-x-auto">
+            <pre className="my-2 p-3 rounded-lg bg-surface-3 text-ink text-[12px] font-mono overflow-x-auto">
               {children}
             </pre>
           ),
           blockquote: ({ children }) => (
-            <blockquote className="my-2 pl-3 border-l-2 border-zinc-300 text-zinc-500">{children}</blockquote>
+            <blockquote className="my-2 pl-3 border-l-2 border-line-strong text-ink-3">{children}</blockquote>
           ),
           table: ({ children }) => (
             <div className="my-2 overflow-x-auto">
@@ -89,9 +89,9 @@ export function Markdown({
             </div>
           ),
           th: ({ children }) => (
-            <th className="border border-zinc-200 px-2 py-1 bg-zinc-50 text-left font-medium">{children}</th>
+            <th className="border border-line px-2 py-1 bg-surface-0 text-left font-medium">{children}</th>
           ),
-          td: ({ children }) => <td className="border border-zinc-200 px-2 py-1">{children}</td>,
+          td: ({ children }) => <td className="border border-line px-2 py-1">{children}</td>,
           strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
         }}
       >

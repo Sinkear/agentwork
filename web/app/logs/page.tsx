@@ -44,12 +44,12 @@ function renderText(text: string, goalById: Map<string, string>) {
 
 const LEVELS = ["debug", "info", "warn", "error"] as const;
 
-// The log list sits on a DARK panel (bg-zinc-950) — these are dark-theme
+// The log list sits on a DARK panel (bg-black/40) — these are dark-theme
 // text colors. The previous light-theme set (info = zinc-700 on near-black)
 // made the most common lines nearly invisible.
 const LEVEL_STYLE: Record<string, string> = {
-  debug: "text-zinc-500",
-  info: "text-zinc-200",
+  debug: "text-ink-3",
+  info: "text-ink",
   warn: "text-amber-400",
   error: "text-red-400 font-medium",
 };
@@ -156,13 +156,13 @@ export default function LogsPage() {
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-4">
       <div className="flex items-center gap-3 flex-wrap">
-        <h1 className="text-lg font-semibold text-zinc-900">日志</h1>
-        <span className="text-xs text-zinc-400">~/.agentwork/daemon.log（10MB 滚动）</span>
+        <h1 className="text-lg font-semibold text-ink">日志</h1>
+        <span className="text-xs text-ink-3">~/.agentwork/daemon.log（10MB 滚动）</span>
         <div className="ml-auto flex items-center gap-2">
           <select
             value={level}
             onChange={(e) => changeLevel(e.target.value)}
-            className="border border-zinc-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+            className="border border-line rounded-lg px-2 py-1.5 text-xs bg-surface-1"
             title="运行时日志级别（写盘过滤，重启后保持）"
           >
             {LEVELS.map((lv) => (
@@ -171,13 +171,13 @@ export default function LogsPage() {
           </select>
           <button
             onClick={() => setPaused(!paused)}
-            className={`text-xs px-2.5 py-1.5 rounded-lg border ${paused ? "border-amber-300 bg-amber-50 text-amber-700" : "border-zinc-200 text-zinc-600 hover:bg-zinc-50"}`}
+            className={`text-xs px-2.5 py-1.5 rounded-lg border ${paused ? "border-amber-500/40 bg-amber-500/10 text-amber-300" : "border-line text-ink-2 hover:bg-surface-0"}`}
           >
             {paused ? "已暂停（点击继续）" : "暂停"}
           </button>
           <button
             onClick={() => setLines([])}
-            className="text-xs px-2.5 py-1.5 rounded-lg border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+            className="text-xs px-2.5 py-1.5 rounded-lg border border-line text-ink-2 hover:bg-surface-0"
           >
             清空
           </button>
@@ -189,47 +189,47 @@ export default function LogsPage() {
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           placeholder="关键词过滤…"
-          className="border border-zinc-200 rounded-lg px-2.5 py-1.5 text-xs w-56"
+          className="border border-line rounded-lg px-2.5 py-1.5 text-xs w-56"
         />
-        <span className="text-xs text-zinc-500">从</span>
+        <span className="text-xs text-ink-3">从</span>
         <input
           type="datetime-local"
           value={after}
           onChange={(e) => setAfter(e.target.value)}
-          className="border border-zinc-200 rounded-lg px-2 py-1.5 text-xs"
+          className="border border-line rounded-lg px-2 py-1.5 text-xs"
         />
-        <span className="text-xs text-zinc-500">到</span>
+        <span className="text-xs text-ink-3">到</span>
         <input
           type="datetime-local"
           value={before}
           onChange={(e) => setBefore(e.target.value)}
-          className="border border-zinc-200 rounded-lg px-2 py-1.5 text-xs"
+          className="border border-line rounded-lg px-2 py-1.5 text-xs"
         />
         <button
           onClick={queryHistory}
           disabled={loading}
-          className="text-xs px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+          className="text-xs px-2.5 py-1.5 rounded-lg bg-accent text-accent-ink hover:bg-accent-dim disabled:opacity-50"
         >
           {loading ? "查询中…" : "按时间查询"}
         </button>
         {(after || before) && (
           <button
             onClick={() => { setAfter(""); setBefore(""); queryHistory(); }}
-            className="text-xs text-indigo-600 hover:underline"
+            className="text-xs text-accent hover:underline"
           >
             重置时间
           </button>
         )}
       </div>
 
-      {err && <p className="text-xs text-red-500">{err}</p>}
+      {err && <p className="text-xs text-red-400">{err}</p>}
 
-      <div ref={listRef} className="bg-zinc-950 rounded-xl border border-zinc-800 p-3 h-[calc(100vh-260px)] overflow-y-auto font-mono text-[11px] leading-relaxed">
-        {visible.length === 0 && !loading && <p className="text-zinc-500 py-4 text-center">暂无日志</p>}
+      <div ref={listRef} className="bg-black/40 rounded-xl border border-line-strong p-3 h-[calc(100vh-260px)] overflow-y-auto font-mono text-[11px] leading-relaxed">
+        {visible.length === 0 && !loading && <p className="text-ink-3 py-4 text-center">暂无日志</p>}
         {visible.map((l, i) => (
-          <div key={i} className="flex gap-2 hover:bg-zinc-900/60 rounded px-1">
+          <div key={i} className="flex gap-2 hover:bg-white/5 rounded px-1">
             <span className={`shrink-0 mt-[7px] h-1.5 w-1.5 rounded-full ${LEVEL_DOT[l.level] ?? LEVEL_DOT.info}`} />
-            <span className="shrink-0 text-zinc-500 tabular-nums" title={l.ts}>{l.ts ? tsShort(l.ts) : ""}</span>
+            <span className="shrink-0 text-ink-3 tabular-nums" title={l.ts}>{l.ts ? tsShort(l.ts) : ""}</span>
             <span className={`whitespace-pre-wrap break-words ${LEVEL_STYLE[l.level] ?? LEVEL_STYLE.info}`}>{renderText(l.text, goalById)}</span>
           </div>
         ))}

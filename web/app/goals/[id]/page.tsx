@@ -16,7 +16,7 @@ import type { Goal } from "@/lib/types";
 export default function GoalDetailPage() {
   // useSearchParams 要求 Suspense 边界。
   return (
-    <Suspense fallback={<div className="p-8 text-sm text-zinc-400">加载中…</div>}>
+    <Suspense fallback={<div className="p-8 text-sm text-ink-3">加载中…</div>}>
       <GoalDetailPageInner />
     </Suspense>
   );
@@ -31,8 +31,8 @@ function GoalDetailPageInner() {
   const { data: agents } = useAgents();
   const { data: squads } = useSquads();
 
-  if (isLoading) return <div className="p-8 text-sm text-zinc-400">加载中…</div>;
-  if (!goal) return <div className="p-8 text-sm text-zinc-400">找不到 Goal。</div>;
+  if (isLoading) return <div className="p-8 text-sm text-ink-3">加载中…</div>;
+  if (!goal) return <div className="p-8 text-sm text-ink-3">找不到 Goal。</div>;
 
   const agentName = (aid: string) => agents?.find((a) => a.id === aid)?.name ?? aid;
   const squadName = (sid: string) => squads?.find((s) => s.id === sid)?.name ?? sid;
@@ -49,29 +49,29 @@ function GoalDetailPageInner() {
         {/* 从带筛选的列表进来（?status=…）时，返回列表保持筛选不丢 */}
         <Link
           href={searchParams.get("status") ? `/goals?status=${searchParams.get("status")}` : "/goals"}
-          className="text-sm text-zinc-400 hover:text-zinc-700 hover:underline"
+          className="text-sm text-ink-3 hover:text-ink-2 hover:underline"
         >
           ← 返回列表
         </Link>
         <div className="flex items-center gap-3 mt-3">
-          <h1 className="text-lg font-semibold text-zinc-900">{goal.title}</h1>
+          <h1 className="text-lg font-semibold text-ink">{goal.title}</h1>
           <Badge status={goal.status} />
           <AttentionChip attention={goal.attention} />
           <GoalStatusBar goalId={id} goalStatus={goal.status} />
         </div>
-        <p className="text-sm text-zinc-500 mt-1">
+        <p className="text-sm text-ink-3 mt-1">
           分配给：{assigneeLabel}
         </p>
         {goal.source_ref && (
-          <p className="text-xs text-zinc-400 mt-1">
+          <p className="text-xs text-ink-3 mt-1">
             来源：<span className="font-mono">{goal.source_ref}</span>
           </p>
         )}
         {goal.description && (
-          <p className="text-sm text-zinc-600 mt-3 whitespace-pre-wrap">{goal.description}</p>
+          <p className="text-sm text-ink-2 mt-3 whitespace-pre-wrap">{goal.description}</p>
         )}
         {goal.handoff_note && (
-          <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 whitespace-pre-wrap">
+          <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-sm text-amber-300 whitespace-pre-wrap">
             <span className="font-medium">Handoff note：</span>
             {goal.handoff_note}
           </div>

@@ -42,7 +42,7 @@ function GitTestButton({ gitUrl, defaultBranch, gitCredentials, onResult }: { gi
         {testing ? "测试中…" : "测试连接"}
       </Button>
       {result && (
-        <span className={`text-xs ${result.ok && result.branch_exists ? "text-emerald-700" : "text-red-600"}`}>
+        <span className={`text-xs ${result.ok && result.branch_exists ? "text-emerald-300" : "text-red-400"}`}>
           {result.ok
             ? (result.refs?.length ?? 0) === 0
               ? "✗ 仓库可达，但没有任何分支（空仓库？）"
@@ -78,7 +78,7 @@ export default function DomainsPage() {
   return (
     <div>
       <PageHeader title="项目" />
-      <p className="text-sm text-gray-500 -mt-3 mb-4">
+      <p className="text-sm text-ink-3 -mt-3 mb-4">
         项目是 goal 的归属地：一个共享代码仓库 + 一套"怎么算干完了"的验收标准。goal 必须挂在某个项目下。
       </p>
       <div className="mb-4">
@@ -86,7 +86,7 @@ export default function DomainsPage() {
       </div>
 
       {isLoading ? (
-        <p className="text-gray-500">加载中…</p>
+        <p className="text-ink-3">加载中…</p>
       ) : !domains?.length ? (
         <Empty>还没有项目——创建一个项目并挂上你的代码仓库，agentwork 就能在项目里全自动干活。</Empty>
       ) : (
@@ -272,25 +272,25 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
   }, [latestCompile]);
 
   return (
-    <div className="rounded-lg border border-gray-200 p-4 space-y-3">
+    <div className="rounded-lg border border-line p-4 space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
         <span className="font-medium">{d.name}</span>
         {d.type === "scratch" && (
-          <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-sky-50 text-sky-700 ring-1 ring-sky-200">无仓库项目</span>
+          <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/30">无仓库项目</span>
         )}
         <span className={strengthBadge(d.verification_strength)}>{d.verification_strength} 验证</span>
         {compiled ? (
-          <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">策略已冻结</span>
+          <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30">策略已冻结</span>
         ) : needsConfirm ? (
-          <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-purple-50 text-purple-700 ring-1 ring-purple-200">待确认</span>
+          <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-purple-500/10 text-purple-300 ring-1 ring-purple-500/30">待确认</span>
         ) : null}
-        {d.type !== "scratch" && <span className="text-xs text-gray-500 ml-auto break-all">{d.git_url}</span>}
+        {d.type !== "scratch" && <span className="text-xs text-ink-3 ml-auto break-all">{d.git_url}</span>}
         {d.type === "scratch" && d.scratch_dir && (
-          <span className="text-xs text-gray-500 ml-auto break-all font-mono">{d.scratch_dir}</span>
+          <span className="text-xs text-ink-3 ml-auto break-all font-mono">{d.scratch_dir}</span>
         )}
         <button
           onClick={() => setShowEdit(true)}
-          className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline shrink-0"
+          className="text-xs text-accent hover:text-accent hover:underline shrink-0"
         >
           编辑
         </button>
@@ -298,7 +298,7 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
 
       {showEdit && <EditDomainDialog domain={d} onClose={() => setShowEdit(false)} />}
 
-      <div className="text-xs text-gray-600 space-y-1.5">
+      <div className="text-xs text-ink-2 space-y-1.5">
         <p><span className="font-medium">验收要求：</span>{d.policy_text || "（未填写）"}</p>
         {d.metrics_baseline && d.metrics_baseline !== "{}" && d.metrics_baseline !== "" && (
           <p>
@@ -314,24 +314,24 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
           </p>
         )}
         {hasChecks && (
-          <details open={compiled} className="rounded bg-zinc-50 border border-zinc-200 px-2.5 py-1.5">
-            <summary className="cursor-pointer font-medium text-gray-600 select-none">验收命令</summary>
-            <div className="mt-1.5 space-y-1 font-mono text-[11px] text-zinc-600 break-all">
-              <p><span className="text-zinc-400">验证命令：</span>{d.checks.verify?.length ? d.checks.verify.join("，") : "无"}</p>
-              <p><span className="text-zinc-400">保护规则：</span>{d.checks.guards?.length ? d.checks.guards.map((g) => `${g.type}(${g.pattern ?? g.min_delta})`).join("，") : "无"}</p>
-              <p><span className="text-zinc-400">卡点：</span>{d.checks.gates?.length ? d.checks.gates.map((g) => g.name).join("，") : "无"}</p>
+          <details open={compiled} className="rounded bg-surface-0 border border-line px-2.5 py-1.5">
+            <summary className="cursor-pointer font-medium text-ink-2 select-none">验收命令</summary>
+            <div className="mt-1.5 space-y-1 font-mono text-[11px] text-ink-2 break-all">
+              <p><span className="text-ink-3">验证命令：</span>{d.checks.verify?.length ? d.checks.verify.join("，") : "无"}</p>
+              <p><span className="text-ink-3">保护规则：</span>{d.checks.guards?.length ? d.checks.guards.map((g) => `${g.type}(${g.pattern ?? g.min_delta})`).join("，") : "无"}</p>
+              <p><span className="text-ink-3">卡点：</span>{d.checks.gates?.length ? d.checks.gates.map((g) => g.name).join("，") : "无"}</p>
             </div>
           </details>
         )}
       </div>
 
       {!compiled && (
-        <div className="space-y-2 border-t border-gray-100 pt-3">
+        <div className="space-y-2 border-t border-line pt-3">
           {needsConfirm ? (
             // Confirmation card: what the processor agent compiled, human
             // decides — and can edit (产物可见、可改、可审).
-            <div className="rounded bg-amber-50 border border-amber-200 p-3 space-y-2">
-              <p className="text-sm font-medium text-amber-900">验收命令已生成——检查后可编辑，确认后冻结？</p>
+            <div className="rounded bg-amber-500/10 border border-amber-500/30 p-3 space-y-2">
+              <p className="text-sm font-medium text-amber-300">验收命令已生成——检查后可编辑，确认后冻结？</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Field label="setup（验证前环境准备，幂等，每行一条）" hint="依赖安装，如 cd web && npm install">
                   <textarea
@@ -363,11 +363,11 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
                   />
                 </Field>
               </div>
-              <div className="text-xs text-gray-600 space-y-0.5">
+              <div className="text-xs text-ink-2 space-y-0.5">
                 <p><span className="font-medium">guards：</span>{d.checks.guards?.length ? d.checks.guards.map((g) => `${g.type}(${g.pattern ?? g.min_delta})`).join(", ") : "无"}</p>
                 <p><span className="font-medium">gates：</span>{d.checks.gates?.length ? d.checks.gates.map((g) => g.name).join(", ") : "无"}</p>
                 <details className="pt-1">
-                  <summary className="cursor-pointer text-amber-800 font-medium">编辑完整 JSON（setup/verify/guards/gates）</summary>
+                  <summary className="cursor-pointer text-amber-300 font-medium">编辑完整 JSON（setup/verify/guards/gates）</summary>
                   <textarea
                     value={jsonDraft ?? JSON.stringify(d.checks, null, 2)}
                     onChange={(e) => {
@@ -379,10 +379,10 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
                         setJsonError("JSON 格式错误——冻结将使用已生成的命令");
                       }
                     }}
-                    className="mt-1 w-full rounded border border-amber-300 bg-amber-100 px-2 py-1.5 text-xs font-mono"
+                    className="mt-1 w-full rounded border border-amber-500/40 bg-amber-500/15 px-2 py-1.5 text-xs font-mono"
                     rows={10}
                   />
-                  {jsonError && <p className="text-xs text-red-600">{jsonError}</p>}
+                  {jsonError && <p className="text-xs text-red-400">{jsonError}</p>}
                 </details>
               </div>
               <div className="flex items-end gap-3 flex-wrap">
@@ -426,7 +426,7 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
       )}
 
       {compiled && (
-        <div className="flex gap-2 border-t border-gray-100 pt-3">
+        <div className="flex gap-2 border-t border-line pt-3">
           <Button variant="outline" onClick={() => startCompile()} disabled={compiling}>
             {compiling ? "生成中…" : "重新生成"}
           </Button>
@@ -442,22 +442,22 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
           打开实时进度流——能看到处理器 agent 此刻在干什么。刷新后由
           useDomainCompileRun 恢复（决策 6-23）。 */}
       {compiling && compileRun && (
-        <div className="border-t border-gray-100 pt-2">
-          <div className="flex items-center gap-2 text-xs text-amber-700 mb-1.5" title={compileRun.id}>
+        <div className="border-t border-line pt-2">
+          <div className="flex items-center gap-2 text-xs text-amber-300 mb-1.5" title={compileRun.id}>
             <span className="inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
             {agents?.find((a) => a.id === compileRun.agent_id)?.name ?? compileRun.agent_id.slice(0, 8)} 正在分析项目、生成验收命令，请稍等……
           </div>
-          <div className="rounded bg-zinc-50 border border-zinc-200 p-2 max-h-44 overflow-y-auto">
+          <div className="rounded bg-surface-0 border border-line p-2 max-h-44 overflow-y-auto">
             {runEvents.length === 0 ? (
-              <span className="text-[11px] text-zinc-400">等待 agent 开始…</span>
+              <span className="text-[11px] text-ink-3">等待 agent 开始…</span>
             ) : (
               <StreamCards items={groupMessages(runEvents)} compact />
             )}
           </div>
         </div>
       )}
-      {compile.isError && <p className="text-sm text-red-500">{String(compile.error)}</p>}
-      {compileError && <p className="text-sm text-red-500">编译失败：{compileError}</p>}
+      {compile.isError && <p className="text-sm text-red-400">{String(compile.error)}</p>}
+      {compileError && <p className="text-sm text-red-400">编译失败：{compileError}</p>}
 
       {/* 手动编辑验收策略（决策 2-8）：不依赖模型编译，直接写 checks 后冻结；
           冻结后也可再编辑（重新冻结更新 checks_compiled_at）。 */}
@@ -485,10 +485,10 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
                       className={inputCls}
                       placeholder="cd web && npm install"
                     />
-                    <button onClick={() => setDlgSetup(dlgSetup.filter((_, j) => j !== i))} className="text-red-500 shrink-0 px-1" title="删除这条">✕</button>
+                    <button onClick={() => setDlgSetup(dlgSetup.filter((_, j) => j !== i))} className="text-red-400 shrink-0 px-1" title="删除这条">✕</button>
                   </div>
                 ))}
-                <button onClick={() => setDlgSetup([...dlgSetup, ""])} className="text-xs text-indigo-600 hover:underline">+ 添加命令</button>
+                <button onClick={() => setDlgSetup([...dlgSetup, ""])} className="text-xs text-accent hover:underline">+ 添加命令</button>
               </div>
             </Field>
             {d.type !== "scratch" && (
@@ -502,10 +502,10 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
                       className={inputCls}
                       placeholder="**/node_modules/**"
                     />
-                    <button onClick={() => setDlgExcludes(dlgExcludes.filter((_, j) => j !== i))} className="text-red-500 shrink-0 px-1" title="删除这条">✕</button>
+                    <button onClick={() => setDlgExcludes(dlgExcludes.filter((_, j) => j !== i))} className="text-red-400 shrink-0 px-1" title="删除这条">✕</button>
                   </div>
                 ))}
-                <button onClick={() => setDlgExcludes([...dlgExcludes, ""])} className="text-xs text-indigo-600 hover:underline">+ 添加排除</button>
+                <button onClick={() => setDlgExcludes([...dlgExcludes, ""])} className="text-xs text-accent hover:underline">+ 添加排除</button>
               </div>
             </Field>
             )}
@@ -519,10 +519,10 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
                       className={inputCls}
                       placeholder="go test ./..."
                     />
-                    <button onClick={() => setDlgVerify(dlgVerify.filter((_, j) => j !== i))} className="text-red-500 shrink-0 px-1" title="删除这条">✕</button>
+                    <button onClick={() => setDlgVerify(dlgVerify.filter((_, j) => j !== i))} className="text-red-400 shrink-0 px-1" title="删除这条">✕</button>
                   </div>
                 ))}
-                <button onClick={() => setDlgVerify([...dlgVerify, ""])} className="text-xs text-indigo-600 hover:underline">+ 添加命令</button>
+                <button onClick={() => setDlgVerify([...dlgVerify, ""])} className="text-xs text-accent hover:underline">+ 添加命令</button>
               </div>
             </Field>
             {d.type !== "scratch" && (
@@ -530,7 +530,7 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
               <div className="space-y-2">
                 {dlgGuards.map((g, i) => (
                   <div key={i} className="flex items-start gap-2">
-                    <div className="flex-1 space-y-1.5 rounded-lg border border-gray-200 p-2">
+                    <div className="flex-1 space-y-1.5 rounded-lg border border-line p-2">
                       <select
                         value={g.type}
                         onChange={(e) => setDlgGuards(dlgGuards.map((x, j) => j === i ? { ...x, type: e.target.value } : x))}
@@ -560,14 +560,14 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
                     </div>
                     <button
                       onClick={() => setDlgGuards(dlgGuards.filter((_, j) => j !== i))}
-                      className="text-red-500 shrink-0 mt-2 px-1"
+                      className="text-red-400 shrink-0 mt-2 px-1"
                       title="删除这条约束"
                     >✕</button>
                   </div>
                 ))}
                 <button
                   onClick={() => setDlgGuards([...dlgGuards, { type: "diff_contains", pattern: "", min_delta: 0 }])}
-                  className="text-xs text-indigo-600 hover:underline"
+                  className="text-xs text-accent hover:underline"
                 >
                   + 添加约束
                 </button>
@@ -579,7 +579,7 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
               <div className="space-y-2">
                 {dlgGates.map((g, i) => (
                   <div key={i} className="flex items-start gap-2">
-                    <div className="flex-1 space-y-1.5 rounded-lg border border-gray-200 p-2">
+                    <div className="flex-1 space-y-1.5 rounded-lg border border-line p-2">
                       <select
                         value={g.name}
                         onChange={(e) => setDlgGates(dlgGates.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}
@@ -606,14 +606,14 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
                     </div>
                     <button
                       onClick={() => setDlgGates(dlgGates.filter((_, j) => j !== i))}
-                      className="text-red-500 shrink-0 mt-2 px-1"
+                      className="text-red-400 shrink-0 mt-2 px-1"
                       title="删除这条卡点"
                     >✕</button>
                   </div>
                 ))}
                 <button
                   onClick={() => setDlgGates([...dlgGates, { name: "merge", when: "", pattern: "" }])}
-                  className="text-xs text-indigo-600 hover:underline"
+                  className="text-xs text-accent hover:underline"
                 >
                   + 添加卡点
                 </button>
@@ -627,7 +627,7 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
                 <option value="weak">weak（弱验证，强制人工段）</option>
               </select>
             </Field>
-            {dlgError && <p className="text-sm text-red-500">{dlgError}</p>}
+            {dlgError && <p className="text-sm text-red-400">{dlgError}</p>}
           </div>
         </Dialog>
       )}
@@ -642,12 +642,12 @@ function GateHealthTable() {
   const { data: stats } = useGateStats();
   if (!stats?.length) return null;
   return (
-    <div className="mt-8 border-t border-zinc-200 pt-6">
+    <div className="mt-8 border-t border-line pt-6">
       <h3 className="text-sm font-medium mb-1">卡点统计</h3>
-      <p className="text-xs text-zinc-400 mb-2">所有项目的卡点审批记录</p>
-      <div className="rounded-lg border border-gray-200 overflow-hidden">
+      <p className="text-xs text-ink-3 mb-2">所有项目的卡点审批记录</p>
+      <div className="rounded-lg border border-line overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-left text-xs text-gray-500">
+          <thead className="bg-surface-2 text-left text-xs text-ink-3">
             <tr>
               <th className="px-3 py-2">卡点规则</th>
               <th className="px-3 py-2">决策总数</th>
@@ -666,12 +666,12 @@ function GateHealthTable() {
                     ? "频繁驳回——建议收紧规则或改自动"
                     : "—";
               return (
-                <tr key={s.rule} className="border-t border-gray-100">
+                <tr key={s.rule} className="border-t border-line">
                   <td className="px-3 py-2 font-mono text-xs">{s.rule}</td>
                   <td className="px-3 py-2">{s.total}</td>
-                  <td className="px-3 py-2 text-emerald-700">{s.approved}</td>
-                  <td className="px-3 py-2 text-red-700">{s.rejected}</td>
-                  <td className="px-3 py-2 text-xs text-gray-600">{advice}</td>
+                  <td className="px-3 py-2 text-emerald-300">{s.approved}</td>
+                  <td className="px-3 py-2 text-red-300">{s.rejected}</td>
+                  <td className="px-3 py-2 text-xs text-ink-2">{advice}</td>
                 </tr>
               );
             })}
@@ -684,9 +684,9 @@ function GateHealthTable() {
 
 function strengthBadge(s: string) {
   const base = "inline-flex items-center px-2 py-0.5 text-xs font-medium rounded ring-1";
-  if (s === "strong") return `${base} bg-emerald-50 text-emerald-700 ring-emerald-200`;
-  if (s === "weak") return `${base} bg-red-50 text-red-700 ring-red-200`;
-  return `${base} bg-blue-50 text-blue-700 ring-blue-200`;
+  if (s === "strong") return `${base} bg-emerald-500/10 text-emerald-300 ring-emerald-500/30`;
+  if (s === "weak") return `${base} bg-red-500/10 text-red-300 ring-red-500/30`;
+  return `${base} bg-blue-500/10 text-blue-300 ring-blue-500/30`;
 }
 
 // EditDomainDialog edits a domain's mutable configuration — the issue
@@ -769,12 +769,12 @@ function EditDomainDialog({ domain, onClose }: { domain: Domain; onClose: () => 
         </Field>
         <GitTestButton gitUrl={gitUrl} defaultBranch={defaultBranch} gitCredentials={gitCredentials} onResult={(r) => setGitTestPassed(r.ok && r.branch_exists)} />
         {gitGateBlocks && (
-          <p className="text-xs text-amber-600">⚠ git 配置已改动，需重新通过「测试连接」才能保存</p>
+          <p className="text-xs text-amber-400">git 配置已改动，需重新通过「测试连接」才能保存</p>
         )}
         <Field label="Issue 追踪" hint="仓库的新 issue 自动变成任务，处理完自动 close">
           <input value={issueRepo} onChange={(e) => setIssueRepo(e.target.value)} className={inputCls} placeholder="owner/repo" />
           <div className="mt-2 flex gap-2 items-center">
-            <label className="text-xs text-gray-500">平台：</label>
+            <label className="text-xs text-ink-3">平台：</label>
             <select value={issueProvider} onChange={(e) => setIssueProvider(e.target.value)} className={inputCls}>
               <option value="github">GitHub</option>
               <option value="gitcode">GitCode</option>
@@ -825,7 +825,7 @@ function EditDomainDialog({ domain, onClose }: { domain: Domain; onClose: () => 
             </select>
           </div>
         </Field>
-        {update.isError && <p className="text-sm text-red-500">{String(update.error)}</p>}
+        {update.isError && <p className="text-sm text-red-400">{String(update.error)}</p>}
       </form>
     </Dialog>
   );
@@ -885,17 +885,17 @@ function CreateDomainDialog({ onClose }: { onClose: () => void }) {
         </Field>
         <Field label="项目类型">
           <div className="flex gap-2">
-            <label className={`flex-1 flex items-center gap-2 rounded-lg border px-3 py-2 cursor-pointer text-sm ${domainType === "scratch" ? "border-indigo-400 bg-indigo-50 text-indigo-700" : "border-zinc-200 text-zinc-600"}`}>
-              <input type="radio" className="accent-indigo-500" checked={domainType === "scratch"} onChange={() => setDomainType("scratch")} />
+            <label className={`flex-1 flex items-center gap-2 rounded-lg border px-3 py-2 cursor-pointer text-sm ${domainType === "scratch" ? "border-accent/60 bg-accent/10 text-accent" : "border-line text-ink-2"}`}>
+              <input type="radio" className="accent-green-500" checked={domainType === "scratch"} onChange={() => setDomainType("scratch")} />
               无仓库项目
             </label>
-            <label className={`flex-1 flex items-center gap-2 rounded-lg border px-3 py-2 cursor-pointer text-sm ${domainType === "repo" ? "border-indigo-400 bg-indigo-50 text-indigo-700" : "border-zinc-200 text-zinc-600"}`}>
-              <input type="radio" className="accent-indigo-500" checked={domainType === "repo"} onChange={() => setDomainType("repo")} />
+            <label className={`flex-1 flex items-center gap-2 rounded-lg border px-3 py-2 cursor-pointer text-sm ${domainType === "repo" ? "border-accent/60 bg-accent/10 text-accent" : "border-line text-ink-2"}`}>
+              <input type="radio" className="accent-green-500" checked={domainType === "repo"} onChange={() => setDomainType("repo")} />
               代码仓库
             </label>
           </div>
           {domainType === "scratch" && (
-            <p className="mt-1.5 text-xs text-zinc-500">研究/信息类任务：持久项目目录，产出是汇报，人卡点强制</p>
+            <p className="mt-1.5 text-xs text-ink-3">研究/信息类任务：持久项目目录，产出是汇报，人卡点强制</p>
           )}
         </Field>
         {domainType === "repo" && (
@@ -909,7 +909,7 @@ function CreateDomainDialog({ onClose }: { onClose: () => void }) {
         </Field>
         )}
         <details className="text-xs">
-          <summary className="cursor-pointer text-zinc-400 hover:text-zinc-600">高级设置</summary>
+          <summary className="cursor-pointer text-ink-3 hover:text-ink-2">高级设置</summary>
           <div className="mt-2 space-y-4">
             {domainType === "repo" && (
               <Field label="Git 身份（commit 作者，可选）" hint='格式：名字 &lt;邮箱&gt;，如 agentwork[bot] &lt;bot@local&gt;——不填默认 agentwork[bot]'>
@@ -972,11 +972,11 @@ function CreateDomainDialog({ onClose }: { onClose: () => void }) {
         </Field>
         <GitTestButton gitUrl={gitUrl} defaultBranch={defaultBranch} gitCredentials={gitCredentials} onResult={(r) => setGitTestPassed(r.ok && r.branch_exists)} />
         {gitTestPassed !== true && (
-          <p className="text-xs text-amber-600">⚠ 需先通过「测试连接」才能创建（后端同样强制）</p>
+          <p className="text-xs text-amber-400">需先通过「测试连接」才能创建（后端同样强制）</p>
         )}
         </>
         )}
-        {create.isError && <p className="text-sm text-red-500">{String(create.error)}</p>}
+        {create.isError && <p className="text-sm text-red-400">{String(create.error)}</p>}
       </form>
     </Dialog>
   );

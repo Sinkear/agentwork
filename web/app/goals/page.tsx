@@ -22,12 +22,12 @@ const STATUS_TABS: { label: string; value: GoalStatus | "all" }[] = [
 
 // 卡片顶部状态色条（与 Badge 同色系，一眼可扫）
 const STATUS_BAR: Record<string, string> = {
-  backlog: "from-zinc-300 to-zinc-400",
-  active: "from-blue-500 to-indigo-500",
-  review: "from-purple-500 to-fuchsia-500",
-  done: "from-emerald-500 to-teal-500",
-  failed: "from-red-500 to-rose-500",
-  cancelled: "from-zinc-300 to-zinc-400",
+  backlog: "bg-zinc-500/60",
+  active: "bg-blue-400",
+  review: "bg-purple-400",
+  done: "bg-emerald-400",
+  failed: "bg-red-400",
+  cancelled: "bg-zinc-500/60",
 };
 
 // 负责人头像首字母
@@ -36,7 +36,7 @@ const initials = (name: string) => (name ? name.slice(0, 1).toUpperCase() : "?")
 export default function GoalsPage() {
   // useSearchParams 要求 Suspense 边界，否则静态渲染时 CSR bailout 会让构建失败。
   return (
-    <Suspense fallback={<div className="p-8 text-sm text-zinc-400">加载中…</div>}>
+    <Suspense fallback={<div className="p-8 text-sm text-ink-3">加载中…</div>}>
       <GoalsPageInner />
     </Suspense>
   );
@@ -123,13 +123,13 @@ function GoalsPageInner() {
                 onClick={() => setFilter(tab.value)}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                   active
-                    ? "bg-zinc-900 text-white"
-                    : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                    ? "bg-surface-3 text-ink"
+                    : "bg-surface-2 text-ink-2 hover:bg-surface-3"
                 }`}
               >
                 {tab.label}
                 {count > 0 && (
-                  <span className={`ml-1.5 ${active ? "text-zinc-300" : "text-zinc-400"}`}>
+                  <span className={`ml-1.5 ${active ? "text-ink-2" : "text-ink-3"}`}>
                     {count}
                   </span>
                 )}
@@ -142,12 +142,12 @@ function GoalsPageInner() {
             type="button"
             disabled={batchBusy}
             onClick={selectAllFiltered}
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-medium text-zinc-500 hover:text-indigo-700 hover:bg-indigo-50/60 transition-colors disabled:opacity-50 disabled:hover:text-zinc-500 disabled:hover:bg-transparent"
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-medium text-ink-3 hover:text-accent hover:bg-accent/10 transition-colors disabled:opacity-50 disabled:hover:text-ink-3 disabled:hover:bg-transparent"
           >
             <span
               className={cn(
                 "h-4 w-4 rounded border flex items-center justify-center transition-colors",
-                allFilteredSelected ? "bg-indigo-500 border-indigo-500 text-white" : "bg-white border-zinc-300"
+                allFilteredSelected ? "bg-accent border-accent text-accent-ink" : "bg-surface-1 border-line-strong"
               )}
             >
               {allFilteredSelected && <CheckIcon className="h-2.5 w-2.5" />}
@@ -159,7 +159,7 @@ function GoalsPageInner() {
 
       {/* Goals — 卡片：状态色条 + 谁在干 + 元信息（不是表格的伪卡片） */}
       {isLoading ? (
-        <div className="text-sm text-zinc-400 py-16 text-center">加载中…</div>
+        <div className="text-sm text-ink-3 py-16 text-center">加载中…</div>
       ) : filtered.length === 0 ? (
         <Empty>
           {filter === "all" ? "暂无 Goal，点击「+ 新建」创建第一个。" : "没有符合条件的 Goal。"}
@@ -171,14 +171,14 @@ function GoalsPageInner() {
               key={g.id}
               href={`/goals/${g.id}${filter === "all" ? "" : `?status=${filter}`}`}
               className={cn(
-                "group relative flex bg-white rounded-2xl border border-zinc-200/80 shadow-sm overflow-hidden hover:shadow-lg hover:shadow-indigo-500/5 hover:-translate-y-0.5 hover:border-indigo-200 transition-all duration-200",
-                selected.has(g.id) && "border-indigo-300 bg-indigo-50/30",
-                batchBusyId === g.id && "ring-2 ring-indigo-400 border-indigo-300",
+                "group relative flex bg-surface-1 rounded-2xl border border-line/80 shadow-sm overflow-hidden hover:shadow-lg hover:shadow-black/20 hover:-translate-y-0.5 hover:border-accent/30 transition-all duration-200",
+                selected.has(g.id) && "border-accent/50 bg-accent/10",
+                batchBusyId === g.id && "ring-2 ring-accent/60 border-accent/50",
                 batchBusy && batchBusyId !== g.id && "opacity-60"
               )}
             >
               {/* 状态在左侧：竖向渐变条（一眼可扫） */}
-              <div className={`w-1.5 shrink-0 bg-gradient-to-b ${STATUS_BAR[g.status] ?? "from-zinc-300 to-zinc-400"}`} />
+              <div className={`w-1.5 shrink-0 ${STATUS_BAR[g.status] ?? "bg-zinc-500/60"}`} />
               <div className="p-4 flex-1 min-w-0">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-start gap-2.5 min-w-0">
@@ -187,7 +187,7 @@ function GoalsPageInner() {
                       disabled={batchBusy}
                       onToggle={() => toggleSelect(g.id)}
                     />
-                    <h3 className="font-medium text-zinc-900 group-hover:text-indigo-700 transition-colors min-w-0">
+                    <h3 className="font-medium text-ink group-hover:text-accent transition-colors min-w-0">
                       {g.title}
                     </h3>
                   </div>
@@ -201,18 +201,18 @@ function GoalsPageInner() {
                   </div>
                 </div>
                 {g.status === "review" && g.review_request && (
-                  <p className="mt-1.5 text-xs text-purple-700 line-clamp-1">{g.review_request}</p>
+                  <p className="mt-1.5 text-xs text-purple-300 line-clamp-1">{g.review_request}</p>
                 )}
                 {/* 元信息：谁在干 / 负责人 · 时间 */}
-                <div className="mt-3 flex items-center gap-x-4 gap-y-1 flex-wrap text-xs text-zinc-400">
+                <div className="mt-3 flex items-center gap-x-4 gap-y-1 flex-wrap text-xs text-ink-3">
                   {g.current_agent_id ? (
-                    <span className="flex items-center gap-1.5 font-medium text-emerald-600">
+                    <span className="flex items-center gap-1.5 font-medium text-emerald-400">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                       {agentName(g.current_agent_id)} 正在执行
                     </span>
                   ) : (
                     <span className="flex items-center gap-1.5">
-                      <span className="inline-block h-4 w-4 rounded-full bg-indigo-100 text-indigo-600 text-[10px] leading-4 text-center font-medium">
+                      <span className="inline-block h-4 w-4 rounded-full bg-accent/15 text-accent text-[10px] leading-4 text-center font-medium">
                         {initials(g.assignee_type === "squad" ? (squadName(g.assignee_id) || "?") : (agentName(g.assignee_id) || "?"))}
                       </span>
                       {g.assignee_type === "squad"
@@ -225,8 +225,8 @@ function GoalsPageInner() {
                   <span>
                     {g.created_at ? new Date(g.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
                   </span>
-                  {g.status === "done" && <span className="text-emerald-500 font-medium">✓ 已完成</span>}
-                  {g.status === "failed" && <span className="text-red-500 font-medium">✕ 失败</span>}
+                  {g.status === "done" && <span className="text-emerald-400 font-medium">✓ 已完成</span>}
+                  {g.status === "failed" && <span className="text-red-400 font-medium">✕ 失败</span>}
                 </div>
                 {/* 行内操作：取消 / 重开 / 删除。卡片整体是 Link，
                     按钮必须 preventDefault + stopPropagation 阻止跳转。
@@ -236,7 +236,7 @@ function GoalsPageInner() {
                 <div className="mt-2 flex items-center gap-3 justify-end">
                   {(g.status === "active" || g.status === "backlog" || g.status === "review") && (
                     <button
-                      className="text-xs text-zinc-400 hover:text-amber-600 transition-colors disabled:opacity-50"
+                      className="text-xs text-ink-3 hover:text-amber-400 transition-colors disabled:opacity-50"
                       disabled={cancelGoal.isPending}
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); cancelGoal.mutate(g.id); }}
                     >
@@ -245,7 +245,7 @@ function GoalsPageInner() {
                   )}
                   {(g.status === "done" || g.status === "failed" || g.status === "cancelled") && (
                     <button
-                      className="text-xs text-zinc-400 hover:text-indigo-600 transition-colors disabled:opacity-50"
+                      className="text-xs text-ink-3 hover:text-accent transition-colors disabled:opacity-50"
                       disabled={reopenGoal.isPending}
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); reopenGoal.mutate(g.id); }}
                     >
@@ -253,7 +253,7 @@ function GoalsPageInner() {
                     </button>
                   )}
                   <button
-                    className="text-xs text-zinc-400 hover:text-red-500 transition-colors disabled:opacity-50"
+                    className="text-xs text-ink-3 hover:text-red-400 transition-colors disabled:opacity-50"
                     disabled={deleteGoalMut.isPending}
                     onClick={(e) => {
                       e.preventDefault();
@@ -274,10 +274,10 @@ function GoalsPageInner() {
       {showForm && <NewGoalForm agents={agents} squads={squads} domains={domains} onClose={() => setShowForm(false)} />}
 
       {createGoal.isError && (
-        <p className="text-sm text-red-500 mt-2">{String(createGoal.error)}</p>
+        <p className="text-sm text-red-400 mt-2">{String(createGoal.error)}</p>
       )}
       {(cancelGoal.isError || reopenGoal.isError || deleteGoalMut.isError) && (
-        <p className="text-sm text-red-500 mt-2">
+        <p className="text-sm text-red-400 mt-2">
           {String(cancelGoal.error ?? reopenGoal.error ?? deleteGoalMut.error)}
         </p>
       )}
@@ -397,7 +397,7 @@ function NewGoalForm({
           </Field>
         )}
         {(createGoal.isError || domainErr || assigneeErr) && (
-          <p className="text-sm text-red-500">{domainErr || assigneeErr || String(createGoal.error)}</p>
+          <p className="text-sm text-red-400">{domainErr || assigneeErr || String(createGoal.error)}</p>
         )}
       </form>
     </Dialog>

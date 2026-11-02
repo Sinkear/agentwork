@@ -73,7 +73,7 @@ export function GoalActions({ goal }: { goal: Goal }) {
 
       {(assign.isError || cancel.isError || deleteGoal.isError || cont.isError ||
         reopen.isError || activate.isError) && (
-        <p className="text-sm text-red-500 w-full">
+        <p className="text-sm text-red-400 w-full">
           {String(assign.error ?? cancel.error ?? deleteGoal.error ?? cont.error ??
             reopen.error ?? activate.error)}
         </p>
@@ -157,30 +157,30 @@ function ReviewPanel({ goal }: { goal: Goal }) {
   const reviewerNames = pendingReviewers.map((r) => agentName(r.agent_id));
 
   return (
-    <div className="rounded-2xl border border-amber-300/80 bg-amber-50/70 w-full shadow-sm shadow-amber-500/5 overflow-hidden">
+    <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 w-full shadow-sm shadow-amber-500/5 overflow-hidden">
       {/* 卡点原因（独立行，小字两行排） */}
-      <div className="px-4 py-3 border-b border-amber-200/60 space-y-1.5">
+      <div className="px-4 py-3 border-b border-amber-500/30 space-y-1.5">
         <div className="flex items-center gap-2">
           <ReviewPhaseBadge phase={phase} />
           {goal.human_iterations > 0 && (
-            <span className="text-xs text-amber-700">已驳回 {goal.human_iterations} 次</span>
+            <span className="text-xs text-amber-300">已驳回 {goal.human_iterations} 次</span>
           )}
         </div>
         {goal.review_request && (
-          <p className="text-xs text-amber-900/80 leading-relaxed">{goal.review_request}</p>
+          <p className="text-xs text-amber-300 leading-relaxed">{goal.review_request}</p>
         )}
       </div>
 
       <div className="p-4 space-y-3">
         {/* 审查意见：最新 agent 评论置顶（白底卡片与琥珀底区分——审批先看它） */}
         {agentComments.length > 0 && (
-          <div className="bg-white rounded-xl border border-zinc-200/80 p-3 space-y-2">
-            <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wide">审查意见</div>
+          <div className="bg-surface-1 rounded-xl border border-line/80 p-3 space-y-2">
+            <div className="text-[11px] font-medium text-ink-3 uppercase tracking-wide">审查意见</div>
             {agentComments.map((c) => (
               <div key={c.id}>
-                <span className="font-medium text-zinc-800 text-xs">{agentName(c.author_id)}</span>
+                <span className="font-medium text-ink text-xs">{agentName(c.author_id)}</span>
                 <div className="max-h-48 overflow-y-auto mt-1">
-                  <Markdown content={c.content} agentName={agentName} className="text-zinc-700" />
+                  <Markdown content={c.content} agentName={agentName} className="text-ink-2" />
                 </div>
               </div>
             ))}
@@ -190,10 +190,10 @@ function ReviewPanel({ goal }: { goal: Goal }) {
         {/* Agent 汇报（owner run 的 comment——折叠，默认收起） */}
         {ownerReportComments.length > 0 && (
           <details className="text-xs" open={agentComments.length === 0}>
-            <summary className="cursor-pointer font-medium text-amber-900">Agent 汇报</summary>
+            <summary className="cursor-pointer font-medium text-amber-300">Agent 汇报</summary>
             <div className="mt-1.5 max-h-56 overflow-y-auto space-y-1.5">
               {ownerReportComments.map((c) => (
-                <Markdown key={c.id} content={c.content} agentName={agentName} className="text-amber-800" />
+                <Markdown key={c.id} content={c.content} agentName={agentName} className="text-amber-300" />
               ))}
             </div>
           </details>
@@ -202,8 +202,8 @@ function ReviewPanel({ goal }: { goal: Goal }) {
         {/* 证据包（折叠）——diff 统计 + 机器验证输出 + 结构化约束 + agent 自述 */}
         {evidence && (
           <details className="text-xs">
-            <summary className="cursor-pointer text-amber-800">证据包（{lastRun?.id.slice(0, 8)}）</summary>
-            <pre className="mt-2 whitespace-pre-wrap bg-amber-100 p-2 rounded text-amber-900 max-h-64 overflow-auto">
+            <summary className="cursor-pointer text-amber-300">证据包（{lastRun?.id.slice(0, 8)}）</summary>
+            <pre className="mt-2 whitespace-pre-wrap bg-amber-500/15 p-2 rounded text-amber-300 max-h-64 overflow-auto">
               {String(evidence.diff_stat ?? "")}
               {"\n"}
               {String(evidence.verify ?? "")}
@@ -216,15 +216,15 @@ function ReviewPanel({ goal }: { goal: Goal }) {
         {/* 其他交流（人的话 / 系统消息，折叠） */}
         {otherComments.length > 0 && (
           <details className="text-xs">
-            <summary className="cursor-pointer font-medium text-amber-900">其他交流（{otherComments.length}）</summary>
+            <summary className="cursor-pointer font-medium text-amber-300">其他交流（{otherComments.length}）</summary>
             <div className="mt-1.5 space-y-1.5">
               {otherComments.map((c) => {
                 const author =
                   c.author_type === "human" ? "你" : "系统";
                 return (
-                  <div key={c.id} className="bg-amber-100/60 rounded-lg p-2">
-                    <span className="font-medium text-amber-900">{author}</span>
-                    <Markdown content={c.content} agentName={agentName} className="text-amber-800 mt-0.5" />
+                  <div key={c.id} className="bg-amber-500/15 rounded-lg p-2">
+                    <span className="font-medium text-amber-300">{author}</span>
+                    <Markdown content={c.content} agentName={agentName} className="text-amber-300 mt-0.5" />
                   </div>
                 );
               })}
@@ -233,24 +233,24 @@ function ReviewPanel({ goal }: { goal: Goal }) {
         )}
 
       {resolveOutcome === "approved" && (
-        <p className="text-sm text-emerald-700 font-medium">
-          {scratch ? "✅ 已批准——按汇报验收，任务完成。" : "✅ 已批准——平台正在合入（merge + 复验 + push），完成后此卡自动关闭。"}
+        <p className="text-sm text-emerald-300 font-medium">
+          {scratch ? "已批准——按汇报验收，任务完成。" : "已批准——平台正在合入（merge + 复验 + push），完成后此卡自动关闭。"}
         </p>
       )}
       {resolveOutcome === "rejected" && (
-        <p className="text-sm text-amber-800 font-medium">↩️ 已驳回——agent 将带你的理由重新执行。</p>
+        <p className="text-sm text-amber-300 font-medium">已驳回——agent 将带你的理由重新执行。</p>
       )}
       {resolveOutcome === "deliver_failed" && (
-        <p className="text-sm text-red-700 font-medium">⚠️ 上次合入失败（冲突/验证红）——可重新批准重试合入，或驳回让 agent 修。</p>
+        <p className="text-sm text-red-300 font-medium">上次合入失败（冲突/验证红）——可重新批准重试合入，或驳回让 agent 修。</p>
       )}
       {resolve.isError && (
-        <p className="text-sm text-red-600">✗ 决策未生效：{String(resolve.error)}</p>
+        <p className="text-sm text-red-400">✗ 决策未生效：{String(resolve.error)}</p>
       )}
 
       {phase !== "awaiting_approval" ? (
-        <div className="flex items-center gap-2 bg-white rounded-xl border border-sky-200/80 p-3">
-          <span className="text-sm text-sky-800">
-            {phase === "reviewing" ? "🔎 审查中：" : "🔎 待审查："}
+        <div className="flex items-center gap-2 bg-surface-1 rounded-xl border border-sky-500/30 p-3">
+          <span className="text-sm text-sky-300">
+            {phase === "reviewing" ? "审查中：" : "待审查："}
             <span className="font-medium">{reviewerNames.join("、") || "—"}</span>
             {phase === "awaiting_review" ? "（已入队，即将开始）" : ""}
             ——审查完成后你可审批
@@ -372,7 +372,7 @@ function AssignDialog({ goal, onClose }: { goal: Goal; onClose: () => void }) {
           <textarea value={handoff} onChange={(e) => setHandoff(e.target.value)} className={inputCls} rows={4} placeholder="告诉 agent 这次运行的范围/约束…" />
         </Field>
         {assign.isError && (
-          <p className="text-sm text-red-500">{String(assign.error)}</p>
+          <p className="text-sm text-red-400">{String(assign.error)}</p>
         )}
       </form>
     </Dialog>

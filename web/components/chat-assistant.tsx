@@ -194,7 +194,7 @@ export function ChatAssistant() {
     return (
       <button
         onClick={() => setOpen(true)}
-        className="fixed bottom-6 right-6 z-40 h-12 w-12 rounded-full bg-gradient-to-b from-indigo-600 to-violet-600 text-white shadow-lg shadow-indigo-500/30 flex items-center justify-center hover:scale-105 transition-transform"
+        className="fixed bottom-6 right-6 z-40 h-12 w-12 rounded-full bg-accent text-accent-ink shadow-lg shadow-black/30 flex items-center justify-center hover:bg-accent-dim transition-colors"
         aria-label="助手"
       >
         <MessageCircle className="h-5 w-5" />
@@ -204,18 +204,18 @@ export function ChatAssistant() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-end p-6 bg-zinc-900/40 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-end justify-end p-6 bg-black/50 backdrop-blur-sm"
       onMouseDown={(e) => { if (e.target === e.currentTarget) setOpen(false); }}
       onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}
     >
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-zinc-200 flex flex-col max-h-[70vh]">
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-zinc-100">
-          <h2 className="text-base font-semibold text-zinc-900">管家</h2>
+      <div className="w-full max-w-md bg-surface-1 rounded-2xl shadow-2xl border border-line flex flex-col max-h-[70vh]">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
+          <h2 className="text-base font-semibold text-ink">管家</h2>
           <div className="flex items-center gap-1">
             {messages.length > 0 && (
               <button
                 onClick={clearHistory}
-                className="text-zinc-400 hover:text-red-500 p-1 transition-colors"
+                className="text-ink-3 hover:text-red-400 p-1 transition-colors"
                 aria-label="清空记录"
                 title="清空记录"
               >
@@ -224,7 +224,7 @@ export function ChatAssistant() {
             )}
             <button
               onClick={() => setOpen(false)}
-              className="text-zinc-400 hover:text-zinc-700 text-lg leading-none px-1"
+              className="text-ink-3 hover:text-ink-2 text-lg leading-none px-1"
               aria-label="关闭"
             >
               <X className="h-4 w-4" />
@@ -234,17 +234,17 @@ export function ChatAssistant() {
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-3 min-h-[200px]">
           {stewardMissing && (
-            <p className="text-sm text-zinc-400 text-center py-8">
+            <p className="text-sm text-ink-3 text-center py-8">
               管家未就绪——连接一台机器并重启服务后自动创建。
             </p>
           )}
           {!stewardMissing && messages.length === 0 && (
-            <p className="text-sm text-zinc-400 text-center py-8">
+            <p className="text-sm text-ink-3 text-center py-8">
               跟管家说点什么，比如：
               <br />
-              <span className="text-zinc-500">帮我创建一个任务</span>
+              <span className="text-ink-3">帮我创建一个任务</span>
               <br />
-              <span className="text-zinc-500">查看任务列表</span>
+              <span className="text-ink-3">查看任务列表</span>
             </p>
           )}
           {messages.map((m) => {
@@ -277,8 +277,8 @@ export function ChatAssistant() {
                   className={cn(
                     "max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words",
                     m.kind === "user"
-                      ? "bg-indigo-600 text-white"
-                      : "bg-zinc-100 text-zinc-800"
+                      ? "bg-accent text-accent-ink"
+                      : "bg-surface-2 text-ink"
                   )}
                 >
                   {m.text}
@@ -288,23 +288,23 @@ export function ChatAssistant() {
           })}
           {busy && (
             <div className="flex items-center gap-3">
-              <span className="text-sm text-zinc-400">思考中…</span>
+              <span className="text-sm text-ink-3">思考中…</span>
               <button
                 onClick={() => {
                   if (clientRef.current && sessionRef.current) clientRef.current.cancel(sessionRef.current);
                 }}
-                className="text-xs text-red-500 hover:text-red-700"
+                className="text-xs text-red-400 hover:text-red-300"
               >
                 停止
               </button>
             </div>
           )}
-          {error && <p className="text-xs text-red-500">{error}</p>}
+          {error && <p className="text-xs text-red-400">{error}</p>}
         </div>
 
-        <div className="flex gap-2 px-5 py-3.5 border-t border-zinc-100 bg-zinc-50/50">
+        <div className="flex gap-2 px-5 py-3.5 border-t border-line bg-surface-0/50">
           <input
-            className="flex-1 rounded-lg border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
+            className="flex-1 rounded-lg border border-line-strong px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
             placeholder={stewardMissing ? "管家未就绪…" : "输入消息…"}
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -324,9 +324,9 @@ export function ChatAssistant() {
 
       {perm && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl border border-zinc-200 p-4 w-96 shadow-lg">
-            <p className="text-sm font-medium text-zinc-800">管家请求权限</p>
-            <p className="mt-1 text-xs text-zinc-500">
+          <div className="bg-surface-1 rounded-xl border border-line p-4 w-96 shadow-lg">
+            <p className="text-sm font-medium text-ink">管家请求权限</p>
+            <p className="mt-1 text-xs text-ink-3">
               {perm.req.toolCall?.title || "tool"}（{perm.req.toolCall?.kind || "unknown"}）
             </p>
             <div className="mt-3 flex gap-2 justify-end">

@@ -28,30 +28,30 @@ export default function SquadDetailPage() {
   const agentName = (aid: string) => agents?.find((a) => a.id === aid)?.name ?? aid;
 
   if (!squad) {
-    if (squads === undefined) return <div className="p-8 text-sm text-zinc-400">加载中…</div>;
-    return <div className="p-8 text-sm text-zinc-400">找不到 Squad。</div>;
+    if (squads === undefined) return <div className="p-8 text-sm text-ink-3">加载中…</div>;
+    return <div className="p-8 text-sm text-ink-3">找不到 Squad。</div>;
   }
 
   return (
     <div className="p-8 max-w-4xl space-y-5">
       <div>
-        <Link href="/squads" className="text-sm text-zinc-400 hover:text-zinc-700 hover:underline">
+        <Link href="/squads" className="text-sm text-ink-3 hover:text-ink-2 hover:underline">
           ← 返回列表
         </Link>
-        <h1 className="text-lg font-semibold text-zinc-900 mt-3">{squad.name}</h1>
+        <h1 className="text-lg font-semibold text-ink mt-3">{squad.name}</h1>
       </div>
 
       {/* Squad info */}
-      <div className="bg-white rounded-xl border border-zinc-200 p-5 space-y-3">
+      <div className="bg-surface-1 rounded-xl border border-line p-5 space-y-3">
         <div className="flex items-center justify-between">
           <div className="grid grid-cols-2 gap-3 text-sm">
             <div>
-              <span className="text-zinc-400">Leader：</span>
-              <span className="text-zinc-700">{agentName(squad.leader_id)}</span>
+              <span className="text-ink-3">Leader：</span>
+              <span className="text-ink-2">{agentName(squad.leader_id)}</span>
             </div>
             <div>
-              <span className="text-zinc-400">创建时间：</span>
-              <span className="text-zinc-700">{new Date(squad.created_at).toLocaleString()}</span>
+              <span className="text-ink-3">创建时间：</span>
+              <span className="text-ink-2">{new Date(squad.created_at).toLocaleString()}</span>
             </div>
           </div>
           <Button variant="outline" onClick={() => { setEditName(squad.name); setEditLeader(squad.leader_id); setEditDesc(squad.description || ""); setEditInstr(squad.instructions || ""); setShowEdit(true); }}>
@@ -60,35 +60,35 @@ export default function SquadDetailPage() {
         </div>
         {squad.description && (
           <div>
-            <span className="text-xs text-zinc-400 block mb-1">描述</span>
-            <p className="text-sm text-zinc-600">{squad.description}</p>
+            <span className="text-xs text-ink-3 block mb-1">描述</span>
+            <p className="text-sm text-ink-2">{squad.description}</p>
           </div>
         )}
         {squad.instructions && (
           <div>
-            <span className="text-xs text-zinc-400 block mb-1">Instructions</span>
-            <p className="text-sm text-zinc-600 whitespace-pre-wrap">{squad.instructions}</p>
+            <span className="text-xs text-ink-3 block mb-1">Instructions</span>
+            <p className="text-sm text-ink-2 whitespace-pre-wrap">{squad.instructions}</p>
           </div>
         )}
       </div>
 
       {/* Members */}
-      <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-zinc-100 flex items-center justify-between">
-          <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">
+      <div className="bg-surface-1 rounded-xl border border-line overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-line flex items-center justify-between">
+          <span className="text-xs font-medium text-ink-3 uppercase tracking-wide">
             成员{members && members.length > 0 && `（${members.length}）`}
           </span>
           <Button onClick={() => setShowAdd(true)}>+ 添加</Button>
         </div>
         <div className="p-4">
           {isLoading ? (
-            <div className="text-sm text-zinc-400 text-center py-8">加载中…</div>
+            <div className="text-sm text-ink-3 text-center py-8">加载中…</div>
           ) : !members || members.length === 0 ? (
             <Empty>暂无成员。</Empty>
           ) : (
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-zinc-100 text-left text-xs font-medium text-zinc-500 uppercase tracking-wide">
+                <tr className="border-b border-line text-left text-xs font-medium text-ink-3 uppercase tracking-wide">
                   <th className="px-3 py-2">类型</th>
                   <th className="px-3 py-2">名称</th>
                   <th className="px-3 py-2">角色</th>
@@ -98,22 +98,22 @@ export default function SquadDetailPage() {
               </thead>
               <tbody>
                 {members.map((m: SquadMember) => (
-                  <tr key={m.id} className="border-b border-zinc-50">
+                  <tr key={m.id} className="border-b border-line">
                     <td className="px-3 py-2">
-                      <span className={`px-2 py-0.5 text-xs rounded ${m.member_type === "agent" ? "bg-blue-50 text-blue-700" : "bg-zinc-100 text-zinc-600"}`}>
+                      <span className={`px-2 py-0.5 text-xs rounded ${m.member_type === "agent" ? "bg-blue-500/10 text-blue-300" : "bg-surface-2 text-ink-2"}`}>
                         {m.member_type}
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-zinc-700">
+                    <td className="px-3 py-2 text-ink-2">
                       {m.member_type === "agent" ? (agentName(m.member_id) || m.member_id) : m.member_id}
                     </td>
-                    <td className="px-3 py-2 text-zinc-500">{m.role || "-"}</td>
-                    <td className="px-3 py-2 text-zinc-400 text-xs">{new Date(m.created_at).toLocaleString()}</td>
+                    <td className="px-3 py-2 text-ink-3">{m.role || "-"}</td>
+                    <td className="px-3 py-2 text-ink-3 text-xs">{new Date(m.created_at).toLocaleString()}</td>
                     <td className="px-3 py-2">
                       <button
                         onClick={() => removeMember.mutate({ squadId: id, memberId: m.member_id })}
                         disabled={removeMember.isPending && removeMember.variables?.memberId === m.member_id}
-                        className="text-red-500 hover:text-red-700 text-xs disabled:opacity-50"
+                        className="text-red-400 hover:text-red-300 text-xs disabled:opacity-50"
                         title="移除该成员"
                       >✕</button>
                     </td>
@@ -127,7 +127,7 @@ export default function SquadDetailPage() {
 
       {/* 成员移除失败必须显示——后端 400 错误静默等于「点了没反应」。 */}
       {removeMember.isError && (
-        <p className="text-sm text-red-500">{String(removeMember.error)}</p>
+        <p className="text-sm text-red-400">{String(removeMember.error)}</p>
       )}
 
       {/* Add member dialog */}
@@ -180,7 +180,7 @@ export default function SquadDetailPage() {
             </Field>
             {/* 保存失败必须显示——leader 校验等后端 400 错误静默等于「点了没反应」。 */}
             {updateSquad.isError && (
-              <p className="text-sm text-red-500">{String(updateSquad.error)}</p>
+              <p className="text-sm text-red-400">{String(updateSquad.error)}</p>
             )}
           </div>
         </Dialog>
@@ -253,7 +253,7 @@ function AddMemberDialog({
           </select>
         </Field>
         {addMember.isError && (
-          <p className="text-sm text-red-500">{String(addMember.error)}</p>
+          <p className="text-sm text-red-400">{String(addMember.error)}</p>
         )}
       </form>
     </Dialog>

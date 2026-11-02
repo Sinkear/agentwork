@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, RefreshCw, FolderGit2, Users, ListChecks, CheckCircle2, XCircle, Loader2, FileBox, Search } from "lucide-react";
+import { ChevronDown, RefreshCw, FolderGit2, Users, ListChecks, CheckCircle2, XCircle, Loader2, FileBox, Search, Package } from "lucide-react";
 import { Button, Dialog, Field, inputCls, Empty } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { useTemplates, useTemplate, useRefreshTemplates, useApplyProjectTemplate } from "@/lib/queries";
@@ -140,7 +140,7 @@ export function ProjectTemplateDialog({ onClose }: { onClose: () => void }) {
         ) : (
           <>
             {applyError && (
-              <span className="mr-auto text-xs text-red-500 max-w-[60%] truncate" title={applyError}>
+              <span className="mr-auto text-xs text-red-400 max-w-[60%] truncate" title={applyError}>
                 {applyError}
               </span>
             )}
@@ -163,7 +163,7 @@ export function ProjectTemplateDialog({ onClose }: { onClose: () => void }) {
           {/* 模板列表 + 搜索 + 刷新 */}
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-ink-3" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -183,9 +183,9 @@ export function ProjectTemplateDialog({ onClose }: { onClose: () => void }) {
           </div>
 
           {loadingList ? (
-            <div className="text-sm text-zinc-400 py-10 text-center">加载模板中…</div>
+            <div className="text-sm text-ink-3 py-10 text-center">加载模板中…</div>
           ) : !filtered.length ? (
-            <Empty icon="📦">暂无可用项目模板 — 点击「刷新」从模板仓库拉取</Empty>
+            <Empty icon={<Package className="h-5 w-5" />}>暂无可用项目模板 — 点击「刷新」从模板仓库拉取</Empty>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {filtered.map((t) => (
@@ -203,7 +203,7 @@ export function ProjectTemplateDialog({ onClose }: { onClose: () => void }) {
           {selectedId && (
             <form id="proj-tpl-form" onSubmit={handleSubmit} className="space-y-4">
               {detail.isLoading ? (
-                <div className="text-sm text-zinc-400 py-4 text-center">加载模板详情…</div>
+                <div className="text-sm text-ink-3 py-4 text-center">加载模板详情…</div>
               ) : spec ? (
                 <>
                   {/* YAML 预览 */}
@@ -211,13 +211,13 @@ export function ProjectTemplateDialog({ onClose }: { onClose: () => void }) {
                     <button
                       type="button"
                       onClick={() => setShowYaml((v) => !v)}
-                      className="flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-700"
+                      className="flex items-center gap-1 text-xs font-medium text-ink-3 hover:text-ink-2"
                     >
                       <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", showYaml && "rotate-180")} />
                       {showYaml ? "收起" : "查看"}模板 YAML
                     </button>
                     {showYaml && (
-                      <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-zinc-50 p-3 text-[11px] leading-relaxed text-zinc-600 whitespace-pre-wrap break-all">
+                      <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-surface-0 p-3 text-[11px] leading-relaxed text-ink-2 whitespace-pre-wrap break-all">
                         {rawYaml || "（详情加载中…）"}
                       </pre>
                     )}
@@ -247,8 +247,8 @@ export function ProjectTemplateDialog({ onClose }: { onClose: () => void }) {
                             className={cn(
                               "flex-1 px-3 py-2 rounded-lg text-sm border transition",
                               repoSource === "create"
-                                ? "border-indigo-400 bg-indigo-50 text-indigo-700"
-                                : "border-zinc-200 text-zinc-600 hover:border-zinc-300"
+                                ? "border-accent/60 bg-accent/10 text-accent"
+                                : "border-line text-ink-2 hover:border-line-strong"
                             )}
                           >
                             新建仓库（GitCode）
@@ -260,8 +260,8 @@ export function ProjectTemplateDialog({ onClose }: { onClose: () => void }) {
                           className={cn(
                             "flex-1 px-3 py-2 rounded-lg text-sm border transition",
                             repoSource === "existing"
-                              ? "border-indigo-400 bg-indigo-50 text-indigo-700"
-                              : "border-zinc-200 text-zinc-600 hover:border-zinc-300"
+                              ? "border-accent/60 bg-accent/10 text-accent"
+                              : "border-line text-ink-2 hover:border-line-strong"
                           )}
                         >
                           使用已有仓库
@@ -307,13 +307,13 @@ export function ProjectTemplateDialog({ onClose }: { onClose: () => void }) {
                   )}
 
                   {teamAgents.length > 0 && (
-                    <fieldset className="border border-zinc-200 rounded-lg p-3 space-y-2">
-                      <legend className="text-xs font-medium text-zinc-500 px-1">
+                    <fieldset className="border border-line rounded-lg p-3 space-y-2">
+                      <legend className="text-xs font-medium text-ink-3 px-1">
                         Agent 命名（留空 = 用模板默认名；重名时按名更新）
                       </legend>
                       {teamAgents.map((a) => (
                         <div key={a.name} className="flex items-center gap-2">
-                          <span className="w-28 shrink-0 truncate text-xs text-zinc-500" title={a.name}>{a.name}</span>
+                          <span className="w-28 shrink-0 truncate text-xs text-ink-3" title={a.name}>{a.name}</span>
                           <input
                             value={agentNames[a.name] ?? ""}
                             onChange={(e) => setAgentNames((m) => ({ ...m, [a.name]: e.target.value }))}
@@ -326,12 +326,12 @@ export function ProjectTemplateDialog({ onClose }: { onClose: () => void }) {
                   )}
 
                   {(spec.goals?.length ?? 0) > 0 && (
-                    <label className="flex items-center gap-2 text-sm text-zinc-600 cursor-pointer">
+                    <label className="flex items-center gap-2 text-sm text-ink-2 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={goalStart}
                         onChange={(e) => setGoalStart(e.target.checked)}
-                        className="rounded border-zinc-300"
+                        className="rounded border-line-strong"
                       />
                       创建后立即开始执行初始任务（{spec.goals?.length ?? 0} 个）
                     </label>
@@ -362,18 +362,18 @@ function TemplateCard({
       className={cn(
         "text-left p-3 rounded-lg border transition",
         selected
-          ? "border-indigo-400 bg-indigo-50/60 ring-1 ring-indigo-200"
-          : "border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50"
+          ? "border-accent/60 bg-accent/10 ring-1 ring-accent/30"
+          : "border-line hover:border-line-strong hover:bg-surface-0"
       )}
     >
       <div className="flex items-start gap-2">
         {t.icon && <span className="text-lg leading-none">{t.icon}</span>}
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
-            <span className="font-medium text-sm text-zinc-900 truncate">{t.name}</span>
-            <span className="text-[10px] text-zinc-400 shrink-0">v{t.version}</span>
+            <span className="font-medium text-sm text-ink truncate">{t.name}</span>
+            <span className="text-[10px] text-ink-3 shrink-0">v{t.version}</span>
           </div>
-          <p className="text-xs text-zinc-500 line-clamp-2 mt-0.5">{t.description}</p>
+          <p className="text-xs text-ink-3 line-clamp-2 mt-0.5">{t.description}</p>
         </div>
       </div>
     </button>
@@ -394,14 +394,14 @@ function PreviewBox({ spec }: { spec: ProjectTemplateSpec }) {
   const goals = spec.goals ?? [];
 
   return (
-    <div className="border border-zinc-200 rounded-lg p-3 space-y-2 bg-zinc-50/40">
-      <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-700">
+    <div className="border border-line rounded-lg p-3 space-y-2 bg-surface-0/40">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-ink-2">
         <FolderGit2 className="h-3.5 w-3.5" />
         将创建
       </div>
-      <p className="text-xs text-zinc-600 leading-relaxed">{repoText}{policySuffix}</p>
+      <p className="text-xs text-ink-2 leading-relaxed">{repoText}{policySuffix}</p>
       {team?.squad && (
-        <p className="text-xs text-zinc-600 flex items-start gap-1.5">
+        <p className="text-xs text-ink-2 flex items-start gap-1.5">
           <Users className="h-3.5 w-3.5 mt-0.5 shrink-0" />
           <span>
             团队：{team.squad.name || "（未命名小队）"}
@@ -411,7 +411,7 @@ function PreviewBox({ spec }: { spec: ProjectTemplateSpec }) {
         </p>
       )}
       {goals.length > 0 && (
-        <p className="text-xs text-zinc-600 flex items-start gap-1.5">
+        <p className="text-xs text-ink-2 flex items-start gap-1.5">
           <ListChecks className="h-3.5 w-3.5 mt-0.5 shrink-0" />
           <span>初始任务：{goals.map((g) => g.title).join("、")}</span>
         </p>
@@ -443,7 +443,7 @@ function DoneView({
       <div
         className={cn(
           "rounded-lg p-3 text-sm",
-          success ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+          success ? "bg-emerald-500/10 text-emerald-300" : "bg-amber-500/10 text-amber-300"
         )}
       >
         {success ? (
@@ -457,7 +457,7 @@ function DoneView({
           </div>
         )}
       </div>
-      {error && <p className="text-xs text-red-500">{error}</p>}
+      {error && <p className="text-xs text-red-400">{error}</p>}
       {items.length > 0 && (
         <ul className="space-y-1.5">
           {items.map((it, i) => {
@@ -465,13 +465,13 @@ function DoneView({
             return (
               <li key={i} className="flex items-start gap-2 text-sm">
                 {failed ? (
-                  <XCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
+                  <XCircle className="h-4 w-4 text-red-400 mt-0.5 shrink-0" />
                 ) : (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500 mt-0.5 shrink-0" />
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400 mt-0.5 shrink-0" />
                 )}
-                <span className="font-medium text-zinc-800">{it.name}</span>
-                <span className="text-xs text-zinc-400">{it.kind}</span>
-                <span className={cn("ml-auto text-xs", failed ? "text-red-500" : "text-zinc-500")}>
+                <span className="font-medium text-ink">{it.name}</span>
+                <span className="text-xs text-ink-3">{it.kind}</span>
+                <span className={cn("ml-auto text-xs", failed ? "text-red-400" : "text-ink-3")}>
                   {ACTION_LABELS[it.action] ?? it.action}
                   {it.error ? `：${it.error}` : ""}
                 </span>

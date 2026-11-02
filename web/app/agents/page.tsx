@@ -38,40 +38,40 @@ export default function AgentsPage() {
       <div className="flex gap-6 items-start">
         {/* 左侧：固定的 agent 侧边栏 —— 点击直接开聊。pinned 状态来自后端
             agent_pin 表，刷新/重启后仍在。 */}
-        <aside className="w-60 shrink-0 bg-white rounded-xl border border-zinc-200 overflow-hidden sticky top-8">
-          <div className="px-4 py-3 border-b border-zinc-100 bg-zinc-50/50 flex items-center gap-2">
-            <Pin className="h-4 w-4 text-indigo-600" />
-            <span className="text-xs font-semibold text-zinc-700 uppercase tracking-wide">
+        <aside className="w-60 shrink-0 bg-surface-1 rounded-xl border border-line overflow-hidden sticky top-8">
+          <div className="px-4 py-3 border-b border-line bg-surface-0/50 flex items-center gap-2">
+            <Pin className="h-4 w-4 text-accent" />
+            <span className="text-xs font-semibold text-ink-2 uppercase tracking-wide">
               固定 ({pinnedAgents.length})
             </span>
           </div>
           {pinnedAgents.length === 0 && (
-            <div className="px-4 py-8 text-center text-xs text-zinc-400 leading-relaxed">
+            <div className="px-4 py-8 text-center text-xs text-ink-3 leading-relaxed">
               还没有固定的 agent。
               <br />
-              在右侧列表点 📌 固定，即可在此快速对话。
+              在右侧列表点「固定」，即可在此快速对话。
             </div>
           )}
-          <ul className="divide-y divide-zinc-50">
+          <ul className="divide-y divide-line">
             {pinnedAgents.map((a) => (
               <li key={a.id} className="group">
                 <div className="px-4 py-3 flex items-center gap-2">
                   <button
                     onClick={() => setChatting(a)}
-                    className="flex items-center gap-2 min-w-0 flex-1 text-left hover:text-indigo-600 transition-colors"
+                    className="flex items-center gap-2 min-w-0 flex-1 text-left hover:text-accent transition-colors"
                     title={`与 ${a.name} 对话`}
                   >
-                    <Bot className="h-4 w-4 text-zinc-400 shrink-0" />
+                    <Bot className="h-4 w-4 text-ink-3 shrink-0" />
                     <div className="min-w-0">
-                      <div className="text-sm font-medium text-zinc-900 truncate">{a.name}</div>
+                      <div className="text-sm font-medium text-ink truncate">{a.name}</div>
                       {a.description && (
-                        <div className="text-xs text-zinc-400 truncate">{a.description}</div>
+                        <div className="text-xs text-ink-3 truncate">{a.description}</div>
                       )}
                     </div>
                   </button>
                   <button
                     onClick={() => togglePin(a)}
-                    className="text-zinc-300 hover:text-red-600 transition-colors opacity-0 group-hover:opacity-100 shrink-0"
+                    className="text-ink-2 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 shrink-0"
                     title="取消固定"
                   >
                     <PinOff className="h-4 w-4" />
@@ -84,13 +84,13 @@ export default function AgentsPage() {
 
         {/* 右侧：全部 agent 表格，每行带固定/取消固定按钮 */}
         <div className="flex-1 min-w-0">
-          {isLoading && <p className="text-sm text-zinc-400">加载中…</p>}
+          {isLoading && <p className="text-sm text-ink-3">加载中…</p>}
 
           {agents && agents.length > 0 && (
-            <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
+            <div className="bg-surface-1 rounded-xl border border-line overflow-hidden">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-zinc-100 bg-zinc-50/50 text-left text-xs font-medium text-zinc-500 uppercase tracking-wide">
+                  <tr className="border-b border-line bg-surface-0/50 text-left text-xs font-medium text-ink-3 uppercase tracking-wide">
                     <th className="px-4 py-3">名称</th>
                     <th className="px-4 py-3">Runtime</th>
                     <th className="px-4 py-3">Model</th>
@@ -104,30 +104,30 @@ export default function AgentsPage() {
                     const pinned = pinnedSet.has(a.id);
                     const isSteward = a.type === "steward";
                     return (
-                      <tr key={a.id} className="border-b border-zinc-50 last:border-0 hover:bg-zinc-50/60">
+                      <tr key={a.id} className="border-b border-line last:border-0 hover:bg-surface-0/60">
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
-                            <button onClick={() => setEditing(a)} className="font-medium text-zinc-900 hover:text-indigo-600 hover:underline" title="点击编辑 agent">
+                            <button onClick={() => setEditing(a)} className="font-medium text-ink hover:text-accent hover:underline" title="点击编辑 agent">
                               {a.name}
                             </button>
                             {isSteward && (
-                              <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                              <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-accent/10 text-accent border border-accent/30">
                                 管家
                               </span>
                             )}
                           </div>
                           {a.description && (
-                            <div className="text-xs text-zinc-400 mt-0.5 line-clamp-1">{a.description}</div>
+                            <div className="text-xs text-ink-3 mt-0.5 line-clamp-1">{a.description}</div>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-zinc-600">{runtimeName(a.runtime_id)}</td>
-                        <td className="px-4 py-3 text-zinc-600">{a.model || "-"}</td>
-                        <td className="px-4 py-3 text-zinc-600">{a.max_concurrent}</td>
-                        <td className="px-4 py-3 text-zinc-400">{new Date(a.created_at).toLocaleString()}</td>
+                        <td className="px-4 py-3 text-ink-2">{runtimeName(a.runtime_id)}</td>
+                        <td className="px-4 py-3 text-ink-2">{a.model || "-"}</td>
+                        <td className="px-4 py-3 text-ink-2">{a.max_concurrent}</td>
+                        <td className="px-4 py-3 text-ink-3">{new Date(a.created_at).toLocaleString()}</td>
                         <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
                           <button
                             onClick={() => setChatting(a)}
-                            className="text-xs text-indigo-600 hover:text-indigo-800 transition-colors"
+                            className="text-xs text-accent hover:text-accent transition-colors"
                           >
                             聊天
                           </button>
@@ -137,19 +137,19 @@ export default function AgentsPage() {
                             className={
                               "inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full transition-colors " +
                               (pinned
-                                ? "bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
-                                : "text-zinc-400 hover:text-indigo-600")
+                                ? "bg-accent/10 text-accent hover:bg-accent/15"
+                                : "text-ink-3 hover:text-accent")
                             }
                             title={pinned ? "取消固定" : "固定到侧边栏"}
                           >
-                            <Pin className={"h-3 w-3 " + (pinned ? "fill-indigo-500 text-indigo-600" : "")} />
+                            <Pin className={"h-3 w-3 " + (pinned ? "fill-accent text-accent" : "")} />
                             {pinned ? "已固定" : "固定"}
                           </button>
                           <button
                             onClick={() => {
                               if (confirm(`删除 agent「${a.name}」？被 goal/schedule/squad 引用时会被拒绝。`)) del.mutate(a.id);
                             }}
-                            className="text-xs text-zinc-400 hover:text-red-600 transition-colors"
+                            className="text-xs text-ink-3 hover:text-red-400 transition-colors"
                           >
                             删除
                           </button>
@@ -169,11 +169,11 @@ export default function AgentsPage() {
           {/* 删除失败必须显示——后端守卫（agent 被 goal/schedule/squad 引用）
               返回 400 coded error，静默等于「点了没反应」。 */}
           {del.isError && (
-            <p className="text-sm text-red-500 mt-3">{String(del.error)}</p>
+            <p className="text-sm text-red-400 mt-3">{String(del.error)}</p>
           )}
           {/* 固定/取消固定失败同样要显示（侧栏按钮无任何反馈路径）。 */}
           {toggle.isError && (
-            <p className="text-sm text-red-500 mt-3">{String(toggle.error)}</p>
+            <p className="text-sm text-red-400 mt-3">{String(toggle.error)}</p>
           )}
         </div>
       </div>

@@ -20,6 +20,7 @@
 // it: the transfer order, the parallel fan, and who holds it now.
 
 import { Fragment, useEffect, useState } from "react";
+import { CheckCircle2, XCircle, Ban, Clock, Inbox, Bell } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useGoalTimeline, useGoalRuns, useGoalRunMessages, useAgents, qk } from "@/lib/queries";
 import { useWSEvent } from "@/lib/ws";
@@ -76,14 +77,14 @@ function useFlow(goalId: string, goalStatus: string) {
 // ── flow card ─────────────────────────────────────────────────────────
 
 const FLOW_COLORS = [
-  { border: "border-indigo-400", text: "text-indigo-700", bg: "bg-indigo-50", ring: "ring-indigo-200", dot: "bg-indigo-500" },
-  { border: "border-violet-400", text: "text-violet-700", bg: "bg-violet-50", ring: "ring-violet-200", dot: "bg-violet-500" },
-  { border: "border-teal-400", text: "text-teal-700", bg: "bg-teal-50", ring: "ring-teal-200", dot: "bg-teal-500" },
-  { border: "border-sky-400", text: "text-sky-700", bg: "bg-sky-50", ring: "ring-sky-200", dot: "bg-sky-500" },
-  { border: "border-rose-400", text: "text-rose-700", bg: "bg-rose-50", ring: "ring-rose-200", dot: "bg-rose-500" },
-  { border: "border-emerald-400", text: "text-emerald-700", bg: "bg-emerald-50", ring: "ring-emerald-200", dot: "bg-emerald-500" },
+  { border: "border-accent/60", text: "text-accent", bg: "bg-accent/10", ring: "ring-accent/30", dot: "bg-accent" },
+  { border: "border-violet-500/50", text: "text-violet-300", bg: "bg-violet-500/10", ring: "ring-violet-500/30", dot: "bg-violet-500" },
+  { border: "border-teal-500/50", text: "text-teal-300", bg: "bg-teal-500/10", ring: "ring-teal-500/30", dot: "bg-teal-500" },
+  { border: "border-sky-500/50", text: "text-sky-300", bg: "bg-sky-500/10", ring: "ring-sky-500/30", dot: "bg-sky-500" },
+  { border: "border-rose-500/50", text: "text-rose-300", bg: "bg-rose-500/10", ring: "ring-rose-500/30", dot: "bg-rose-500" },
+  { border: "border-emerald-500/50", text: "text-emerald-300", bg: "bg-emerald-500/10", ring: "ring-emerald-500/30", dot: "bg-emerald-500" },
 ];
-const HUMAN_COLOR = { border: "border-amber-400", text: "text-amber-700", bg: "bg-amber-50", ring: "ring-amber-200", dot: "bg-amber-500" };
+const HUMAN_COLOR = { border: "border-amber-500/50", text: "text-amber-300", bg: "bg-amber-500/10", ring: "ring-amber-500/30", dot: "bg-amber-500" };
 type FlowColor = (typeof FLOW_COLORS)[number];
 
 // Actions that ARE processing steps (flow nodes). Comments and system
@@ -93,12 +94,12 @@ const FLOW_ACTIONS = new Set([
   "reopened", "cancelled", "mention_cycle_failed",
 ]);
 const ACTION_LABEL: Record<string, string> = {
-  created: "📝 创建",
-  handoff: "🔀 改派",
-  entered_review: "🔔 等待审批",
-  reopened: "↩️ 重开",
-  cancelled: "🚫 取消",
-  mention_cycle_failed: "⚠️ 协作循环判死",
+  created: "创建",
+  handoff: "改派",
+  entered_review: "等待审批",
+  reopened: "重开",
+  cancelled: "取消",
+  mention_cycle_failed: "协作循环判死",
 };
 
 type FlowRow =
@@ -186,11 +187,11 @@ export function GoalTimeline({ goalId, goalStatus }: { goalId: string; goalStatu
     <>
       <Button
         variant="outline"
-        className="gap-1.5 border-indigo-200 bg-indigo-50/70 text-indigo-700 hover:border-indigo-300 hover:bg-indigo-100"
+        className="gap-1.5 border-accent/30 bg-accent/10 text-accent hover:border-accent/50 hover:bg-accent/15"
         onClick={() => setOpen(true)}
       >
         {active && (
-          <span className={`h-1.5 w-1.5 rounded-full animate-pulse ${active.kind === "run" ? "bg-indigo-500" : "bg-amber-500"}`} aria-hidden />
+          <span className={`h-1.5 w-1.5 rounded-full animate-pulse ${active.kind === "run" ? "bg-accent" : "bg-amber-500"}`} aria-hidden />
         )}
         执行 flow
       </Button>
@@ -285,8 +286,8 @@ function FlowCard({ items, active, agentName, nowMs, goalStatus, goalId }: {
   return (
     <div>
       {holderLabel && (
-        <div className="mb-4 px-3 py-2 rounded-lg bg-zinc-50 border border-zinc-200 text-xs font-medium text-zinc-700 flex items-center gap-2">
-          <span className={`h-1.5 w-1.5 rounded-full animate-pulse ${active?.kind === "run" ? "bg-indigo-500" : "bg-amber-500"}`} />
+        <div className="mb-4 px-3 py-2 rounded-lg bg-surface-0 border border-line text-xs font-medium text-ink-2 flex items-center gap-2">
+          <span className={`h-1.5 w-1.5 rounded-full animate-pulse ${active?.kind === "run" ? "bg-accent" : "bg-amber-500"}`} />
           {holderLabel}
         </div>
       )}
@@ -343,20 +344,20 @@ function ActionTag({ it, nowMs, goalStatus }: { it: TimelineItem; nowMs: number;
   const ok = it.decision === "approve";
   const waiting = goalStatus === "review" && !decision && it.action?.startsWith("entered_review");
   let label: string;
-  let cls = "text-zinc-400";
+  let cls = "text-ink-3";
   if (decision) {
     label = ok ? "批准" : it.decision === "reject" ? "驳回" : "改判";
-    cls = ok ? "text-emerald-600" : "text-red-600";
+    cls = ok ? "text-emerald-400" : "text-red-400";
   } else if (it.action === "entered_review") {
-    label = "等待审批"; cls = "text-amber-600";
+    label = "等待审批"; cls = "text-amber-400";
   } else if (it.action === "created") {
-    label = "创建"; cls = "text-zinc-400";
+    label = "创建"; cls = "text-ink-3";
   } else {
     label = ((ACTION_LABEL[it.action ?? ""] ?? "").replace(/^..\s*/, "")) || (it.action ?? "");
   }
-  const pill = decision ? (ok ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200")
-    : it.action === "entered_review" ? "bg-amber-50 text-amber-700 border-amber-200"
-    : "bg-zinc-50 text-zinc-500 border-zinc-200";
+  const pill = decision ? (ok ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30" : "bg-red-500/10 text-red-300 border-red-500/30")
+    : it.action === "entered_review" ? "bg-amber-500/10 text-amber-300 border-amber-500/30"
+    : "bg-surface-0 text-ink-3 border-line";
   const hasMore = it.reason || it.gate_rule;
   const [open, setOpen] = useState(false);
   return (
@@ -371,15 +372,15 @@ function ActionTag({ it, nowMs, goalStatus }: { it: TimelineItem; nowMs: number;
         {waiting && ` · ${dur(Date.parse(it.at), nowMs)}`}
       </button>
       {open && (it.reason || it.gate_rule) && (
-        <div className="w-[240px] rounded-lg border border-zinc-200 bg-white shadow-md p-2.5 mt-1 mb-1 text-left space-y-1">
-          {it.gate_rule && <div className="text-[10px] text-zinc-500">规则：<code className="text-zinc-400">{it.gate_rule}</code></div>}
+        <div className="w-[240px] rounded-lg border border-line bg-surface-1 shadow-md p-2.5 mt-1 mb-1 text-left space-y-1">
+          {it.gate_rule && <div className="text-[10px] text-ink-3">规则：<code className="text-ink-3">{it.gate_rule}</code></div>}
           {it.reason && (
-            <div className="text-[10px] text-zinc-600">
-              <span className="font-medium text-zinc-500">{decision ? "理由" : "备注"}：</span>
+            <div className="text-[10px] text-ink-2">
+              <span className="font-medium text-ink-3">{decision ? "理由" : "备注"}：</span>
               <span className="whitespace-pre-wrap">{it.reason}</span>
             </div>
           )}
-          <div className="text-[9.5px] text-zinc-400 tabular-nums">{fmtTime(it.at)}</div>
+          <div className="text-[9.5px] text-ink-3 tabular-nums">{fmtTime(it.at)}</div>
         </div>
       )}
     </div>
@@ -403,11 +404,11 @@ function FlowNode({ run, agentName, nowMs, active, loop, goalId }: {
   const name = agentName(run.agent_id ?? "");
 
   const st: { text: string; cls: string; ring: string } =
-    status === "completed" ? { text: "完成", cls: "text-emerald-600", ring: "border-emerald-300 bg-emerald-50" }
-    : status === "failed" ? { text: "失败", cls: "text-red-600", ring: "border-red-300 bg-red-50" }
-    : status === "running" ? { text: "执行中", cls: "text-indigo-600", ring: "border-indigo-400 bg-indigo-50" }
-    : status === "queued" ? { text: "排队", cls: "text-zinc-400", ring: "border-zinc-300 bg-zinc-50" }
-    : { text: "", cls: "text-zinc-400", ring: "border-indigo-200 bg-indigo-50" };
+    status === "completed" ? { text: "完成", cls: "text-emerald-400", ring: "border-emerald-500/40 bg-emerald-500/10" }
+    : status === "failed" ? { text: "失败", cls: "text-red-400", ring: "border-red-500/40 bg-red-500/10" }
+    : status === "running" ? { text: "执行中", cls: "text-accent", ring: "border-accent/60 bg-accent/10" }
+    : status === "queued" ? { text: "排队", cls: "text-ink-3", ring: "border-line-strong bg-surface-0" }
+    : { text: "", cls: "text-ink-3", ring: "border-accent/30 bg-accent/10" };
 
   const attempt = run.attempt && run.attempt > 1 ? ` ×${run.attempt}` : "";
 
@@ -420,23 +421,23 @@ function FlowNode({ run, agentName, nowMs, active, loop, goalId }: {
         title={run.run_id ? `run ${run.run_id.slice(0, 8)} · 点击看详情` : undefined}
       >
         <div className="relative">
-          <div className={`h-9 w-9 rounded-full border flex items-center justify-center text-[13px] font-bold text-zinc-700 shadow-sm ${st.ring} ${active ? "ring-4 ring-indigo-100 animate-pulse" : ""} group-hover:ring-2 group-hover:ring-indigo-200 transition-shadow`}>
+          <div className={`h-9 w-9 rounded-full border flex items-center justify-center text-[13px] font-bold text-ink-2 shadow-sm ${st.ring} ${active ? "ring-4 ring-accent/20 animate-pulse" : ""} group-hover:ring-2 group-hover:ring-accent/30 transition-shadow`}>
             {(name[0] ?? "?").toUpperCase()}
           </div>
         </div>
-        <div className="text-[10px] font-medium text-zinc-700 truncate w-full text-center leading-tight">
+        <div className="text-[10px] font-medium text-ink-2 truncate w-full text-center leading-tight">
           {name}
-          {loop && <span className="text-violet-500 font-bold" title="此前已出现过（环）">↺</span>}
+          {loop && <span className="text-violet-400 font-bold" title="此前已出现过（环）">↺</span>}
         </div>
         {(run.role === "subgoal" || run.role === "consult" || run.role === "review" || run.role === "verify") && (
-          <span className="text-[9px] px-1 py-px rounded bg-violet-50 text-violet-600 border border-violet-100 leading-none">
+          <span className="text-[9px] px-1 py-px rounded bg-violet-500/10 text-violet-400 border border-violet-500/20 leading-none">
             {run.role === "subgoal" ? "子任务" : run.role === "verify" ? "验证" : run.role === "review" ? "审查" : "咨询"}
           </span>
         )}
         <div className={`text-[9.5px] font-medium leading-tight ${st.cls}`}>
           {st.text}{attempt}
         </div>
-        <div className="text-[9px] text-zinc-400 tabular-nums leading-tight">
+        <div className="text-[9px] text-ink-3 tabular-nums leading-tight">
           {fmtTime(run.started_at || run.at)}
           {run.finished_at ? `·${dur(start, end)}` : status === "running" ? `·${dur(start, nowMs)}` : ""}
         </div>
@@ -463,16 +464,16 @@ function RunDetail({ goalId, runId, agentName }: {
   })();
 
   return (
-    <div className="w-[260px] rounded-xl border border-zinc-200 bg-white shadow-md p-3 text-left space-y-2 mt-1 mb-2">
+    <div className="w-[260px] rounded-xl border border-line bg-surface-1 shadow-md p-3 text-left space-y-2 mt-1 mb-2">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold text-zinc-800">{agentName(full?.agent_id ?? "")}</span>
-        <code className="text-[9px] text-zinc-400">{runId.slice(0, 8)}</code>
+        <span className="text-[11px] font-semibold text-ink">{agentName(full?.agent_id ?? "")}</span>
+        <code className="text-[9px] text-ink-3">{runId.slice(0, 8)}</code>
       </div>
 
       {evidence && !!(evidence.diff_stat || evidence.verify) && (
         <details>
-          <summary className="text-[10px] font-medium text-zinc-500 cursor-pointer">证据包</summary>
-          <pre className="mt-1 text-[9.5px] text-zinc-600 whitespace-pre-wrap bg-zinc-50 rounded p-1.5 max-h-40 overflow-y-auto">
+          <summary className="text-[10px] font-medium text-ink-3 cursor-pointer">证据包</summary>
+          <pre className="mt-1 text-[9.5px] text-ink-2 whitespace-pre-wrap bg-surface-0 rounded p-1.5 max-h-40 overflow-y-auto">
             {String(evidence.diff_stat ?? "")}
             {"\n"}
             {String(evidence.verify ?? "")}
@@ -481,22 +482,22 @@ function RunDetail({ goalId, runId, agentName }: {
       )}
 
       {full?.trigger_comment_id && (
-        <div className="text-[10px] text-zinc-500">
-          触发：<code className="text-zinc-400">{full.trigger_comment_id.slice(0, 8)}</code>（mention 评论）
+        <div className="text-[10px] text-ink-3">
+          触发：<code className="text-ink-3">{full.trigger_comment_id.slice(0, 8)}</code>（mention 评论）
         </div>
       )}
 
       <button
         type="button"
         onClick={() => setShowStream((v) => !v)}
-        className="text-[10px] font-medium text-indigo-600 hover:underline"
+        className="text-[10px] font-medium text-accent hover:underline"
       >
         {showStream ? "收起交互流" : "查看交互流"}
       </button>
       {showStream && (
-        <div className="max-h-48 overflow-y-auto border-t border-zinc-100 pt-1.5">
+        <div className="max-h-48 overflow-y-auto border-t border-line pt-1.5">
           {(messages ?? []).length === 0 ? (
-            <div className="text-[10px] text-zinc-400">尚无交互记录…</div>
+            <div className="text-[10px] text-ink-3">尚无交互记录…</div>
           ) : (
             <StreamCards items={groupMessages(messages ?? [])} compact />
           )}
@@ -524,18 +525,18 @@ export function GoalStatusBar({ goalId, goalStatus }: { goalId: string; goalStat
   });
 
   if (active) return <ActiveBadge active={active} agentName={agentName} nowMs={nowMs} goalStatus={goalStatus} />;
-  const meta: Record<string, { icon: string; text: string; cls: string }> = {
-    done: { icon: "🏁", text: "已完成", cls: "text-emerald-700" },
-    failed: { icon: "❌", text: "失败", cls: "text-red-700" },
-    cancelled: { icon: "🚫", text: "已取消", cls: "text-zinc-500" },
-    active: { icon: "⏸️", text: "等待中", cls: "text-zinc-500" },
-    backlog: { icon: "📥", text: "未开始", cls: "text-zinc-400" },
-    review: { icon: "🔔", text: "等待审批", cls: "text-purple-700" },
+  const meta: Record<string, { Icon: React.ComponentType<{ className?: string }>; text: string; cls: string }> = {
+    done: { Icon: CheckCircle2, text: "已完成", cls: "text-emerald-300" },
+    failed: { Icon: XCircle, text: "失败", cls: "text-red-300" },
+    cancelled: { Icon: Ban, text: "已取消", cls: "text-ink-3" },
+    active: { Icon: Clock, text: "等待中", cls: "text-ink-3" },
+    backlog: { Icon: Inbox, text: "未开始", cls: "text-ink-3" },
+    review: { Icon: Bell, text: "等待审批", cls: "text-purple-300" },
   };
-  const m = meta[goalStatus] ?? { icon: "•", text: goalStatus, cls: "text-zinc-500" };
+  const m = meta[goalStatus] ?? { Icon: Clock, text: goalStatus, cls: "text-ink-3" };
   return (
     <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${m.cls}`}>
-      <span>{m.icon}</span>
+      <m.Icon className="h-3.5 w-3.5" />
       {m.text}
     </span>
   );
@@ -550,7 +551,7 @@ function ActiveBadge({ active, agentName, nowMs, goalStatus }: {
   if (active.kind === "review") {
     const el = nowMs - new Date(active.node.at).getTime();
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700">
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-300">
         <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
         等你审批 · 已等待 {dur(nowMs - el, nowMs)}
       </span>
@@ -559,7 +560,7 @@ function ActiveBadge({ active, agentName, nowMs, goalStatus }: {
   const r = active.node;
   if (r.run_status === "queued") {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500">
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-3">
         <span className="h-2 w-2 rounded-full bg-zinc-400" />
         排队中
       </span>
@@ -570,8 +571,8 @@ function ActiveBadge({ active, agentName, nowMs, goalStatus }: {
   // label it "审查中", not the generic "正在执行".
   const verb = goalStatus === "review" ? "审查中" : "正在执行";
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-indigo-700">
-      <span className="h-2 w-2 rounded-full bg-indigo-500 animate-pulse" />
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-accent">
+      <span className="h-2 w-2 rounded-full bg-accent animate-pulse" />
       {agentName(r.agent_id ?? "")} {verb} · 已进行 {dur(nowMs - el, nowMs)}
     </span>
   );

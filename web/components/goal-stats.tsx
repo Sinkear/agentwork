@@ -60,7 +60,7 @@ export function GoalStats({
         {Array.from({ length: 4 }).map((_, i) => (
           <div
             key={i}
-            className="bg-white rounded-xl border border-zinc-200 p-4"
+            className="bg-surface-1 rounded-xl border border-line p-4"
           >
             <Skeleton className="h-3 w-16 mb-2" />
             <Skeleton className="h-8 w-12" />
@@ -77,17 +77,17 @@ export function GoalStats({
       {stats.map((s) => (
         <div
           key={s.key}
-          className="bg-white rounded-xl border border-zinc-200 p-4 flex items-center gap-3"
+          className="bg-surface-1 rounded-xl border border-line p-4 flex items-center gap-3"
         >
           <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", s.dot)} />
           <div className="min-w-0">
-            <p className="text-xs text-zinc-500 font-medium">
+            <p className="text-xs text-ink-3 font-medium">
               {s.label}
               {s.hint && (
-                <span className="ml-1.5 text-zinc-300 text-[10px]">{s.hint}</span>
+                <span className="ml-1.5 text-ink-2 text-[10px]">{s.hint}</span>
               )}
             </p>
-            <p className="text-2xl font-semibold text-zinc-900 leading-tight">
+            <p className="text-2xl font-semibold text-ink leading-tight">
               {s.count}
             </p>
           </div>

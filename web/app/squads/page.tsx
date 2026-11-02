@@ -31,14 +31,14 @@ export default function SquadsPage() {
       />
 
       {isLoading ? (
-        <div className="text-sm text-zinc-400 py-16 text-center">加载中…</div>
+        <div className="text-sm text-ink-3 py-16 text-center">加载中…</div>
       ) : !squads || squads.length === 0 ? (
         <Empty>暂无 Squad。点「+ 新建」创建一个，或「导入团队」从代码仓导入。</Empty>
       ) : (
-        <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
+        <div className="bg-surface-1 rounded-xl border border-line overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-zinc-100 bg-zinc-50/50 text-left text-xs font-medium text-zinc-500 uppercase tracking-wide">
+              <tr className="border-b border-line bg-surface-0/50 text-left text-xs font-medium text-ink-3 uppercase tracking-wide">
                 <th className="px-4 py-3">名称</th>
                 <th className="px-4 py-3">Leader</th>
                 <th className="px-4 py-3">描述</th>
@@ -48,19 +48,19 @@ export default function SquadsPage() {
             </thead>
             <tbody>
               {squads.map((s: Squad) => (
-                <tr key={s.id} className="border-b border-zinc-50 last:border-0 hover:bg-zinc-50/60">
-                  <td className="px-4 py-3 font-medium text-zinc-900">
-                    <Link href={`/squads/${s.id}`} className="hover:text-blue-600 hover:underline">
+                <tr key={s.id} className="border-b border-line last:border-0 hover:bg-surface-0/60">
+                  <td className="px-4 py-3 font-medium text-ink">
+                    <Link href={`/squads/${s.id}`} className="hover:text-blue-400 hover:underline">
                       {s.name}
                     </Link>
                   </td>
-                  <td className="px-4 py-3 text-zinc-600">{agentName(s.leader_id)}</td>
-                  <td className="px-4 py-3 text-zinc-500 max-w-[200px] truncate">{s.description || "-"}</td>
-                  <td className="px-4 py-3 text-zinc-400">{new Date(s.created_at).toLocaleString()}</td>
+                  <td className="px-4 py-3 text-ink-2">{agentName(s.leader_id)}</td>
+                  <td className="px-4 py-3 text-ink-3 max-w-[200px] truncate">{s.description || "-"}</td>
+                  <td className="px-4 py-3 text-ink-3">{new Date(s.created_at).toLocaleString()}</td>
                   <td className="px-4 py-3 text-right">
                     <button
                       onClick={() => setDeleteTarget(s.id)}
-                      className="text-xs text-zinc-400 hover:text-red-600 transition-colors"
+                      className="text-xs text-ink-3 hover:text-red-400 transition-colors"
                     >
                       删除
                     </button>
@@ -92,7 +92,7 @@ export default function SquadsPage() {
       {/* 删除失败必须显示——后端守卫（squad 被 goal/schedule 引用）返回
           400 coded error，静默等于「点了没反应」。 */}
       {deleteSquad.isError && (
-        <p className="text-sm text-red-500 mt-3">{String(deleteSquad.error)}</p>
+        <p className="text-sm text-red-400 mt-3">{String(deleteSquad.error)}</p>
       )}
     </div>
   );
@@ -172,9 +172,9 @@ function NewSquadForm({
           <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} required placeholder="Squad 名称…" />
         </Field>
         <Field label="成员" hint="leader = 协调者；reviewer = 审查者（进审批时平台自动拉去审查）。先选成员，再指定 leader 和 reviewer">
-          <div className="border border-zinc-200 rounded-lg divide-y divide-zinc-100 max-h-48 overflow-y-auto">
+          <div className="border border-line rounded-lg divide-y divide-line max-h-48 overflow-y-auto">
             {(agents ?? []).map((a) => (
-              <label key={a.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-zinc-50">
+              <label key={a.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-surface-0">
                 <input type="checkbox" checked={members.includes(a.id)} onChange={() => toggleMember(a.id)} />
                 {a.name}
               </label>
@@ -204,10 +204,10 @@ function NewSquadForm({
           <textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} className={inputCls} rows={3} placeholder="Squad 工作说明…" />
         </Field>
         {createSquad.isError && (
-          <p className="text-sm text-red-500">{String(createSquad.error)}</p>
+          <p className="text-sm text-red-400">{String(createSquad.error)}</p>
         )}
         {memberFailures.length > 0 && (
-          <p className="text-sm text-amber-600">
+          <p className="text-sm text-amber-400">
             Squad 已创建，但以下成员加入失败：{memberFailures.join("、")}。可稍后在 Squad 详情页手动添加。
           </p>
         )}
@@ -258,7 +258,7 @@ function ImportTeamForm({
       }
     >
       <div className="space-y-2">
-        <p className="text-sm text-zinc-500">
+        <p className="text-sm text-ink-3">
           从代码仓导入团队定义。管家 agent 会克隆仓库、探索 team.md 及引用的角色和技能文件，
           自动创建 agent、squad 和 skill，并为每个 agent 分配可用 runtime。仓库格式不固定——agent 凭理解力解析。
         </p>
@@ -292,7 +292,7 @@ function ImportTeamForm({
             </Field>
           </div>
           {importMut.isError && (
-            <p className="text-sm text-red-500">{String(importMut.error?.message ?? "导入失败")}</p>
+            <p className="text-sm text-red-400">{String(importMut.error?.message ?? "导入失败")}</p>
           )}
         </form>
       </div>

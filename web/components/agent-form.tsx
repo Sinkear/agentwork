@@ -33,12 +33,12 @@ function KVRows({ rows, onChange, keyPlaceholder, valuePlaceholder }: {
           <button
             type="button"
             onClick={() => onChange(rows.filter((_, j) => j !== i))}
-            className="text-zinc-400 hover:text-red-500 shrink-0"
+            className="text-ink-3 hover:text-red-400 shrink-0"
             title="删除"
           >✕</button>
         </div>
       ))}
-      <button type="button" className="text-indigo-600 hover:text-indigo-700 text-xs" onClick={() => onChange([...rows, { name: "", value: "" }])}>
+      <button type="button" className="text-accent hover:text-accent text-xs" onClick={() => onChange([...rows, { name: "", value: "" }])}>
         + 添加
       </button>
     </div>
@@ -138,10 +138,10 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
         </Field>
 
         <Field label="Skills（平台技能库）" hint="勾选的 skill 会下发到该 agent 所在机器，run 时按原名装入工作目录的项目级 skills">
-          <div className="border border-zinc-200 rounded-lg divide-y divide-zinc-100 max-h-48 overflow-y-auto">
+          <div className="border border-line rounded-lg divide-y divide-line max-h-48 overflow-y-auto">
             {skillLib && skillLib.length > 0 ? (
               skillLib.map((sk) => (
-                <label key={sk.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-zinc-50">
+                <label key={sk.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-surface-0">
                   <input
                     type="checkbox"
                     checked={skills.includes(sk.id)}
@@ -152,11 +152,11 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
                     }
                   />
                   <span className="font-medium">{sk.name}</span>
-                  {sk.description && <span className="text-xs text-zinc-500">— {sk.description}</span>}
+                  {sk.description && <span className="text-xs text-ink-3">— {sk.description}</span>}
                 </label>
               ))
             ) : (
-              <p className="px-3 py-2 text-xs text-zinc-400">暂无技能——在「Skills」页面上传 skill 包后可在此勾选</p>
+              <p className="px-3 py-2 text-xs text-ink-3">暂无技能——在「Skills」页面上传 skill 包后可在此勾选</p>
             )}
           </div>
         </Field>
@@ -166,7 +166,7 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
         </Field>
 
         <details className="text-xs">
-          <summary className="cursor-pointer text-zinc-400 hover:text-zinc-600">高级设置</summary>
+          <summary className="cursor-pointer text-ink-3 hover:text-ink-2">高级设置</summary>
           <div className="mt-2 space-y-4">
             <Field
               label="同时执行的任务数"
@@ -186,7 +186,7 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
                   // the legacy "stdio" string render as the stdio option.
                   const t = m.type === "http" || m.type === "sse" ? m.type : "stdio";
                   return (
-                    <div key={i} className="border border-zinc-200 rounded-lg p-2 space-y-2">
+                    <div key={i} className="border border-line rounded-lg p-2 space-y-2">
                       <div className="flex gap-2">
                         <input
                           value={m.name}
@@ -209,7 +209,7 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
                         <button
                           type="button"
                           onClick={() => setMcpRows(mcpRows.filter((_, j) => j !== i))}
-                          className="text-zinc-400 hover:text-red-500 shrink-0"
+                          className="text-ink-3 hover:text-red-400 shrink-0"
                           title="删除"
                         >✕</button>
                       </div>
@@ -230,7 +230,7 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
                             />
                           </div>
                           <details>
-                            <summary className="cursor-pointer text-zinc-400 hover:text-zinc-600 text-[11px]">环境变量</summary>
+                            <summary className="cursor-pointer text-ink-3 hover:text-ink-2 text-[11px]">环境变量</summary>
                             <div className="mt-1">
                               <KVRows
                                 rows={m.env ?? []}
@@ -250,7 +250,7 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
                             placeholder="http://localhost:9222/mcp"
                           />
                           <details>
-                            <summary className="cursor-pointer text-zinc-400 hover:text-zinc-600 text-[11px]">请求头</summary>
+                            <summary className="cursor-pointer text-ink-3 hover:text-ink-2 text-[11px]">请求头</summary>
                             <div className="mt-1">
                               <KVRows
                                 rows={m.headers ?? []}
@@ -265,7 +265,7 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
                     </div>
                   );
                 })}
-                <button type="button" className="text-indigo-600 hover:text-indigo-700" onClick={() => setMcpRows([...mcpRows, { name: "", type: "http" }])}>
+                <button type="button" className="text-accent hover:text-accent" onClick={() => setMcpRows([...mcpRows, { name: "", type: "http" }])}>
                   + 添加服务器
                 </button>
               </div>
@@ -274,7 +274,7 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
         </details>
 
         {(create.isError || update.isError) && (
-          <p className="text-sm text-red-500">{String(create.error ?? update.error)}</p>
+          <p className="text-sm text-red-400">{String(create.error ?? update.error)}</p>
         )}
       </form>
     </Dialog>

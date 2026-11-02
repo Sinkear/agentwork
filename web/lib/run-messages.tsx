@@ -100,12 +100,12 @@ export function StreamCards({ items, compact }: { items: RenderItem[]; compact?:
             <div key={item.key} className={sz}>
               <button
                 onClick={() => toggle(item.key)}
-                className="text-zinc-500 font-medium hover:text-zinc-700"
+                className="text-ink-3 font-medium hover:text-ink-2"
               >
                 {collapsed ? "+" : "-"} thought
               </button>
               {!collapsed && (
-                <div className="mt-0.5 pl-2 italic text-zinc-400 whitespace-pre-wrap">
+                <div className="mt-0.5 pl-2 italic text-ink-3 whitespace-pre-wrap">
                   {item.content}
                 </div>
               )}
@@ -118,19 +118,19 @@ export function StreamCards({ items, compact }: { items: RenderItem[]; compact?:
             <div key={item.key} className={sz}>
               <button
                 onClick={() => toggle(item.key)}
-                className="text-purple-600 font-medium hover:text-purple-700"
+                className="text-purple-400 font-medium hover:text-purple-300"
               >
                 {collapsed ? "+" : "-"} {item.toolName}
               </button>
               {!collapsed && (
                 <div className="mt-0.5 pl-2 space-y-0.5">
                   {item.input && (
-                    <div className="text-zinc-500 break-all">{item.input}</div>
+                    <div className="text-ink-3 break-all">{item.input}</div>
                   )}
                   {item.hasResult ? (
-                    <div className="text-zinc-400 break-all whitespace-pre-wrap">{item.output}</div>
+                    <div className="text-ink-3 break-all whitespace-pre-wrap">{item.output}</div>
                   ) : (
-                    <div className="text-zinc-400 italic">运行中…</div>
+                    <div className="text-ink-3 italic">运行中…</div>
                   )}
                 </div>
               )}
@@ -139,7 +139,7 @@ export function StreamCards({ items, compact }: { items: RenderItem[]; compact?:
         }
         if (!item.content) return null;
         return (
-          <div key={item.key} className={`${sz} text-zinc-700 whitespace-pre-wrap`}>
+          <div key={item.key} className={`${sz} text-ink-2 whitespace-pre-wrap`}>
             {item.content}
           </div>
         );

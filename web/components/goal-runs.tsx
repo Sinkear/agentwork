@@ -75,13 +75,13 @@ export function GoalRuns({ goalId }: { goalId: string }) {
   );
 
   return (
-    <div className="bg-white rounded-2xl border border-zinc-200/80 shadow-sm overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-zinc-100 text-xs font-medium text-zinc-500 uppercase tracking-wide">
+    <div className="bg-surface-1 rounded-2xl border border-line/80 shadow-sm overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-line text-xs font-medium text-ink-3 uppercase tracking-wide">
         运行历史{runs && runs.length > 0 && `（${runs.length}）`}
       </div>
       <div className="p-4">
         {isLoading ? (
-          <div className="text-sm text-zinc-400 text-center py-8">加载中…</div>
+          <div className="text-sm text-ink-3 text-center py-8">加载中…</div>
         ) : !runs || runs.length === 0 ? (
           <Empty>尚未有运行记录。</Empty>
         ) : (
@@ -89,7 +89,7 @@ export function GoalRuns({ goalId }: { goalId: string }) {
             {/* Active runs */}
             {activeRuns.length > 0 && (
               <div>
-                <div className="text-xs font-medium text-zinc-500 mb-2">活跃运行</div>
+                <div className="text-xs font-medium text-ink-3 mb-2">活跃运行</div>
                 <RunTable runs={activeRuns} goalId={goalId} agentName={agentName} />
               </div>
             )}
@@ -99,7 +99,7 @@ export function GoalRuns({ goalId }: { goalId: string }) {
               <div>
                 <button
                   onClick={() => setShowPast(!showPast)}
-                  className="text-xs font-medium text-zinc-500 hover:text-zinc-700 mb-2 flex items-center gap-1"
+                  className="text-xs font-medium text-ink-3 hover:text-ink-2 mb-2 flex items-center gap-1"
                 >
                   {showPast ? "▾" : "▸"} 历史运行（{pastRuns.length}）
                 </button>
@@ -148,44 +148,44 @@ function RunCard({ run, goalId, agentName }: { run: Run; goalId: string; agentNa
   ].filter(Boolean).join(" → ");
 
   return (
-    <div className="bg-white rounded-2xl border border-zinc-200/80 shadow-sm overflow-hidden">
+    <div className="bg-surface-1 rounded-2xl border border-line/80 shadow-sm overflow-hidden">
       <div className="flex items-center p-3.5">
         <button
           onClick={() => setOpen(!open)}
-          className="flex-1 flex items-center gap-3 text-left hover:bg-zinc-50/60 transition-colors rounded-lg py-0.5"
+          className="flex-1 flex items-center gap-3 text-left hover:bg-surface-0/60 transition-colors rounded-lg py-0.5"
         >
-          <span className="h-2 w-2 rounded-full bg-indigo-400 shrink-0" />
-          <span className="font-medium text-sm text-zinc-900">{run.agent_id ? agentName(run.agent_id) : "-"}</span>
+          <span className="h-2 w-2 rounded-full bg-accent shrink-0" />
+          <span className="font-medium text-sm text-ink">{run.agent_id ? agentName(run.agent_id) : "-"}</span>
           <Badge status={run.status} />
           {(run.role === "consult" || run.role === "review" || run.role === "subgoal" || run.role === "verify") && (
-            <span className="text-[11px] px-1.5 py-0.5 rounded bg-violet-50 text-violet-600 border border-violet-100 shrink-0">
+            <span className="text-[11px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-400 border border-violet-500/20 shrink-0">
               {run.role === "review" ? "审查" : run.role === "subgoal" ? "子任务" : run.role === "verify" ? "验证" : "咨询"}
             </span>
           )}
-          <span className="text-xs text-zinc-400 shrink-0">#{run.attempt}</span>
+          <span className="text-xs text-ink-3 shrink-0">#{run.attempt}</span>
           {run.status === "cancelled" && run.cancel_reason && (
-            <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 border border-amber-100 shrink-0">
+            <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 shrink-0">
               {cancelReasonLabel(run.cancel_reason)}
             </span>
           )}
-          <span className="text-xs text-zinc-400 ml-auto hidden sm:block">{timeRange}</span>
-          <span className="text-zinc-400 text-xs shrink-0">{open ? "▾" : "▸"}</span>
+          <span className="text-xs text-ink-3 ml-auto hidden sm:block">{timeRange}</span>
+          <span className="text-ink-3 text-xs shrink-0">{open ? "▾" : "▸"}</span>
         </button>
         {(run.status === "running" || run.status === "queued") && <StoppingRun goalId={goalId} runId={run.id} />}
       </div>
 
       {open && (
-        <div className="border-t border-zinc-100 bg-zinc-50/60 p-4 space-y-3">
+        <div className="border-t border-line bg-surface-0/60 p-4 space-y-3">
           {run.prompt && (
-            <div className="text-xs text-zinc-700">
-              <div className="text-[11px] font-medium text-zinc-400 uppercase tracking-wide mb-1">任务指令（prompt）</div>
-              <div className="max-h-72 overflow-y-auto whitespace-pre-wrap font-mono text-zinc-600 bg-white rounded-lg border border-zinc-200/60 p-2.5">
+            <div className="text-xs text-ink-2">
+              <div className="text-[11px] font-medium text-ink-3 uppercase tracking-wide mb-1">任务指令（prompt）</div>
+              <div className="max-h-72 overflow-y-auto whitespace-pre-wrap font-mono text-ink-2 bg-surface-1 rounded-lg border border-line/60 p-2.5">
                 {run.prompt}
               </div>
             </div>
           )}
           {run.status === "running" && (
-            <div className="text-[11px] text-emerald-600 flex items-center gap-1">
+            <div className="text-[11px] text-emerald-400 flex items-center gap-1">
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               运行中——实时交互流
             </div>
@@ -208,7 +208,7 @@ function RunCard({ run, goalId, agentName }: { run: Run; goalId: string; agentNa
 // and tool calls fold on click; assistant text is always shown.
 function RunMessages({ messages }: { messages: ChatMessage[] }) {
   if (messages.length === 0) {
-    return <div className="text-[11px] text-zinc-400 py-2">尚无交互记录…</div>;
+    return <div className="text-[11px] text-ink-3 py-2">尚无交互记录…</div>;
   }
   return (
     <div className="max-h-72 overflow-y-auto">
@@ -242,9 +242,9 @@ function StoppingRun({ goalId, runId }: { goalId: string; runId: string }) {
   const [err, setErr] = useState<string | null>(null);
   return (
     <div className="flex items-center gap-2">
-      {err && <span className="text-[11px] text-red-500">{err}</span>}
+      {err && <span className="text-[11px] text-red-400">{err}</span>}
       {requested ? (
-        <span className="text-[11px] text-zinc-400">已请求停止，等待终止…</span>
+        <span className="text-[11px] text-ink-3">已请求停止，等待终止…</span>
       ) : (
         <button
           onClick={async () => {
@@ -268,7 +268,7 @@ function StoppingRun({ goalId, runId }: { goalId: string; runId: string }) {
             }
           }}
           disabled={stopping}
-          className="text-[11px] text-red-500 hover:text-red-700 hover:underline disabled:opacity-50"
+          className="text-[11px] text-red-400 hover:text-red-300 hover:underline disabled:opacity-50"
         >
           {stopping ? "停止中…" : "停止"}
         </button>
