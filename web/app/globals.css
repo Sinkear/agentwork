@@ -13,20 +13,22 @@
    ══════════════════════════════════════════════════════════════ */
 
 @theme {
-  /* ── Surfaces (dark → light, bottom of the stack first) ── */
-  --color-surface-0: #0b1220; /* page background */
-  --color-surface-1: #101a2e; /* panels / cards */
-  --color-surface-2: #16223a; /* raised fill, hover, inputs */
-  --color-surface-3: #1d2b47; /* active / hover-strong */
+  /* ── Surfaces (dark → light, bottom of the stack first) ──
+     舒适暗色档：保持蓝黑族但整体提亮约一档（相当于 GitHub dimmed 的明度），
+     长时间盯屏不压眼，卡片与底仍有清晰分层。 */
+  --color-surface-0: #131c2e; /* page background */
+  --color-surface-1: #1a2539; /* panels / cards */
+  --color-surface-2: #232f49; /* raised fill, hover, inputs */
+  --color-surface-3: #2c3a58; /* active / hover-strong */
 
   /* ── Ink (light text on dark, primary → muted) ── */
-  --color-ink: #e8edf6;
-  --color-ink-2: #9fb0cc;
-  --color-ink-3: #64748b;
+  --color-ink: #f1f5fb;
+  --color-ink-2: #b3c2da;
+  --color-ink-3: #8091b0;
 
   /* ── Lines ── */
-  --color-line: #1e2a44;
-  --color-line-strong: #2a3a5c;
+  --color-line: #2b3854;
+  --color-line-strong: #3d4f72;
 
   /* ── Accent: run-green, used sparingly ── */
   --color-accent: #22c55e; /* on it: accent-ink text */
