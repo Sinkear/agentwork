@@ -10,6 +10,77 @@ import {
 } from "@/lib/queries";
 import { Button, PageHeader } from "@/components/ui";
 
+// ── 外观：双主题切换 ──
+// 持久化在 localStorage，layout 的首屏脚本在渲染前读回（无闪烁）。
+const THEMES = [
+  {
+    id: "light",
+    name: "Studio Paper",
+    zh: "浅色 · 简约纸面",
+    desc: "Codex 风格：暖白底、近黑正文、发丝级分隔线。",
+  },
+  {
+    id: "dark",
+    name: "Terminal Studio",
+    zh: "深色 · 终端工作室",
+    desc: "Dark IDE：蓝黑面板、等宽读数、run-green 状态点。",
+  },
+] as const;
+
+type ThemeId = (typeof THEMES)[number]["id"];
+
+function currentTheme(): ThemeId {
+  if (typeof window === "undefined") return "light";
+  const t = document.documentElement.dataset.theme;
+  return t === "dark" ? "dark" : "light";
+}
+
+function applyTheme(t: ThemeId) {
+  document.documentElement.dataset.theme = t;
+  try {
+    localStorage.setItem("agentwork-theme", t);
+  } catch {
+    /* 隐私模式等：主题仍对本页生效，只是不持久化 */
+  }
+}
+
+// 主题预览缩略：一块 mini 版面（导航条 + 卡片 + 状态点），点整卡切换。
+function ThemeCard({ theme, selected, onSelect }: { theme: (typeof THEMES)[number]; selected: boolean; onSelect: () => void }) {
+  const light = theme.id === "light";
+  return (
+    <button
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={`text-left rounded-xl border p-4 transition-colors duration-150 ${
+        selected
+          ? "border-accent ring-2 ring-accent/25"
+          : "border-line hover:border-line-strong"
+      }`}
+    >
+      {/* mini 预览：底色随主题实际值走（bg-surface-* 本身就是主题变量） */}
+      <div className={`rounded-lg border p-2.5 ${light ? "bg-white border-zinc-200" : "bg-[#131c2e] border-[#2b3854]"}`}>
+        <div className="flex items-center gap-1.5 mb-2">
+          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+          <span className={`h-1.5 w-10 rounded-full ${light ? "bg-zinc-300" : "bg-[#3d4f72]"}`} />
+        </div>
+        <div className={`rounded-md p-2 ${light ? "bg-zinc-50" : "bg-[#1a2539]"}`}>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className={`h-1.5 w-12 rounded-full ${light ? "bg-zinc-400" : "bg-[#8091b0]"}`} />
+            <span className="h-1.5 w-1.5 rounded-full bg-green-400" />
+          </div>
+          <span className={`block h-1.5 w-8 rounded-full ${light ? "bg-zinc-300" : "bg-[#3d4f72]"}`} />
+        </div>
+      </div>
+      <p className="mt-3 text-sm font-medium text-ink">
+        {theme.zh}
+        <span className="ml-1.5 font-mono text-[10px] text-ink-3">{theme.name}</span>
+      </p>
+      <p className="mt-0.5 text-xs text-ink-3 leading-relaxed">{theme.desc}</p>
+      {selected && <p className="mt-1.5 text-xs font-medium text-accent">当前使用</p>}
+    </button>
+  );
+}
+
 // Settings: the IM connect module + platform-wide settings (daily digest,
 // webhook secret). The intake parser is the system steward (auto-seeded).
 // The owner connects Feishu by scanning a QR code (SDK one-click app
@@ -24,10 +95,28 @@ export default function SettingsPage() {
 
   return (
     <div className="p-8">
-      <PageHeader title="Settings" />
+      <PageHeader title="Settings" desc="通知、平台参数与外观。"/>
 
-      <div className="max-w-xl">
-        <h2 className="text-lg font-medium mb-2">飞书通知（IM 连接）</h2>
+      <div className="max-w-xl space-y-8">
+        {/* 外观 */}
+        <section>
+          <h2 className="text-lg font-medium mb-2">外观</h2>
+          <p className="text-sm text-ink-3 mb-4">选择界面主题，立即生效并记住。</p>
+          <div className="grid grid-cols-2 gap-3">
+            {THEMES.map((t) => (
+              <ThemeCard
+                key={t.id}
+                theme={t}
+                selected={currentTheme() === t.id}
+                onSelect={() => applyTheme(t.id)}
+              />
+            ))}
+          </div>
+        </section>
+
+        {/* 飞书通知 */}
+        <section>
+          <h2 className="text-lg font-medium mb-2">飞书通知（IM 连接）</h2>
         <p className="text-sm text-ink-3 mb-4">
           里程碑事件（待审批 / 完成 / 合入 / 失败）会推送到飞书。扫码连接，之后你只需要在审批卡点出现。
         </p>
@@ -97,6 +186,7 @@ export default function SettingsPage() {
             {connect.isError && <p className="text-sm text-red-400">{String(connect.error)}</p>}
           </div>
         )}
+        </section>
       </div>
 
       <PlatformSettingsSection />

@@ -55,8 +55,69 @@
   --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
 }
 
+/* ══════════════════════════════════════════════════════════════
+   Theme: light "Studio Paper" (Codex-like minimal) — the DEFAULT.
+
+   Dual-theme architecture: Tailwind v4 utilities compile to
+   var(--color-*) references, so a theme is just a variable
+   re-definition. Components never change. Dark "Terminal Studio"
+   (the :root block above) stays as the alternate option.
+
+   状态色槽位重映射：组件里写的是 text-X-300 / bg-X-400 这类
+   「亮色档」工具类（为暗底而生）。浅色主题下把同一槽位指向
+   深色可读值（-700 / -600），语义与代码零改动。
+   ══════════════════════════════════════════════════════════════ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Surfaces: warm paper → white cards, hairline separation. */
+  --color-surface-0: #fafaf9; /* page background */
+  --color-surface-1: #ffffff; /* panels / cards */
+  --color-surface-2: #f4f4f2; /* raised fill, hover, inputs */
+  --color-surface-3: #e9e9e6; /* active / hover-strong */
+
+  --color-ink: #1c1c1a;
+  --color-ink-2: #565652;
+  --color-ink-3: #8f8f88;
+
+  --color-line: #e9e9e6;
+  --color-line-strong: #d6d6d1;
+
+  /* Accent: green-600 — readable on white; hover darkens. */
+  --color-accent: #16a34a;
+  --color-accent-dim: #15803d;
+  --color-accent-ink: #ffffff; /* text ON green buttons */
+  --color-accent-soft: rgba(22, 163, 74, 0.1);
+
+  /* Semantic status (dark-enough for white). */
+  --color-ok: #059669;
+  --color-warn: #b45309;
+  --color-err: #dc2626;
+  --color-info: #0284c7;
+  --color-review: #7c3aed;
+
+  /* Status family slot remaps: the -300 (badge text) and -400
+     (dots) stops become their dark-on-light equivalents. */
+  --color-green-300: #15803d;  --color-green-400: #16a34a;
+  --color-emerald-300: #047857; --color-emerald-400: #059669;
+  --color-blue-300: #1d4ed8;   --color-blue-400: #2563eb;
+  --color-purple-300: #7e22ce; --color-purple-400: #9333ea;
+  --color-red-300: #b91c1c;    --color-red-400: #dc2626;
+  --color-amber-300: #b45309;  --color-amber-400: #d97706;
+  --color-teal-300: #0f766e;   --color-teal-400: #0d9488;
+  --color-sky-300: #0369a1;    --color-sky-400: #0284c7;
+  --color-rose-300: #be123c;   --color-rose-400: #e11d48;
+  --color-orange-300: #c2410c; --color-orange-400: #ea580c;
+  --color-violet-300: #6d28d9; --color-violet-400: #7c3aed;
+  --color-fuchsia-300: #a21caf; --color-fuchsia-400: #c026d3;
+  --color-zinc-400: #71717a; /* zinc dots: visible on white */
+}
+
 html {
   color-scheme: dark;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 body {
@@ -90,7 +151,7 @@ body {
   select:focus {
     outline: none;
     border-color: var(--color-accent-dim);
-    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
   }
   input::placeholder,
   textarea::placeholder {
@@ -177,7 +238,7 @@ body {
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #35496f;
+  background: var(--color-ink-3);
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -185,6 +246,6 @@ body {
 
 /* Selection: green tint instead of browser default. */
 ::selection {
-  background: rgba(34, 197, 94, 0.25);
+  background: color-mix(in srgb, var(--color-accent) 25%, transparent);
   color: var(--color-ink);
 }

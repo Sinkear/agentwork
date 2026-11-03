@@ -37,9 +37,10 @@ export default function Home() {
   };
 
   return (
-    <div className="p-8 space-y-7 max-w-5xl page-enter">
+    <div className="p-8 space-y-8 max-w-6xl page-enter">
       <PageHeader
         title="总览"
+        desc="待办卡点、执行中的任务与 agent 负载，一屏看完。"
         action={
           <Link href="/goals">
             <Button variant="outline">全部任务 →</Button>

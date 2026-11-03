@@ -255,16 +255,22 @@ export function ConfirmDialog({
 }
 
 // ── Page header ──
+// 标题即版面锚点：大半号、收紧字距，可选一行副标题。
 export function PageHeader({
   title,
+  desc,
   action,
 }: {
   title: string;
+  desc?: string;
   action?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between mb-5">
-      <h1 className="text-lg font-semibold text-ink">{title}</h1>
+    <div className="flex items-end justify-between mb-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight text-ink">{title}</h1>
+        {desc && <p className="mt-1 text-sm text-ink-3">{desc}</p>}
+      </div>
       {action}
     </div>
   );
