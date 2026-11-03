@@ -23,7 +23,7 @@ import (
 
 const (
 	// defaultServerURL matches the agentwork default listen addr.
-	defaultServerURL = "http://127.0.0.1:7373"
+	defaultServerURL = "http://127.0.0.1:47813"
 	httpTimeout      = 10 * time.Second
 )
 
@@ -133,7 +133,7 @@ and remote-machine sidecar (register this host to agentwork-daemon).
 Subcommands:
   connect [--server URL] [--token T] [--name N] [--scan DIR|GLOB ...] [--agents FILE]
                                              connect this machine to agentwork-daemon (default
-                                             127.0.0.1:7373, no auth), probe its agent CLIs and
+                                             127.0.0.1:47813, no auth), probe its agent CLIs and
                                              register them; --scan adds a directory to search for
                                              agent CLIs not on PATH (repeatable; ~ expanded);
                                              --agents points to a YAML config (default
@@ -199,7 +199,7 @@ Subcommands:
   version                                    print the CLI build version and exit
 
 Environment (injected by daemon):
-  AGENTWORK_SERVER_URL   server base URL (default http://127.0.0.1:7373)
+  AGENTWORK_SERVER_URL   server base URL (default http://127.0.0.1:47813)
   AGENTWORK_GOAL_ID      current goal id (product plane)
   AGENTWORK_RUN_ID       current run id (execution plane)
   AGENTWORK_AGENT_ID     current agent id`)

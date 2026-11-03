@@ -143,8 +143,45 @@ export interface Domain {
   issue_provider: string; // M4-B: github | gitcode
   pull_assignee: string; // M4-B PR pull: agent|squad handling this repo's PRs ('' = don't pull PRs)
   pull_assignee_type: string; // M4-B PR pull: agent | squad
+  webhook_secret: string; // 仓库级 webhook secret（'' = 用平台 secret）
   created_at: string;
   scratch_dir?: string; // scratch 域的项目目录（repo 域无）——人找产物的路径
+}
+
+// ── Webhook（每仓库接入状态） ──
+// GET /domains/{id}/webhook 的宿主侧 hook 与投递日志视图。
+
+export interface Webhook {
+  id: number;
+  url: string;
+  active: boolean;
+  events: string[];
+}
+
+export interface WebhookDelivery {
+  event: string; // issues | pull_request | ''
+  action: string; // opened / reopened / synchronize / ...
+  repo: string; // owner/repo（解析不出为 ''）
+  ok: boolean;
+  error: string;
+  received_at: string;
+}
+
+export interface WebhookStatus {
+  domain_id: string;
+  provider: string; // github | gitcode
+  repo: string; // owner/repo（'' = 没有配置跟踪仓库）
+  path: string; // /webhooks/{provider}
+  secret_source: "repo" | "platform" | "";
+  secret_set: boolean;
+  events_required: string[];
+  hooks: { supported: boolean; ok: boolean; error: string; items: Webhook[] };
+  deliveries: WebhookDelivery[]; // 最近 20 条，received_at DESC
+}
+
+export interface WebhookRegisterResult {
+  created: boolean;
+  hook: Webhook;
 }
 
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";

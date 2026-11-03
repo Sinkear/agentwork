@@ -360,7 +360,7 @@ func TestWebhookHandle(t *testing.T) {
 	goalSvc.SetRunService(runSvc)
 	runSvc.SetGoalService(goalSvc)
 	p := NewPoller(st, goalSvc, runSvc)
-	h := NewWebhookHandler("github", st, p, func(context.Context) (string, error) { return "s3cret", nil })
+	h := NewWebhookHandler("github", st, p, func(context.Context, string) (string, error) { return "s3cret", nil })
 
 	payload := []byte(`{"action":"opened","issue":{"number":9,"title":"webhook 建的任务","body":"b"},"repository":{"full_name":"x/y"}}`)
 	sig := "sha256=" + hmacSHA256Hex("s3cret", payload)
@@ -430,7 +430,7 @@ func webhookPRHarness(t *testing.T, provider string) (context.Context, *store.St
 	goalSvc.SetRunService(runSvc)
 	runSvc.SetGoalService(goalSvc)
 	p := NewPoller(st, goalSvc, runSvc)
-	h := NewWebhookHandler(provider, st, p, func(context.Context) (string, error) { return "s3cret", nil })
+	h := NewWebhookHandler(provider, st, p, func(context.Context, string) (string, error) { return "s3cret", nil })
 	return ctx, st, goalSvc, runSvc, h
 }
 
@@ -764,7 +764,7 @@ func TestWebhookGitCodeMRConversion(t *testing.T) {
 	}
 }
 
-// TestWebhookPullSkippedWhenNoPullAssignee: a domain with pull_assignee=''
+// TestWebhookPullSkippedWhenNoPullAssignee: a domain with pull_assignee=”
 // takes issues only — PR events (any action) must not create or refresh.
 func TestWebhookPullSkippedWhenNoPullAssignee(t *testing.T) {
 	st, err := store.Open(":memory:")
@@ -793,7 +793,7 @@ func TestWebhookPullSkippedWhenNoPullAssignee(t *testing.T) {
 	goalSvc.SetRunService(runSvc)
 	runSvc.SetGoalService(goalSvc)
 	p := NewPoller(st, goalSvc, runSvc)
-	h := NewWebhookHandler("github", st, p, func(context.Context) (string, error) { return "s3cret", nil })
+	h := NewWebhookHandler("github", st, p, func(context.Context, string) (string, error) { return "s3cret", nil })
 
 	opened := []byte(`{"action":"opened","pull_request":{"number":7,"title":"t","body":"b","head":{"sha":"aaaa1111aaaa1111"}},"repository":{"full_name":"x/y"}}`)
 	deliver(t, ctx, h, opened)
@@ -1000,7 +1000,7 @@ func TestPollerPullsCreateGoals(t *testing.T) {
 }
 
 // TestPollerSkipsPRsWhenNoPullAssignee: a domain configured for issues only
-// (pull_assignee='') must not pull the repo's PRs.
+// (pull_assignee=”) must not pull the repo's PRs.
 func TestPollerSkipsPRsWhenNoPullAssignee(t *testing.T) {
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -1155,5 +1155,111 @@ func TestFlexInt(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(`"abc"`), &f); err == nil {
 		t.Fatal("garbage must fail")
+	}
+}
+
+// webhookSecretHarness builds the platform's secret resolver (repo secret
+// first, platform secret fallback) over a store with one tracked domain
+// x/y (webhookSecret = its repo-level secret).
+func webhookSecretHarness(t *testing.T, webhookSecret string) (context.Context, *store.Store, *WebhookHandler) {
+	t.Helper()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	bus := events.NewBus()
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO runtime (id,name,created_at) VALUES ('rt1','rt1',?)`, time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO agent (id,name,runtime_id,max_concurrent,created_at) VALUES ('a1','worker','rt1',1,?)`, time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	ds := service.NewDomainService(st, bus)
+	if _, err := ds.Create(ctx, service.Domain{
+		Name: "d1", GitURL: "https://e.com/d1.git",
+		IssueRepo: "x/y", IssueAssignee: "a1", GitCredentials: "tok",
+		WebhookSecret: webhookSecret,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	goalSvc := service.NewGoalService(st, bus)
+	runSvc := service.NewRunService(st, bus)
+	goalSvc.SetRunService(runSvc)
+	runSvc.SetGoalService(goalSvc)
+	p := NewPoller(st, goalSvc, runSvc)
+	secretFor := func(ctx context.Context, repo string) (string, error) {
+		if repo != "" {
+			var s string
+			if err := st.DB().QueryRowContext(ctx,
+				`SELECT webhook_secret FROM domain WHERE issue_repo=? AND issue_provider='github'`, repo).Scan(&s); err == nil && s != "" {
+				return s, nil
+			}
+		}
+		return "platform-secret", nil
+	}
+	return ctx, st, NewWebhookHandler("github", st, p, secretFor)
+}
+
+// TestWebhookRepoSecretWins: the repo-level secret verifies; the platform
+// secret no longer does (repo beats platform), and both attempts are logged.
+func TestWebhookRepoSecretWins(t *testing.T) {
+	ctx, st, h := webhookSecretHarness(t, "repo-secret")
+	payload := []byte(`{"action":"opened","issue":{"number":9,"title":"repo secret","body":"b"},"repository":{"full_name":"x/y"}}`)
+	if err := h.Handle(ctx, payload, "sha256="+hmacSHA256Hex("repo-secret", payload), ""); err != nil {
+		t.Fatalf("repo-level secret must verify: %v", err)
+	}
+	if err := h.Handle(ctx, payload, "sha256="+hmacSHA256Hex("platform-secret", payload), ""); err == nil {
+		t.Fatal("platform secret must be rejected once the repo has its own")
+	}
+	var bad int
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM webhook_delivery WHERE ok=0 AND error='bad signature'`).Scan(&bad); err != nil {
+		t.Fatal(err)
+	}
+	if bad != 1 {
+		t.Fatalf("bad-signature delivery must be logged, got %d", bad)
+	}
+}
+
+// TestWebhookDeliveryLog: an accepted issue delivery lands as event=issues,
+// ok=1 and carries the matched domain id.
+func TestWebhookDeliveryLog(t *testing.T) {
+	ctx, st, h := webhookSecretHarness(t, "")
+	payload := []byte(`{"action":"opened","issue":{"number":9,"title":"logged","body":"b"},"repository":{"full_name":"x/y"}}`)
+	if err := h.Handle(ctx, payload, "sha256="+hmacSHA256Hex("platform-secret", payload), ""); err != nil {
+		t.Fatalf("valid delivery must succeed: %v", err)
+	}
+	var event, domainID string
+	var ok int
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT event, ok, domain_id FROM webhook_delivery ORDER BY received_at DESC LIMIT 1`).
+		Scan(&event, &ok, &domainID); err != nil {
+		t.Fatal(err)
+	}
+	if event != "issues" || ok != 1 || domainID == "" {
+		t.Fatalf("delivery row = event %q ok %d domain %q", event, ok, domainID)
+	}
+}
+
+// TestWebhookUntrackedRepoLogged: a correctly signed delivery for an unknown
+// repo is a no-op (nil error, 200) but still logged with an empty domain_id.
+func TestWebhookUntrackedRepoLogged(t *testing.T) {
+	ctx, st, h := webhookSecretHarness(t, "")
+	payload := []byte(`{"action":"opened","issue":{"number":1,"title":"nobody","body":"b"},"repository":{"full_name":"no/such"}}`)
+	if err := h.Handle(ctx, payload, "sha256="+hmacSHA256Hex("platform-secret", payload), ""); err != nil {
+		t.Fatalf("untracked repo must not error: %v", err)
+	}
+	var domainID string
+	var ok int
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT domain_id, ok FROM webhook_delivery WHERE repo='no/such' ORDER BY received_at DESC LIMIT 1`).
+		Scan(&domainID, &ok); err != nil {
+		t.Fatal(err)
+	}
+	if domainID != "" || ok != 1 {
+		t.Fatalf("untracked delivery = domain %q ok %d, want '' and 1", domainID, ok)
 	}
 }

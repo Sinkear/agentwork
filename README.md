@@ -55,7 +55,7 @@ state, in-process event bus, Go daemon + Next.js web UI.
 ./build.sh   # builds build/agentwork (CLI) + build/agentwork-daemon
              # with one shared version stamp (AGENTWORK_COMPILE_VERSION)
 
-# Start the daemon (default :7373)
+# Start the daemon (default :47813)
 ./build/agentwork-daemon
 
 # And on the machine that runs the agents:
@@ -167,7 +167,7 @@ use the `agentwork` CLI shim for collaboration):
 
 ```bash
 agentwork connect               # the machine side: pulls dispatches, runs them, hosts chats
-agentwork goal list --limit 5   # debugging commands (default http://localhost:7373,
+agentwork goal list --limit 5   # debugging commands (default http://localhost:47813,
 agentwork stats                 #   or set AGENTWORK_SERVER_URL)
 ```
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   useImStatus,
   useConnectFeishu,
@@ -91,6 +91,17 @@ export default function SettingsPage() {
   const connect = useConnectFeishu();
   const disconnect = useDisconnectFeishu();
 
+  // 主题是纯客户端状态：初值从首屏脚本写好的 dataset 读回，点选后同步更新，
+  // 卡片高亮才会立刻跟着走（不依赖任何一次查询刷新）。
+  const [theme, setTheme] = useState<ThemeId>("light");
+  useEffect(() => {
+    setTheme(currentTheme());
+  }, []);
+  const pickTheme = (t: ThemeId) => {
+    applyTheme(t);
+    setTheme(t);
+  };
+
   const status = im?.status ?? "idle";
 
   return (
@@ -107,8 +118,8 @@ export default function SettingsPage() {
               <ThemeCard
                 key={t.id}
                 theme={t}
-                selected={currentTheme() === t.id}
-                onSelect={() => applyTheme(t.id)}
+                selected={theme === t.id}
+                onSelect={() => pickTheme(t.id)}
               />
             ))}
           </div>

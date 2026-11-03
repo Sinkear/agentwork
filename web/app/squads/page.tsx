@@ -2,14 +2,15 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useSquads, useAgents, useCreateSquad, useAddSquadMember, useDeleteSquad, useImportTeam, useGoalEvents } from "@/lib/queries";
+import { useSquads, useAgents, useCreateSquad, useAddSquadMember, useDeleteSquad, useImportTeam, useGoalEvents, useDomains } from "@/lib/queries";
 import { Button, PageHeader, Empty, Dialog, Field, inputCls, ConfirmDialog } from "@/components/ui";
-import type { Squad } from "@/lib/types";
+import type { Domain, Squad } from "@/lib/types";
 
 export default function SquadsPage() {
   useGoalEvents();
   const { data: squads, isLoading } = useSquads();
   const { data: agents } = useAgents();
+  const { data: domains } = useDomains();
   const createSquad = useCreateSquad();
   const deleteSquad = useDeleteSquad();
   const [showForm, setShowForm] = useState(false);
@@ -55,7 +56,10 @@ export default function SquadsPage() {
                     </Link>
                   </td>
                   <td className="px-4 py-3 text-ink-2">{agentName(s.leader_id)}</td>
-                  <td className="px-4 py-3 text-ink-3 max-w-[200px] truncate">{s.description || "-"}</td>
+                  <td className="px-4 py-3 text-ink-3 max-w-[220px]">
+                    <div className="truncate">{s.description || "-"}</div>
+                    <SquadRepos squadId={s.id} domains={domains} />
+                  </td>
                   <td className="px-4 py-3 text-ink-3">{new Date(s.created_at).toLocaleString()}</td>
                   <td className="px-4 py-3 text-right">
                     <button
@@ -94,6 +98,34 @@ export default function SquadsPage() {
       {deleteSquad.isError && (
         <p className="text-sm text-red-400 mt-3">{String(deleteSquad.error)}</p>
       )}
+    </div>
+  );
+}
+
+// SquadRepos is the reverse view of the domain's assignee badges (契约 3.3b):
+// which tracked repos route their issues/PRs here. It links to /domains,
+// where the binding is actually edited, so the row stays a read-only summary.
+function SquadRepos({ squadId, domains }: { squadId: string; domains?: Domain[] }) {
+  const repos = (domains ?? []).filter(
+    (d) => d.issue_repo !== "" && (d.issue_assignee === squadId || d.pull_assignee === squadId),
+  );
+  if (repos.length === 0) {
+    return <div className="mt-1 text-[11px] text-ink-3">未绑定仓库</div>;
+  }
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+      {repos.map((d) => (
+        <Link
+          key={d.id}
+          href="/domains"
+          className="inline-flex max-w-full items-center gap-1.5 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-ink-3 transition-colors hover:border-line-strong hover:text-ink-2"
+          title={d.issue_repo}
+        >
+          <span className="truncate">{d.issue_repo}</span>
+          {d.issue_assignee === squadId && <span className="shrink-0 text-accent">issue</span>}
+          {d.pull_assignee === squadId && <span className="shrink-0 text-accent">PR</span>}
+        </Link>
+      ))}
     </div>
   );
 }

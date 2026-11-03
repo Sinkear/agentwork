@@ -1,10 +1,10 @@
 import type { NextConfig } from "next";
 
 // 浏览器只打同源的 Next 服务：/backend/* 由 Next 服务端转发给本机 daemon
-// （7373），反代 3000 出去时用户无需直连 7373（CORS 也随之无关）。
-// /ws 也走同源：Next 的 rewrite 代理（dev/多数 prod 版本）转发 WebSocket
-// upgrade；若部署形态不支持，则在反代层加一条 /ws → 127.0.0.1:7373/ws
-// （需 Upgrade/Connection 头透传）。
+// （47813，不常用端口），反代 3000 出去时用户无需直连 47813（CORS 也随之
+// 无关）。/ws 也走同源：Next 的 rewrite 代理（dev/多数 prod 版本）转发
+// WebSocket upgrade；若部署形态不支持，则在反代层加一条 /ws →
+// 127.0.0.1:47813/ws（需 Upgrade/Connection 头透传）。
 const nextConfig: NextConfig = {
   output: "standalone",
   // 锁定 standalone 产物根目录：不设的话 Turbopack 会按仓库路径嵌套
@@ -12,8 +12,12 @@ const nextConfig: NextConfig = {
   turbopack: { root: __dirname },
   async rewrites() {
     return [
-      { source: "/ws", destination: "http://localhost:7373/ws" },
-      { source: "/backend/:path*", destination: "http://localhost:7373/:path*" },
+      { source: "/ws", destination: "http://localhost:47813/ws" },
+      { source: "/backend/:path*", destination: "http://localhost:47813/:path*" },
+      // webhook：宿主平台（GitHub/GitCode）直接 POST 到公开域名时，把
+      // /webhooks/* 透传给 daemon——这样仓库里填的 URL 就是站点地址，
+      // 不必暴露 47813。反代层若已单独转发，此条无害（同源直达）。
+      { source: "/webhooks/:path*", destination: "http://localhost:47813/webhooks/:path*" },
     ];
   },
 };

@@ -79,7 +79,7 @@ export function ChatPanel({ agentId, agentName, onClose }: { agentId: string; ag
     });
     clientRef.current = client;
     const host = window.location.host;
-    // /backend/* is the Next rewrite to the daemon (7373) — REST calls and
+    // /backend/* is the Next rewrite to the daemon (47813) — REST calls and
     // the /ws event hub use it; the chat WS must ride the same tunnel or
     // the upgrade hits the Next service and hangs.
     client

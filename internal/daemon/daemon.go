@@ -98,7 +98,7 @@ const worktreeRetentionDays = 7
 const workerQueueDepth = 64
 
 // defaultListenAddr is used when no addr is configured.
-const defaultListenAddr = ":7373"
+const defaultListenAddr = ":47813"
 
 // defaultMaxRunDurationSeconds is the platform's default per-run budget when
 // no domain configures one (DESIGN.md §4: 2h).

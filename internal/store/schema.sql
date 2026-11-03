@@ -50,8 +50,29 @@ CREATE TABLE IF NOT EXISTS domain (
     issue_provider         TEXT NOT NULL DEFAULT 'github', -- M4-B: github | gitcode (issue API + webhook signature shape)
     pull_assignee          TEXT NOT NULL DEFAULT '',       -- M4-B PR pull: agent|squad id that handles this repo's pull requests ('' = don't pull PRs)
     pull_assignee_type     TEXT NOT NULL DEFAULT 'agent',  -- M4-B PR pull: agent | squad (what pull_assignee points at)
+    webhook_secret         TEXT NOT NULL DEFAULT '',        -- repo-level webhook secret ('' = use platform.webhook_secret)
     created_at             TEXT NOT NULL
 );
+
+-- webhook_delivery: one row per inbound webhook delivery (including rejected
+-- ones) — the ground truth for "is the repo's webhook actually reaching us?",
+-- independent of whether the host token can list hooks. domain_id is '' when
+-- the delivery's repo is not tracked. ok=1 means the signature verified and
+-- the payload was handled (untracked / no-handler is still ok for the
+-- platform — it is not an error). Trimmed to the newest 500 rows on insert.
+CREATE TABLE IF NOT EXISTS webhook_delivery (
+    id          TEXT PRIMARY KEY,
+    provider    TEXT NOT NULL DEFAULT '',       -- github | gitcode
+    repo        TEXT NOT NULL DEFAULT '',       -- owner/repo ('' when unparseable)
+    domain_id   TEXT NOT NULL DEFAULT '',       -- matched domain ('' = untracked repo)
+    event       TEXT NOT NULL DEFAULT '',       -- issues | pull_request | ''
+    action      TEXT NOT NULL DEFAULT '',       -- opened / reopened / synchronize / ...
+    ok          INTEGER NOT NULL DEFAULT 0,     -- 1 = handled (signature + parse passed)
+    error       TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_delivery_domain ON webhook_delivery(domain_id, received_at);
+CREATE INDEX IF NOT EXISTS idx_webhook_delivery_repo ON webhook_delivery(repo, received_at);
 
 -- machine: one remote machine running `agentwork connect` — the execution
 -- host registered to the platform (CLI 分支 Phase 1). The probed agent

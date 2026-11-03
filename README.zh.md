@@ -49,7 +49,7 @@ daemon + Next.js Web 界面。
 ./build.sh   # 产出 build/agentwork（CLI）+ build/agentwork-daemon，
              # 带同一版本戳（AGENTWORK_COMPILE_VERSION）
 
-# 启动 daemon（默认 :7373）
+# 启动 daemon（默认 :47813）
 ./build/agentwork-daemon
 
 # 在跑 agent 的机器上：
@@ -153,7 +153,7 @@ agent 只通过 `agentwork` CLI（守护进程二进制的 shim，spawn 时放�
 
 ```bash
 agentwork connect               # 机器侧：拉取派发、执行 run、托管聊天桥
-agentwork goal list --limit 5   # 调试命令（默认连 http://localhost:7373，
+agentwork goal list --limit 5   # 调试命令（默认连 http://localhost:47813，
 agentwork stats                 #   或设 AGENTWORK_SERVER_URL）
 ```
 

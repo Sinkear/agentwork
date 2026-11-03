@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, Suspense } from "react";
+import { useEffect, useState, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useGoals, useAgents, useSquads, useDomains, useCreateGoal, useCancelGoal, useReopenGoal, useDeleteGoal, useGoalEvents } from "@/lib/queries";
 import { Badge, AttentionChip, ReviewPhaseBadge, Button, PageHeader, Empty, Dialog, Field, inputCls } from "@/components/ui";
 import { GoalStats } from "@/components/goal-stats";
+import { GoalBoard } from "@/components/goal-board";
 import { GoalBatchBar, GoalSelectCheckbox, CheckIcon } from "@/components/goal-batch-bar";
 import { cn } from "@/lib/utils";
 import type { Goal, GoalStatus } from "@/lib/types";
@@ -64,6 +65,18 @@ function GoalsPageInner() {
     router.replace(v === "all" ? "/goals" : `/goals?status=${v}`, { scroll: false });
   const [showForm, setShowForm] = useState(false);
 
+  // 视图：看板（拖拽为主）/ 列表（批量与筛选为主）。选择记在 localStorage，
+  // 刷新后保持；默认看板——任务面板的主入口。
+  const [view, setView] = useState<"board" | "list">("board");
+  useEffect(() => {
+    const saved = window.localStorage.getItem("agentwork-goals-view");
+    if (saved === "list" || saved === "board") setView(saved);
+  }, []);
+  const pickView = (v: "board" | "list") => {
+    setView(v);
+    window.localStorage.setItem("agentwork-goals-view", v);
+  };
+
   const agentName = (aid: string) => agents?.find((a) => a.id === aid)?.name ?? aid;
   const squadName = (sid: string) => squads?.find((s) => s.id === sid)?.name ?? sid;
 
@@ -98,16 +111,42 @@ function GoalsPageInner() {
   };
 
   return (
-    <div className="p-8 page-enter">
+    <div className={cn("p-8 page-enter", view === "board" && "flex h-full flex-col")}>
       <PageHeader
         title="Goal"
         action={
-          <Button onClick={() => setShowForm(true)}>+ 新建</Button>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center rounded-md border border-line bg-surface-1 p-0.5">
+              {(["board", "list"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => pickView(v)}
+                  className={cn(
+                    "rounded px-2.5 py-1 text-xs font-medium transition-colors",
+                    view === v ? "bg-surface-3 text-ink" : "text-ink-3 hover:text-ink"
+                  )}
+                >
+                  {v === "board" ? "看板" : "列表"}
+                </button>
+              ))}
+            </div>
+            <Button onClick={() => setShowForm(true)}>+ 新建</Button>
+          </div>
         }
       />
 
       {/* Stats cards */}
       <GoalStats goals={goals} loading={isLoading} />
+
+      {view === "board" ? (
+        isLoading ? (
+          <div className="text-sm text-ink-3 py-16 text-center">加载中…</div>
+        ) : (
+          <GoalBoard goals={goals ?? []} agents={agents ?? []} squads={squads ?? []} />
+        )
+      ) : (
+        <>
 
       {/* Status filter tabs + 全选（作用于当前筛选，配合多选批量条） */}
       <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
@@ -171,7 +210,7 @@ function GoalsPageInner() {
               key={g.id}
               href={`/goals/${g.id}${filter === "all" ? "" : `?status=${filter}`}`}
               className={cn(
-                "group relative flex bg-surface-1 rounded-2xl border border-line/80 shadow-sm overflow-hidden hover:shadow-lg hover:shadow-black/20 hover:-translate-y-0.5 hover:border-accent/30 transition-all duration-200",
+                "group relative flex bg-surface-1 rounded-lg border border-line overflow-hidden hover:border-accent/40 transition-colors duration-150",
                 selected.has(g.id) && "border-accent/50 bg-accent/10",
                 batchBusyId === g.id && "ring-2 ring-accent/60 border-accent/50",
                 batchBusy && batchBusyId !== g.id && "opacity-60"
@@ -268,6 +307,8 @@ function GoalsPageInner() {
             </Link>
           ))}
         </div>
+      )}
+        </>
       )}
 
       {/* Create Goal dialog */}

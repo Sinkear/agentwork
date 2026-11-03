@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { useSquads, useAgents, useSquadMembers, useAddSquadMember, useUpdateSquad, useRemoveSquadMember, useGoalEvents } from "@/lib/queries";
+import { useSquads, useAgents, useSquadMembers, useAddSquadMember, useUpdateSquad, useRemoveSquadMember, useGoalEvents, useDomains, usePatchDomainAssignees } from "@/lib/queries";
 import { Button, PageHeader, Empty, Dialog, Field, inputCls } from "@/components/ui";
-import type { SquadMember } from "@/lib/types";
+import type { Domain, Squad, SquadMember } from "@/lib/types";
 
 export default function SquadDetailPage() {
   useGoalEvents();
@@ -129,6 +129,9 @@ export default function SquadDetailPage() {
       {removeMember.isError && (
         <p className="text-sm text-red-400">{String(removeMember.error)}</p>
       )}
+
+      {/* 仓库接入：squad ↔ repo 的绑定在两边都能看见、都能改（契约 3.3c） */}
+      <RepoAccessSection squadId={id} agents={agents} squads={squads} />
 
       {/* Add member dialog */}
       {showAdd && (
@@ -257,5 +260,89 @@ function AddMemberDialog({
         )}
       </form>
     </Dialog>
+  );
+}
+
+// RepoAccessSection binds tracked repos to this squad. Each repo has two
+// independent toggles (issue route / PR route); clicking a bound one clears
+// it, clicking an unbound one takes it over — the same PATCH the domain
+// dialog exposes, so both sides stay in sync through query invalidation.
+function RepoAccessSection({
+  squadId,
+  agents,
+  squads,
+}: {
+  squadId: string;
+  agents?: { id: string; name: string }[];
+  squads?: Squad[];
+}) {
+  const { data: domains, isLoading } = useDomains();
+  const patch = usePatchDomainAssignees();
+  const repos = (domains ?? []).filter((d) => d.type === "repo" && d.issue_repo !== "");
+
+  const nameOf = (type: string, aid: string) =>
+    type === "squad" ? squads?.find((s) => s.id === aid)?.name ?? "" : agents?.find((a) => a.id === aid)?.name ?? "";
+
+  const toggle = (d: Domain, kind: "issue" | "pull") => {
+    const bound = kind === "issue" ? d.issue_assignee === squadId : d.pull_assignee === squadId;
+    const next = bound ? "" : squadId;
+    patch.mutate({
+      domainId: d.id,
+      issue_assignee: kind === "issue" ? next : d.issue_assignee,
+      issue_assignee_type: kind === "issue" && !bound ? "squad" : d.issue_assignee_type,
+      pull_assignee: kind === "pull" ? next : d.pull_assignee,
+      pull_assignee_type: kind === "pull" && !bound ? "squad" : d.pull_assignee_type,
+    });
+  };
+
+  const toggleBtn = (d: Domain, kind: "issue" | "pull") => {
+    const bound = kind === "issue" ? d.issue_assignee === squadId : d.pull_assignee === squadId;
+    const other = kind === "issue" ? d.issue_assignee : d.pull_assignee;
+    const otherType = kind === "issue" ? d.issue_assignee_type : d.pull_assignee_type;
+    const otherName = other && other !== squadId ? nameOf(otherType, other) : "";
+    return (
+      <button
+        type="button"
+        onClick={() => toggle(d, kind)}
+        disabled={patch.isPending && patch.variables?.domainId === d.id}
+        title={bound ? "点击解绑" : otherName ? `当前由 ${otherName} 处理，点击改为本 squad` : "点击绑定给本 squad"}
+        className={`shrink-0 rounded border px-2 py-0.5 font-mono text-[10px] transition-colors disabled:opacity-50 ${
+          bound
+            ? "border-accent/40 bg-accent/10 text-accent"
+            : "border-line text-ink-3 hover:border-line-strong hover:text-ink-2"
+        }`}
+      >
+        {kind === "issue" ? "负责 issue" : "负责 PR"}
+      </button>
+    );
+  };
+
+  return (
+    <div className="bg-surface-1 rounded-xl border border-line overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-line">
+        <span className="text-xs font-medium text-ink-3 uppercase tracking-wide">仓库接入</span>
+      </div>
+      <div className="p-4 space-y-2.5">
+        <p className="text-xs text-ink-3">绑定后，该仓库的新 issue/PR 会路由给本 squad 的 leader。</p>
+        {isLoading ? (
+          <div className="text-sm text-ink-3 text-center py-6">加载中…</div>
+        ) : repos.length === 0 ? (
+          <p className="text-sm text-ink-3">还没有跟踪仓库的项目——先去 Domains 页创建一个 repo 类型的 domain。</p>
+        ) : (
+          <div className="space-y-1.5">
+            {repos.map((d) => (
+              <div key={d.id} className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-2" title={d.issue_repo}>
+                  {d.issue_repo}
+                </span>
+                {toggleBtn(d, "issue")}
+                {toggleBtn(d, "pull")}
+              </div>
+            ))}
+          </div>
+        )}
+        {patch.isError && <p className="text-xs text-red-400">{String(patch.error)}</p>}
+      </div>
+    </div>
   );
 }

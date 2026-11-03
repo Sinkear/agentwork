@@ -140,6 +140,16 @@ func (h *Handlers) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /domains/{id}/checks", h.freezeDomainChecks)
 	mux.HandleFunc("POST /domains/{id}/compile", h.compileDomainPolicy)
 	mux.HandleFunc("GET /domains/{id}/compile-run", h.compileRunStatus)
+	// Repository-level webhook setup panel (contract §2): read the effective
+	// secret source + host hook registrations + recent deliveries, register
+	// the hook, and rebind the routing assignees straight from the squad page
+	// (PATCH skips the git-connectivity gate — see Domain.SetAssignees).
+	mux.HandleFunc("GET /domains/{id}/webhook", h.getDomainWebhook)
+	mux.HandleFunc("POST /domains/{id}/webhook/register", h.registerDomainWebhook)
+	// PUT .../webhook/secret sets or clears the repo-level secret explicitly
+	// (an empty string clears it, falling back to platform.webhook_secret).
+	mux.HandleFunc("PUT /domains/{id}/webhook/secret", h.setDomainWebhookSecret)
+	mux.HandleFunc("PATCH /domains/{id}/assignees", h.patchDomainAssignees)
 
 	mux.HandleFunc("GET /gate-decisions/stats", h.gateStats)
 
@@ -784,6 +794,272 @@ func (h *Handlers) updateDomain(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out, err := h.Domain.Update(r.Context(), r.PathValue("id"), d)
+	writeJSON(w, out, err)
+}
+
+// ── domain webhook (repository-level secret + host hook registration) ──
+
+const (
+	webhookNoRepoError   = "没有配置跟踪仓库（issue_repo）"
+	webhookNoTokenError  = "domain 没有配置平台令牌（git_credentials），无法查询宿主 webhook"
+	webhookGitCodeError  = "GitCode 暂不支持自动管理 webhook，请在其仓库设置里手动添加"
+	webhookNoSecretError = "没有可用的 webhook secret，请先在设置页或仓库配置里填写"
+)
+
+// domainWebhookHooks is the host-side registration block: supported=false for
+// providers without a hook API (GitCode), ok=false + error for a failed read.
+type domainWebhookHooks struct {
+	Supported bool            `json:"supported"`
+	OK        bool            `json:"ok"`
+	Error     string          `json:"error"`
+	Items     []issue.Webhook `json:"items"`
+}
+
+// domainWebhookDelivery mirrors one webhook_delivery row (the panel's
+// ground-truth "did the host actually deliver?" list).
+type domainWebhookDelivery struct {
+	Event      string `json:"event"`
+	Action     string `json:"action"`
+	Repo       string `json:"repo"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error"`
+	ReceivedAt string `json:"received_at"`
+}
+
+type domainWebhookResponse struct {
+	DomainID       string                  `json:"domain_id"`
+	Provider       string                  `json:"provider"`
+	Repo           string                  `json:"repo"`
+	Path           string                  `json:"path"`
+	SecretSource   string                  `json:"secret_source"`
+	SecretSet      bool                    `json:"secret_set"`
+	EventsRequired []string                `json:"events_required"`
+	Hooks          domainWebhookHooks      `json:"hooks"`
+	Deliveries     []domainWebhookDelivery `json:"deliveries"`
+}
+
+// domainWebhookProvider defaults the provider to github: reading a domain
+// only needs the endpoint path, and github is the platform default.
+func domainWebhookProvider(d *service.Domain) string {
+	if d.IssueProvider != "" {
+		return d.IssueProvider
+	}
+	return "github"
+}
+
+// domainHookManager returns the host-hook manager for the domain, if its
+// provider implements the optional capability (only GitHub does today).
+func domainHookManager(d *service.Domain) (issue.HookManager, bool) {
+	if domainWebhookProvider(d) != "github" || d.GitCredentials == "" {
+		return nil, false
+	}
+	p, err := issue.NewProvider("github", d.GitCredentials)
+	if err != nil {
+		return nil, false
+	}
+	hm, ok := p.(issue.HookManager)
+	return hm, ok
+}
+
+// effectiveWebhookSecret is the precedence used by the delivery verifier:
+// the repo's own webhook_secret, else the platform-wide setting.
+func (h *Handlers) effectiveWebhookSecret(ctx context.Context, d *service.Domain) (secret, source string) {
+	if d.WebhookSecret != "" {
+		return d.WebhookSecret, "repo"
+	}
+	if h.Settings != nil {
+		if v, err := h.Settings.Get(ctx, webhookSecretKey); err == nil && v != "" {
+			return v, "platform"
+		}
+	}
+	return "", ""
+}
+
+func (h *Handlers) getDomainWebhook(w http.ResponseWriter, r *http.Request) {
+	d, err := h.Domain.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	provider := domainWebhookProvider(d)
+	secret, source := h.effectiveWebhookSecret(r.Context(), d)
+	out := domainWebhookResponse{
+		DomainID:       d.ID,
+		Provider:       provider,
+		Repo:           d.IssueRepo,
+		Path:           "/webhooks/" + provider,
+		SecretSource:   source,
+		SecretSet:      secret != "",
+		EventsRequired: []string{"issues", "pull_request"},
+		Hooks:          domainWebhookHooks{Items: []issue.Webhook{}},
+		Deliveries:     []domainWebhookDelivery{},
+	}
+	if d.IssueRepo == "" {
+		// No repo = nothing to manage; still a well-formed panel state rather
+		// than an error (the frontend just shows the hint).
+		out.Hooks.Supported = true
+		out.Hooks.Error = webhookNoRepoError
+		writeJSON(w, out, nil)
+		return
+	}
+	// Delivery log first — it is useful even when the host API is unavailable.
+	if rows, err := h.Domain.ListWebhookDeliveries(r.Context(), d.ID, 20); err == nil {
+		for _, row := range rows {
+			out.Deliveries = append(out.Deliveries, domainWebhookDelivery{
+				Event: row.Event, Action: row.Action, Repo: row.Repo,
+				OK: row.OK, Error: row.Error, ReceivedAt: row.ReceivedAt,
+			})
+		}
+	}
+	switch {
+	case provider == "gitcode":
+		out.Hooks.Supported = false
+		out.Hooks.Error = webhookGitCodeError
+	case d.GitCredentials == "":
+		out.Hooks.Supported = true
+		out.Hooks.Error = webhookNoTokenError
+	default:
+		hm, ok := domainHookManager(d)
+		if !ok {
+			out.Hooks.Supported = false
+			out.Hooks.Error = webhookGitCodeError
+			break
+		}
+		out.Hooks.Supported = true
+		hooks, err := hm.ListHooks(r.Context(), d.IssueRepo)
+		if err != nil {
+			// 403/404 and other host failures surface verbatim (contract §2).
+			out.Hooks.Error = err.Error()
+			break
+		}
+		out.Hooks.OK = true
+		out.Hooks.Items = hooks
+	}
+	writeJSON(w, out, nil)
+}
+
+// registerDomainWebhook creates or updates the host hook pointing at this
+// platform's /webhooks/{provider} endpoint.
+func (h *Handlers) registerDomainWebhook(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL    string   `json:"url"`
+		Secret string   `json:"secret"`
+		Events []string `json:"events"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.URL == "" {
+		writeErr(w, http.StatusBadRequest, service.NewFieldRequiredError("url"))
+		return
+	}
+	d, err := h.Domain.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	if d.IssueRepo == "" {
+		writeJSON(w, nil, service.NewValidationError(webhookNoRepoError))
+		return
+	}
+	if domainWebhookProvider(d) != "github" {
+		writeJSON(w, nil, service.NewValidationError(webhookGitCodeError))
+		return
+	}
+	if d.GitCredentials == "" {
+		writeJSON(w, nil, service.NewValidationError(webhookNoTokenError))
+		return
+	}
+	secret := body.Secret
+	if secret == "" {
+		secret, _ = h.effectiveWebhookSecret(r.Context(), d)
+	}
+	if secret == "" {
+		writeJSON(w, nil, service.NewValidationError(webhookNoSecretError))
+		return
+	}
+	events := body.Events
+	if len(events) == 0 {
+		events = []string{"issues", "pull_request"}
+	}
+	hm, ok := domainHookManager(d)
+	if !ok {
+		writeJSON(w, nil, service.NewValidationError(webhookGitCodeError))
+		return
+	}
+	hooks, err := hm.ListHooks(r.Context(), d.IssueRepo)
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	spec := issue.HookSpec{URL: body.URL, Secret: secret, Events: events}
+	var existing *issue.Webhook
+	for i := range hooks {
+		if hooks[i].URL == body.URL {
+			existing = &hooks[i]
+			break
+		}
+	}
+	if existing != nil {
+		hook, err := hm.UpdateHook(r.Context(), d.IssueRepo, existing.ID, spec)
+		if err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+		writeJSON(w, struct {
+			Created bool          `json:"created"`
+			Hook    issue.Webhook `json:"hook"`
+		}{false, hook}, nil)
+		return
+	}
+	hook, err := hm.CreateHook(r.Context(), d.IssueRepo, spec)
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	writeJSON(w, struct {
+		Created bool          `json:"created"`
+		Hook    issue.Webhook `json:"hook"`
+	}{true, hook}, nil)
+}
+
+// setDomainWebhookSecret writes (or clears, when empty) the repo-level webhook
+// secret. This is the explicit escape hatch that PUT /domains/{id} lacks: its
+// empty webhook_secret means "keep the stored value", so clearing requires
+// this endpoint. Returns the full domain so the caller can re-render.
+func (h *Handlers) setDomainWebhookSecret(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(body.Secret) > 256 {
+		writeJSON(w, nil, service.NewValidationError("webhook secret 过长（最多 256 字符）"))
+		return
+	}
+	out, err := h.Domain.SetWebhookSecret(r.Context(), r.PathValue("id"), body.Secret)
+	writeJSON(w, out, err)
+}
+
+// patchDomainAssignees rebinds the four routing fields in place (the squad
+// page's "tie repo to squad" action). It goes through SetAssignees — NOT
+// updateDomain — so a temporarily unreachable repo never blocks the rebind.
+func (h *Handlers) patchDomainAssignees(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IssueAssignee     string `json:"issue_assignee"`
+		IssueAssigneeType string `json:"issue_assignee_type"`
+		PullAssignee      string `json:"pull_assignee"`
+		PullAssigneeType  string `json:"pull_assignee_type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	out, err := h.Domain.SetAssignees(r.Context(), r.PathValue("id"),
+		body.IssueAssignee, body.IssueAssigneeType, body.PullAssignee, body.PullAssigneeType)
 	writeJSON(w, out, err)
 }
 

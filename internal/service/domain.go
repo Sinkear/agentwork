@@ -46,7 +46,10 @@ type Domain struct {
 	IssueProvider        string `json:"issue_provider"`        // M4-B: github | gitcode (default github)
 	PullAssignee         string `json:"pull_assignee"`         // M4-B PR pull: agent|squad id handling this repo's pull requests ('' = don't pull PRs)
 	PullAssigneeType     string `json:"pull_assignee_type"`    // M4-B PR pull: agent | squad (default agent)
-	CreatedAt            string `json:"created_at"`
+	// WebhookSecret is the repo-level webhook signing secret. '' = fall back
+	// to the platform secret (app_settings platform.webhook_secret).
+	WebhookSecret string `json:"webhook_secret"`
+	CreatedAt     string `json:"created_at"`
 	// ScratchDir is the scratch domain's persistent project root on disk
 	// ('' for repo domains) — the UI shows it so the human can find the
 	// artifacts.
@@ -292,9 +295,9 @@ func (s *DomainService) Create(ctx context.Context, d Domain) (*Domain, error) {
 	d.CreatedAt = now()
 	checksJSON, _ := json.Marshal(d.Checks)
 	_, err := s.st.DB().ExecContext(ctx,
-		`INSERT INTO domain (id,type,name,git_url,default_branch,git_identity,git_credentials,policy_text,checks,verification_strength,max_run_duration,verify_timeout,processor_agent_id,checks_compiled_at,metrics_baseline,issue_repo,issue_assignee,issue_assignee_type,issue_provider,pull_assignee,pull_assignee_type,created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		d.ID, d.Type, d.Name, d.GitURL, d.DefaultBranch, d.GitIdentity, d.GitCredentials, d.PolicyText, string(checksJSON), d.VerificationStrength, d.MaxRunDuration, d.VerifyTimeout, d.ProcessorAgentID, d.ChecksCompiledAt, d.MetricsBaseline, d.IssueRepo, d.IssueAssignee, d.IssueAssigneeType, d.IssueProvider, d.PullAssignee, d.PullAssigneeType, d.CreatedAt)
+		`INSERT INTO domain (id,type,name,git_url,default_branch,git_identity,git_credentials,policy_text,checks,verification_strength,max_run_duration,verify_timeout,processor_agent_id,checks_compiled_at,metrics_baseline,issue_repo,issue_assignee,issue_assignee_type,issue_provider,pull_assignee,pull_assignee_type,webhook_secret,created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		d.ID, d.Type, d.Name, d.GitURL, d.DefaultBranch, d.GitIdentity, d.GitCredentials, d.PolicyText, string(checksJSON), d.VerificationStrength, d.MaxRunDuration, d.VerifyTimeout, d.ProcessorAgentID, d.ChecksCompiledAt, d.MetricsBaseline, d.IssueRepo, d.IssueAssignee, d.IssueAssigneeType, d.IssueProvider, d.PullAssignee, d.PullAssigneeType, d.WebhookSecret, d.CreatedAt)
 	if err != nil {
 		if ve := dupNameCodedError(err, CodeDomainNameExists, "domain", d.Name); ve != nil {
 			return nil, ve
@@ -314,7 +317,7 @@ func fillScratchDir(d *Domain) {
 
 func (s *DomainService) List(ctx context.Context) ([]Domain, error) {
 	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT id,type,name,git_url,default_branch,git_identity,git_credentials,policy_text,checks,verification_strength,max_run_duration,verify_timeout,processor_agent_id,checks_compiled_at,metrics_baseline,issue_repo,issue_assignee,issue_assignee_type,issue_provider,pull_assignee,pull_assignee_type,created_at
+		`SELECT id,type,name,git_url,default_branch,git_identity,git_credentials,policy_text,checks,verification_strength,max_run_duration,verify_timeout,processor_agent_id,checks_compiled_at,metrics_baseline,issue_repo,issue_assignee,issue_assignee_type,issue_provider,pull_assignee,pull_assignee_type,webhook_secret,created_at
 		 FROM domain ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -324,7 +327,7 @@ func (s *DomainService) List(ctx context.Context) ([]Domain, error) {
 	for rows.Next() {
 		var d Domain
 		var checksJSON string
-		if err := rows.Scan(&d.ID, &d.Type, &d.Name, &d.GitURL, &d.DefaultBranch, &d.GitIdentity, &d.GitCredentials, &d.PolicyText, &checksJSON, &d.VerificationStrength, &d.MaxRunDuration, &d.VerifyTimeout, &d.ProcessorAgentID, &d.ChecksCompiledAt, &d.MetricsBaseline, &d.IssueRepo, &d.IssueAssignee, &d.IssueAssigneeType, &d.IssueProvider, &d.PullAssignee, &d.PullAssigneeType, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.Type, &d.Name, &d.GitURL, &d.DefaultBranch, &d.GitIdentity, &d.GitCredentials, &d.PolicyText, &checksJSON, &d.VerificationStrength, &d.MaxRunDuration, &d.VerifyTimeout, &d.ProcessorAgentID, &d.ChecksCompiledAt, &d.MetricsBaseline, &d.IssueRepo, &d.IssueAssignee, &d.IssueAssigneeType, &d.IssueProvider, &d.PullAssignee, &d.PullAssigneeType, &d.WebhookSecret, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(checksJSON), &d.Checks)
@@ -340,9 +343,9 @@ func (s *DomainService) Get(ctx context.Context, id string) (*Domain, error) {
 	var d Domain
 	var checksJSON string
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT id,type,name,git_url,default_branch,git_identity,git_credentials,policy_text,checks,verification_strength,max_run_duration,verify_timeout,processor_agent_id,checks_compiled_at,metrics_baseline,issue_repo,issue_assignee,issue_assignee_type,issue_provider,pull_assignee,pull_assignee_type,created_at
+		`SELECT id,type,name,git_url,default_branch,git_identity,git_credentials,policy_text,checks,verification_strength,max_run_duration,verify_timeout,processor_agent_id,checks_compiled_at,metrics_baseline,issue_repo,issue_assignee,issue_assignee_type,issue_provider,pull_assignee,pull_assignee_type,webhook_secret,created_at
 		 FROM domain WHERE id=?`, id).
-		Scan(&d.ID, &d.Type, &d.Name, &d.GitURL, &d.DefaultBranch, &d.GitIdentity, &d.GitCredentials, &d.PolicyText, &checksJSON, &d.VerificationStrength, &d.MaxRunDuration, &d.VerifyTimeout, &d.ProcessorAgentID, &d.ChecksCompiledAt, &d.MetricsBaseline, &d.IssueRepo, &d.IssueAssignee, &d.IssueAssigneeType, &d.IssueProvider, &d.PullAssignee, &d.PullAssigneeType, &d.CreatedAt)
+		Scan(&d.ID, &d.Type, &d.Name, &d.GitURL, &d.DefaultBranch, &d.GitIdentity, &d.GitCredentials, &d.PolicyText, &checksJSON, &d.VerificationStrength, &d.MaxRunDuration, &d.VerifyTimeout, &d.ProcessorAgentID, &d.ChecksCompiledAt, &d.MetricsBaseline, &d.IssueRepo, &d.IssueAssignee, &d.IssueAssigneeType, &d.IssueProvider, &d.PullAssignee, &d.PullAssigneeType, &d.WebhookSecret, &d.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -525,14 +528,121 @@ func (s *DomainService) Update(ctx context.Context, id string, d Domain) (*Domai
 		return nil, NewValidationError("domain type cannot be changed after creation (repo ↔ scratch is not supported)")
 	}
 	d.Type = old.Type
+	// Webhook secret round-trips through Update, but an EMPTY incoming value
+	// means "unchanged", never "clear": the edit form and the template apply
+	// path build partial Domains that do not carry webhook_secret, so treating
+	// '' as clear would silently drop a repo-level secret on every unrelated
+	// edit (the domain would fall back to the platform secret without anyone
+	// asking). Setting a non-empty value works normally.
+	if d.WebhookSecret == "" {
+		d.WebhookSecret = old.WebhookSecret
+	}
 	if err := s.validateIssueTracking(ctx, &d); err != nil {
 		return nil, err
 	}
 	_, err = s.st.DB().ExecContext(ctx,
-		`UPDATE domain SET git_url=?, default_branch=?, git_identity=?, git_credentials=?, issue_repo=?, issue_assignee=?, issue_assignee_type=?, issue_provider=?, pull_assignee=?, pull_assignee_type=? WHERE id=?`,
-		d.GitURL, d.DefaultBranch, d.GitIdentity, d.GitCredentials, d.IssueRepo, d.IssueAssignee, d.IssueAssigneeType, d.IssueProvider, d.PullAssignee, d.PullAssigneeType, id)
+		`UPDATE domain SET git_url=?, default_branch=?, git_identity=?, git_credentials=?, issue_repo=?, issue_assignee=?, issue_assignee_type=?, issue_provider=?, pull_assignee=?, pull_assignee_type=?, webhook_secret=? WHERE id=?`,
+		d.GitURL, d.DefaultBranch, d.GitIdentity, d.GitCredentials, d.IssueRepo, d.IssueAssignee, d.IssueAssigneeType, d.IssueProvider, d.PullAssignee, d.PullAssigneeType, d.WebhookSecret, id)
 	if err != nil {
 		return nil, fmt.Errorf("update domain: %w", err)
+	}
+	return s.Get(ctx, id)
+}
+
+// WebhookDelivery is one row of the inbound-delivery log (webhook_delivery) —
+// the ground truth for the setup panel's "did the host actually deliver?".
+type WebhookDelivery struct {
+	Event      string `json:"event"`
+	Action     string `json:"action"`
+	Repo       string `json:"repo"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error"`
+	ReceivedAt string `json:"received_at"`
+}
+
+// ListWebhookDeliveries returns a domain's most recent deliveries, newest
+// first (the panel shows the last 20). Always a non-nil slice.
+func (s *DomainService) ListWebhookDeliveries(ctx context.Context, domainID string, limit int) ([]WebhookDelivery, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT event, action, repo, ok, COALESCE(error,''), received_at
+		   FROM webhook_delivery WHERE domain_id=?
+		  ORDER BY received_at DESC LIMIT ?`, domainID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list webhook deliveries: %w", err)
+	}
+	defer rows.Close()
+	out := []WebhookDelivery{}
+	for rows.Next() {
+		var d WebhookDelivery
+		var ok int
+		if err := rows.Scan(&d.Event, &d.Action, &d.Repo, &ok, &d.Error, &d.ReceivedAt); err != nil {
+			return nil, fmt.Errorf("scan webhook delivery: %w", err)
+		}
+		d.OK = ok != 0
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// SetAssignees edits ONLY the four routing fields (issue/PR assignee + type)
+// and deliberately skips the git-connectivity gate that updateDomain enforces:
+// the squad page rebinds repos directly, and a temporarily unreachable repo
+// must not block that. The assignee existence/shape validation still runs
+// (validateIssueTracking: agent/squad must exist, type must be agent|squad).
+func (s *DomainService) SetAssignees(ctx context.Context, id, issueAssignee, issueAssigneeType, pullAssignee, pullAssigneeType string) (*Domain, error) {
+	d, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	d.IssueAssignee = issueAssignee
+	d.IssueAssigneeType = issueAssigneeType
+	d.PullAssignee = pullAssignee
+	d.PullAssigneeType = pullAssigneeType
+	if d.IssueAssigneeType == "" {
+		d.IssueAssigneeType = "agent"
+	}
+	if d.PullAssigneeType == "" {
+		d.PullAssigneeType = "agent"
+	}
+	// Types are checked even when the assignee is empty: a bogus type with no
+	// assignee must still be a 400, not a silently stored value.
+	if d.IssueAssigneeType != "agent" && d.IssueAssigneeType != "squad" {
+		return nil, NewValidationError("issue_assignee_type must be agent or squad")
+	}
+	if d.PullAssigneeType != "agent" && d.PullAssigneeType != "squad" {
+		return nil, NewValidationError("pull_assignee_type must be agent or squad")
+	}
+	if err := s.validateIssueTracking(ctx, d); err != nil {
+		return nil, err
+	}
+	if _, err := s.st.DB().ExecContext(ctx,
+		`UPDATE domain SET issue_assignee=?, issue_assignee_type=?, pull_assignee=?, pull_assignee_type=? WHERE id=?`,
+		d.IssueAssignee, d.IssueAssigneeType, d.PullAssignee, d.PullAssigneeType, id); err != nil {
+		return nil, fmt.Errorf("set domain assignees: %w", err)
+	}
+	return s.Get(ctx, id)
+}
+
+// SetWebhookSecret sets or clears the repo-level webhook secret. Values are
+// only trimmed; an empty (or whitespace-only) secret clears it so verification
+// falls back to the platform-level platform.webhook_secret. A missing domain
+// reports ErrNotFound.
+func (s *DomainService) SetWebhookSecret(ctx context.Context, id, secret string) (*Domain, error) {
+	secret = strings.TrimSpace(secret)
+	res, err := s.st.DB().ExecContext(ctx,
+		`UPDATE domain SET webhook_secret=? WHERE id=?`, secret, id)
+	if err != nil {
+		return nil, fmt.Errorf("set webhook secret: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("set webhook secret: %w", err)
+	}
+	if n == 0 {
+		return nil, ErrNotFound
 	}
 	return s.Get(ctx, id)
 }

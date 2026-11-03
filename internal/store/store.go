@@ -83,6 +83,12 @@ func Open(path string) (*Store, error) {
 		// tracking's repo/provider — only the assignee side is new.
 		`ALTER TABLE domain ADD COLUMN pull_assignee TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE domain ADD COLUMN pull_assignee_type TEXT NOT NULL DEFAULT 'agent'`,
+		// Repo-level webhook secret ('' = fall back to the platform secret).
+		// The webhook_delivery table comes from schema.sql; only its indexes
+		// need migrating here for DBs created before the table existed.
+		`ALTER TABLE domain ADD COLUMN webhook_secret TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_delivery_domain ON webhook_delivery(domain_id, received_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_delivery_repo ON webhook_delivery(repo, received_at)`,
 	} {
 		if _, err := db.Exec(mig); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()

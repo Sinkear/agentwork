@@ -219,7 +219,7 @@ func NewPoller(st *store.Store, goalSvc *service.GoalService, runSvc *service.Ru
 
 // trackedDomain is one polling candidate row (Poll's domain query): the
 // issue handler and the PR handler ride the same repo/provider — only the
-// assignee differs ('' = that side doesn't poll).
+// assignee differs (” = that side doesn't poll).
 type trackedDomain struct {
 	id, provider, repo, assignee, assigneeType, token, pullAssignee, pullAssigneeType string
 }
@@ -304,7 +304,7 @@ func (p *Poller) pollDomainIssues(ctx context.Context, d trackedDomain) (int, er
 
 // pollDomainPulls turns the domain's open pull requests into goals (M4-B PR
 // pull) — the pull-request analogue of pollDomainIssues, gated by the
-// domain's PR assignee (pull_assignee, '' = the repo's PRs are not tracked).
+// domain's PR assignee (pull_assignee, ” = the repo's PRs are not tracked).
 func (p *Poller) pollDomainPulls(ctx context.Context, d trackedDomain) (int, error) {
 	client, err := p.newProvider(d.provider, d.token)
 	if err != nil {
@@ -483,7 +483,7 @@ func pullGoalUpdateComment(pr Pull, titleChanged, headChanged, bodyChanged bool)
 	return fmt.Sprintf("PR !%d 已更新（%s）——请重新拉取最新状态后继续。", pr.Number, strings.Join(changes, "，"))
 }
 
-// descHeadLine extracts the 最新提交 line's SHA from a goal description (''
+// descHeadLine extracts the 最新提交 line's SHA from a goal description (”
 // when the description predates the head-SHA line or carries none).
 func descHeadLine(desc string) string {
 	const marker = "\n\n最新提交："
@@ -850,12 +850,17 @@ type WebhookHandler struct {
 	provider string
 	st       *store.Store
 	poller   *Poller
-	// getSecret resolves the shared webhook secret ('' = webhook disabled).
-	getSecret func(ctx context.Context) (string, error)
+	// secretFor resolves the webhook secret for one delivery's repo
+	// ('' = webhook disabled). The repo is parsed leniently from the
+	// UNVERIFIED body and is used ONLY to select which secret to verify
+	// against: substituting a different repo selects a different secret, so
+	// the signature check then fails — it cannot be used to bypass
+	// verification, only to choose (wrongly) what to verify with.
+	secretFor func(ctx context.Context, repo string) (string, error)
 }
 
-func NewWebhookHandler(provider string, st *store.Store, poller *Poller, getSecret func(ctx context.Context) (string, error)) *WebhookHandler {
-	return &WebhookHandler{provider: provider, st: st, poller: poller, getSecret: getSecret}
+func NewWebhookHandler(provider string, st *store.Store, poller *Poller, secretFor func(ctx context.Context, repo string) (string, error)) *WebhookHandler {
+	return &WebhookHandler{provider: provider, st: st, poller: poller, secretFor: secretFor}
 }
 
 // webhookEvent is the GitHub `issues` / `pull_request` event payload
@@ -889,23 +894,37 @@ type pullRequestPayload struct {
 	} `json:"base"`
 }
 
-// Handle processes one webhook delivery. Returns an HTTP status + a
-// user-facing error (nil error = 200).
+// Handle processes one webhook delivery. Returns a user-facing error (nil
+// error = 200). Every delivery — success, untracked repo, bad signature, no
+// secret — is recorded in webhook_delivery; the log is best-effort and never
+// changes the HTTP response.
 func (h *WebhookHandler) Handle(ctx context.Context, body []byte, signature, tokenHeader string) error {
-	secret, err := h.getSecret(ctx)
+	// The repo is parsed leniently from the UNVERIFIED body and used only to
+	// pick which secret to verify with (see the secretFor comment above).
+	repo := webhookRepoFromBody(body)
+	// Resolve the tracked domain EARLY: the failure branches below (bad
+	// signature, unparsable payload, missing secret) must carry the domain id
+	// too, otherwise a repo's own delivery panel would show "no failures ever"
+	// while the host keeps retrying a rejected delivery. "" = untracked repo.
+	domainID := h.domainIDFor(ctx, repo)
+	secret, err := h.secretFor(ctx, repo)
 	if err != nil {
+		h.recordDelivery(ctx, repo, domainID, "", "", false, "webhook secret lookup: "+err.Error())
 		return fmt.Errorf("webhook secret lookup: %w", err)
 	}
 	if secret == "" {
+		h.recordDelivery(ctx, repo, domainID, "", "", false, "webhook not configured (no secret)")
 		return fmt.Errorf("webhook not configured (no secret)")
 	}
 	// GitHub: X-Hub-Signature-256. GitCode: X-GitCode-Signature-256 (same
 	// HMAC-SHA256) or X-GitCode-Token (plain password mode).
 	if !verifyWebhook(h.provider, secret, body, signature, tokenHeader) {
+		h.recordDelivery(ctx, repo, domainID, "", "", false, "bad signature")
 		return fmt.Errorf("bad signature")
 	}
 	var ev webhookEvent
 	if err := json.Unmarshal(body, &ev); err != nil {
+		h.recordDelivery(ctx, repo, domainID, "", "", false, "parse webhook payload: "+err.Error())
 		return fmt.Errorf("parse webhook payload: %w", err)
 	}
 	// GitCode merge_request webhooks use a completely different payload
@@ -943,6 +962,34 @@ func (h *WebhookHandler) Handle(ctx context.Context, body []byte, signature, tok
 			ev.PullRequest.Head.SHA = gc.MergeRequest.LastCommit.ID
 		}
 	}
+	// Event name for the delivery log: PR-shaped payload → pull_request,
+	// issue-shaped → issues, anything else keeps the raw action only.
+	event := ""
+	switch {
+	case ev.PullRequest != nil && ev.PullRequest.Number > 0:
+		event = "pull_request"
+	case ev.Issue.Number > 0:
+		event = "issues"
+	}
+	dispatchedID, err := h.dispatch(ctx, &ev)
+	if dispatchedID != "" {
+		domainID = dispatchedID
+	}
+	if err != nil {
+		h.recordDelivery(ctx, repo, domainID, event, ev.Action, false, err.Error())
+		return err
+	}
+	// A delivery we deliberately do not act on (untracked repo, no handler,
+	// ignored action) is NOT an error for the platform — record it as ok.
+	h.recordDelivery(ctx, repo, domainID, event, ev.Action, true, "")
+	return nil
+}
+
+// dispatch routes one verified + parsed payload. It returns the matched
+// domain id (” when the repo is untracked or the event is a no-op) so the
+// delivery log can say which domain a delivery was routed to; the routing
+// itself is unchanged from the pre-log implementation.
+func (h *WebhookHandler) dispatch(ctx context.Context, ev *webhookEvent) (string, error) {
 	if ev.PullRequest != nil && ev.PullRequest.Number > 0 {
 		// PR event — the shared Pull shape (branches + head SHA drive the
 		// goal's description and the update detection).
@@ -956,33 +1003,106 @@ func (h *WebhookHandler) Handle(ctx context.Context, body []byte, signature, tok
 			HeadSHA:      ev.PullRequest.Head.SHA,
 		}
 		if ev.Repository.FullName == "" {
-			return nil
+			return "", nil
 		}
 		return h.handlePullDelivery(ctx, ev.Action, ev.Repository.FullName, pr)
 	}
 	if ev.Action != "opened" && ev.Action != "reopened" {
-		return nil // only issue creation triggers goals
+		return "", nil // only issue creation triggers goals
 	}
 	if ev.Repository.FullName == "" || ev.Issue.Number == 0 {
-		return nil
+		return "", nil
 	}
 	// Route to the domain tracking this repo (provider must match the
 	// endpoint — a github delivery on the gitcode endpoint is not ours).
 	var domainID, assignee, assigneeType string
-	err = h.st.DB().QueryRowContext(ctx,
+	err := h.st.DB().QueryRowContext(ctx,
 		`SELECT id, issue_assignee, issue_assignee_type FROM domain WHERE issue_repo=? AND issue_provider=?`, ev.Repository.FullName, h.provider).
 		Scan(&domainID, &assignee, &assigneeType)
 	if err != nil {
-		return nil // repo not tracked — nothing to do (not an error)
+		return "", nil // repo not tracked — nothing to do (not an error)
 	}
 	if assignee == "" {
-		return nil
+		return domainID, nil
 	}
 	if assigneeType == "" {
 		assigneeType = "agent"
 	}
-	_, err = h.poller.CreateGoalForIssue(ctx, domainID, assignee, assigneeType, h.provider, ev.Repository.FullName, ev.Issue)
-	return err
+	if _, err := h.poller.CreateGoalForIssue(ctx, domainID, assignee, assigneeType, h.provider, ev.Repository.FullName, ev.Issue); err != nil {
+		return domainID, err
+	}
+	return domainID, nil
+}
+
+// webhookRepoFromBody leniently extracts "owner/repo" from an UNVERIFIED body
+// (GitHub repository.full_name, or GitCode project.path_with_namespace) to
+// select the webhook secret. Unparseable bodies yield "" — the platform
+// secret is tried then. The result is never used for anything else.
+func webhookRepoFromBody(body []byte) string {
+	var gh webhookEvent
+	if err := json.Unmarshal(body, &gh); err == nil && gh.Repository.FullName != "" {
+		return gh.Repository.FullName
+	}
+	var gc gitCodeWebhookEvent
+	if err := json.Unmarshal(body, &gc); err == nil {
+		if gc.Project.PathWithNamespace != "" {
+			return gc.Project.PathWithNamespace
+		}
+		if gc.Repository.FullName != "" {
+			return gc.Repository.FullName
+		}
+	}
+	return ""
+}
+
+// webhookDeliveryRetention caps webhook_delivery (a debugging / ground-truth
+// surface, not an audit trail).
+const webhookDeliveryRetention = 500
+
+// recordDelivery inserts one inbound-delivery row, best-effort: a write
+// failure is logged and NEVER changes the webhook's HTTP response — the
+// host's delivery result reflects event handling, not the log. The request
+// context is detached (context.WithoutCancel) so a client disconnect cannot
+// drop the record. Old rows are trimmed after the insert.
+// domainIDFor resolves the tracked domain for one (repo, provider) pair —
+// used to attribute deliveries that fail BEFORE dispatch (bad signature,
+// unparsable body, missing secret) to the repo's own panel. ” = untracked.
+func (h *WebhookHandler) domainIDFor(ctx context.Context, repo string) string {
+	if repo == "" {
+		return ""
+	}
+	var id string
+	if err := h.st.DB().QueryRowContext(ctx,
+		`SELECT id FROM domain WHERE issue_repo=? AND issue_provider=?`, repo, h.provider).Scan(&id); err != nil {
+		return ""
+	}
+	return id
+}
+
+func (h *WebhookHandler) recordDelivery(ctx context.Context, repo, domainID, event, action string, ok bool, errText string) {
+	wctx := context.WithoutCancel(ctx)
+	okInt := 0
+	if ok {
+		okInt = 1
+	}
+	if _, err := h.st.DB().ExecContext(wctx,
+		`INSERT INTO webhook_delivery (id,provider,repo,domain_id,event,action,ok,error,received_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+		webhookNewID(), h.provider, repo, domainID, event, action, okInt, errText, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		logging.Warnf("webhook: record delivery (%s %s %s): %v", h.provider, repo, event, err)
+		return
+	}
+	if _, err := h.st.DB().ExecContext(wctx,
+		`DELETE FROM webhook_delivery WHERE id NOT IN (SELECT id FROM webhook_delivery ORDER BY received_at DESC LIMIT ?)`,
+		webhookDeliveryRetention); err != nil {
+		logging.Warnf("webhook: trim delivery log: %v", err)
+	}
+}
+
+// webhookNewID returns a 16-byte hex id for a delivery row.
+func webhookNewID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // gitCodeWebhookEvent is GitCode's proprietary merge_request webhook payload —
@@ -1018,29 +1138,31 @@ type gitCodeWebhookEvent struct {
 // close/merge and everything else is the human's decision, not ours.
 // The domain's PR 拉取处理方 column (pull_assignee) decides whether this
 // domain takes PRs at all.
-func (h *WebhookHandler) handlePullDelivery(ctx context.Context, action, repo string, pr Pull) error {
+func (h *WebhookHandler) handlePullDelivery(ctx context.Context, action, repo string, pr Pull) (string, error) {
 	var domainID, assignee, assigneeType string
 	err := h.st.DB().QueryRowContext(ctx,
 		`SELECT id, COALESCE(pull_assignee,''), COALESCE(pull_assignee_type,'') FROM domain WHERE issue_repo=? AND issue_provider=?`, repo, h.provider).
 		Scan(&domainID, &assignee, &assigneeType)
 	if err != nil {
-		return nil // repo not tracked — nothing to do (not an error)
+		return "", nil // repo not tracked — nothing to do (not an error)
 	}
 	if assignee == "" {
-		return nil // no PR handler configured — the domain takes issues only
+		return domainID, nil // no PR handler configured — the domain takes issues only
 	}
 	if assigneeType == "" {
 		assigneeType = "agent"
 	}
 	switch action {
 	case "opened", "reopened":
-		_, err := h.poller.CreateGoalForPull(ctx, domainID, assignee, assigneeType, h.provider, repo, pr)
-		return err
+		if _, err := h.poller.CreateGoalForPull(ctx, domainID, assignee, assigneeType, h.provider, repo, pr); err != nil {
+			return domainID, err
+		}
 	case "synchronize", "edited":
-		_, err := h.poller.UpdateGoalForPull(ctx, domainID, assignee, assigneeType, h.provider, repo, pr)
-		return err
+		if _, err := h.poller.UpdateGoalForPull(ctx, domainID, assignee, assigneeType, h.provider, repo, pr); err != nil {
+			return domainID, err
+		}
 	}
-	return nil
+	return domainID, nil
 }
 
 // verifySignature checks X-Hub-Signature-256 ("sha256=<hex HMAC-SHA256>").

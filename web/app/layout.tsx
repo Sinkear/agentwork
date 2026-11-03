@@ -24,6 +24,8 @@ export const metadata: Metadata = {
 
 // 首屏防闪烁：在 body 渲染前读回用户主题（localStorage）。
 // 默认浅色 Studio Paper；深色 Terminal Studio 为可选项。
+// 注意：html 上刻意不写 data-theme——由这段脚本独占该属性，React 便不会在
+// hydration 时把它“修”回默认值（否则某些客户端路由会闪回浅色）。
 const THEME_BOOT = `(function(){try{var t=localStorage.getItem('agentwork-theme');if(t!=='dark'&&t!=='light')t='light';document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme='light';}})()`;
 
 export default function RootLayout({
@@ -35,7 +37,6 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${plexSans.variable} ${jetbrainsMono.variable} h-full antialiased`}
-      data-theme="light"
       suppressHydrationWarning
     >
       <head>

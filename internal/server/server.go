@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,6 +66,27 @@ func (s *Server) SetTemplates(templates *service.TemplateService, templateApply 
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	settingsSvc := service.NewSettingsService(s.st)
 	machineSvc := service.NewMachineService(s.st)
+	// webhookSecret resolves one delivery's signing secret: the repo's own
+	// webhook_secret (when the repo is tracked by a domain on this platform)
+	// wins over the platform-wide setting. repo comes from the UNVERIFIED
+	// webhook body — it is used only to CHOOSE a secret, and a forged repo
+	// simply makes the signature check fail, so it cannot bypass verification.
+	webhookSecret := func(provider string) func(ctx context.Context, repo string) (string, error) {
+		return func(ctx context.Context, repo string) (string, error) {
+			if repo != "" {
+				var secret string
+				err := s.st.DB().QueryRowContext(ctx,
+					`SELECT webhook_secret FROM domain WHERE issue_repo=? AND issue_provider=?`, repo, provider).Scan(&secret)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return "", err
+				}
+				if secret != "" {
+					return secret, nil
+				}
+			}
+			return settingsSvc.Get(ctx, "platform.webhook_secret")
+		}
+	}
 	h := &handler.Handlers{
 		Runtime:    service.NewRuntimeService(s.st),
 		Agent:      service.NewAgentService(s.st, s.bus),
@@ -84,15 +106,12 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		Intake:     s.intakeSvc,
 		// M4-B: the real-time issue triggers (github + gitcode) share the
 		// poller's create path (source_ref idempotency makes webhook + poll
-		// racing safe). The shared secret lives in app_settings
-		// (platform.webhook_secret — shared across providers: one secret
-		// configures every repo's webhook on a single-user platform);
-		// empty = webhook disabled, polling still covers it.
+		// racing safe). A repo's own webhook_secret wins over the
+		// platform-wide app_settings secret (platform.webhook_secret);
+		// both empty = webhook disabled, polling still covers it.
 		IssueWebhooks: map[string]*issue.WebhookHandler{
-			"github": issue.NewWebhookHandler("github", s.st, s.d.Poller(),
-				func(ctx context.Context) (string, error) { return settingsSvc.Get(ctx, "platform.webhook_secret") }),
-			"gitcode": issue.NewWebhookHandler("gitcode", s.st, s.d.Poller(),
-				func(ctx context.Context) (string, error) { return settingsSvc.Get(ctx, "platform.webhook_secret") }),
+			"github":  issue.NewWebhookHandler("github", s.st, s.d.Poller(), webhookSecret("github")),
+			"gitcode": issue.NewWebhookHandler("gitcode", s.st, s.d.Poller(), webhookSecret("gitcode")),
 		},
 	}
 
@@ -838,7 +857,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 
 	go s.hub.Run(ctx)
 
-	// Security gate: a non-loopback listen address (0.0.0.0, :7373, a LAN
+	// Security gate: a non-loopback listen address (0.0.0.0, :47813, a LAN
 	// IP) exposes the platform to the network. The single-user no-auth default
 	// is ONLY safe on loopback — any other address REQUIRES a worker_token
 	// (app_settings platform.worker_token) and every request is gated on it.

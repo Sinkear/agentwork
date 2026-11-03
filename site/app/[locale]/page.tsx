@@ -147,7 +147,7 @@ export default async function LandingPage({
         <h3 className="mb-2 font-semibold text-text">{t("backendTitle")}</h3>
         <CodeBlock label="bash">{`./build.sh   # builds build/agentwork (CLI) + build/agentwork-daemon
 
-# Start the daemon (default :7373)
+# Start the daemon (default :47813)
 ./build/agentwork-daemon
 
 # On the machine that runs the agents:

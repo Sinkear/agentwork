@@ -10,6 +10,7 @@ import { listRunMessages, testDomainGit } from "@/lib/api";
 import type { ChatMessage } from "@/lib/api";
 import { useWSEvent } from "@/lib/ws";
 import { Button, Dialog, Field, inputCls, PageHeader, Empty, Badge } from "@/components/ui";
+import { WebhookPanel } from "@/components/webhook-panel";
 import type { Domain, DomainGitTestResult, Checks, Guard, GateRule, Run } from "@/lib/types";
 import { groupMessages, StreamCards } from "@/lib/run-messages";
 
@@ -104,6 +105,22 @@ export default function DomainsPage() {
   );
 }
 
+// AssigneeTag answers "谁来处理这个仓库的 issue / PR" right on the card, so
+// the routing is visible without opening the edit dialog (契约 3.3a). A squad
+// name is tinted with the accent — that link is what the squad page toggles.
+function AssigneeTag({ kind, name, squad }: { kind: string; name: string; squad: boolean }) {
+  if (!name) return null;
+  return (
+    <span
+      className={`inline-flex items-center rounded border border-line px-1.5 py-0.5 font-mono text-[10px] ${
+        squad ? "text-accent" : "text-ink-3"
+      }`}
+    >
+      {kind} → {name}
+    </span>
+  );
+}
+
 // DomainCard renders the domain's three lifecycle states (DESIGN.md §5.3):
 //   1. not compiled   — NL intent entered, no checks yet → "编译" kicks off the
 //                       processor agent.
@@ -117,6 +134,11 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
   const compile = useCompileDomainPolicy();
   const freeze = useFreezeDomainChecks();
   const { data: agents } = useAgents();
+  // squad 名称解析用（issue/PR 处理方可能是 squad，徽标要显示名字）
+  const { data: squads } = useSquads();
+  // 处理方 id → 名称；空 id 或找不到（已删除）时不渲染徽标
+  const nameOf = (type: string, id: string) =>
+    type === "squad" ? squads?.find((s) => s.id === id)?.name ?? "" : agents?.find((a) => a.id === id)?.name ?? "";
   // 决策 6-23: 该域最新的 compile processor run——刷新恢复的真相源
   const { data: latestCompile } = useDomainCompileRun(d.id);
   const [showEdit, setShowEdit] = useState(false);
@@ -284,6 +306,12 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
         ) : needsConfirm ? (
           <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-purple-500/10 text-purple-300 ring-1 ring-purple-500/30">待确认</span>
         ) : null}
+        {d.type === "repo" && (
+          <>
+            <AssigneeTag kind="issue" name={nameOf(d.issue_assignee_type, d.issue_assignee)} squad={d.issue_assignee_type === "squad"} />
+            <AssigneeTag kind="PR" name={nameOf(d.pull_assignee_type, d.pull_assignee)} squad={d.pull_assignee_type === "squad"} />
+          </>
+        )}
         {d.type !== "scratch" && <span className="text-xs text-ink-3 ml-auto break-all">{d.git_url}</span>}
         {d.type === "scratch" && d.scratch_dir && (
           <span className="text-xs text-ink-3 ml-auto break-all font-mono">{d.scratch_dir}</span>
@@ -825,6 +853,11 @@ function EditDomainDialog({ domain, onClose }: { domain: Domain; onClose: () => 
             </select>
           </div>
         </Field>
+        {/* webhook 面板绑定表单里的当前值（未保存也能先看地址/注册），
+            react-query 按 domainId 缓存，关掉对话框不丢状态 */}
+        {domain.type === "repo" && (
+          <WebhookPanel domainId={domain.id} provider={issueProvider} repo={issueRepo} />
+        )}
         {update.isError && <p className="text-sm text-red-400">{String(update.error)}</p>}
       </form>
     </Dialog>

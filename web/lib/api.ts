@@ -1,6 +1,6 @@
-import type { Runtime, Agent, Goal, Run, Comment, Squad, SquadMember, Schedule, Domain, Checks, TimelineItem, TeamImportResponse, TemplateSummary, TemplateDetail, ApplySquadOverrides, ApplySquadResult, ApplyProjectOverrides, ApplyProjectResult, TemplateFetchResult } from "./types";
+import type { Runtime, Agent, Goal, Run, Comment, Squad, SquadMember, Schedule, Domain, Checks, TimelineItem, TeamImportResponse, TemplateSummary, TemplateDetail, ApplySquadOverrides, ApplySquadResult, ApplyProjectOverrides, ApplyProjectResult, TemplateFetchResult, WebhookStatus, WebhookRegisterResult } from "./types";
 
-// 默认走同源 /backend/*（Next rewrites 转发到本机 daemon 7373）——反代出
+// 默认走同源 /backend/*（Next rewrites 转发到本机 daemon 47813）——反代出
 // 去时浏览器无需直连 daemon。本地直连场景可显式设置 NEXT_PUBLIC_API_URL。
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/backend";
 
@@ -228,6 +228,29 @@ export const updateDomain = (id: string, body: {
 }) => api<Domain>(`/domains/${id}`, { method: "PUT", body: JSON.stringify(body) });
 export const deleteDomain = (id: string) =>
   api<void>(`/domains/${id}`, { method: "DELETE" });
+
+// ── Domain webhook（每仓库 secret + 宿主 hook 探测 + 投递日志） ──
+// GET returns the computed status: effective secret source, the host's
+// registered hooks (GitHub only) and the latest delivery log rows.
+export const getDomainWebhook = (id: string) =>
+  api<WebhookStatus>(`/domains/${id}/webhook`);
+// Register (or update) the host repo's webhook pointing at this site's
+// /webhooks/{provider} passthrough. `secret` defaults to the effective one
+// (repo-level first, then platform-level) when omitted.
+export const registerDomainWebhook = (
+  id: string,
+  body: { url: string; secret?: string; events?: string[] }
+) => api<WebhookRegisterResult>(`/domains/${id}/webhook/register`, { method: "POST", body: JSON.stringify(body) });
+// Patch ONLY the four routing fields — skips the git-connectivity gate so a
+// squad page can rebind a repo that is temporarily unreachable.
+export const patchDomainAssignees = (
+  id: string,
+  body: { issue_assignee: string; issue_assignee_type: string; pull_assignee: string; pull_assignee_type: string }
+) => api<Domain>(`/domains/${id}/assignees`, { method: "PATCH", body: JSON.stringify(body) });
+// Set or clear this repo's webhook secret. An empty string clears it and
+// falls back to the platform secret; the same secret is used by deliveries.
+export const setDomainWebhookSecret = (id: string, secret: string) =>
+  api<Domain>(`/domains/${id}/webhook/secret`, { method: "PUT", body: JSON.stringify({ secret }) });
 export const stopRun = (goalId: string, runId: string) =>
   api<void>(`/goals/${goalId}/runs/${runId}/stop`, { method: "POST" });
 

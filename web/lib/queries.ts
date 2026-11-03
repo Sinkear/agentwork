@@ -55,6 +55,10 @@ import {
   compileDomainPolicy,
   getDomainCompileRun,
   freezeDomainChecks,
+  getDomainWebhook,
+  registerDomainWebhook,
+  patchDomainAssignees,
+  setDomainWebhookSecret,
   getImStatus,
   connectFeishu,
   disconnectFeishu,
@@ -94,6 +98,7 @@ export const qk = {
   domains: ["domains"] as const,
   domain: (id: string) => ["domains", id] as const,
   domainCompileRun: (id: string) => ["domains", id, "compile-run"] as const,
+  domainWebhook: (id: string) => ["domainWebhook", id] as const,
   im: ["im"] as const,
   platformSettings: ["platform-settings"] as const,
   gateStats: ["gate-stats"] as const,
@@ -471,6 +476,55 @@ export function useFreezeDomainChecks() {
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: qk.domain(vars.id) });
       qc.invalidateQueries({ queryKey: qk.domains });
+    },
+  });
+}
+
+// ── Domain webhook hooks ──
+// The panel stays "alive": the host's hook state and the delivery log are
+// re-polled while it is open (a real delivery may land at any moment).
+export function useDomainWebhook(id: string, enabled = true) {
+  return useQuery({
+    queryKey: qk.domainWebhook(id),
+    queryFn: () => getDomainWebhook(id),
+    enabled: enabled && !!id,
+    refetchInterval: 15000,
+  });
+}
+export function useRegisterDomainWebhook(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Parameters<typeof registerDomainWebhook>[1]) => registerDomainWebhook(id, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.domainWebhook(id) }),
+  });
+}
+// Setting/clearing the repo secret changes three views: the domain list
+// badge, the single domain (webhook_secret field) and this status endpoint
+// (secret_source / secret_set / hooks).
+export function useSetDomainWebhookSecret(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (secret: string) => setDomainWebhookSecret(id, secret),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.domains });
+      qc.invalidateQueries({ queryKey: qk.domain(id) });
+      qc.invalidateQueries({ queryKey: qk.domainWebhook(id) });
+    },
+  });
+}
+// Patches only the four routing fields (skips the git-connectivity gate).
+// `id` is optional so a page that owns one domain can pass it at the hook
+// level; otherwise the per-call domainId is used for invalidation.
+export function usePatchDomainAssignees(id?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ domainId, ...body }: { domainId: string } & Parameters<typeof patchDomainAssignees>[1]) =>
+      patchDomainAssignees(domainId, body),
+    onSuccess: (_data, vars) => {
+      const did = id || vars.domainId;
+      qc.invalidateQueries({ queryKey: qk.domains });
+      qc.invalidateQueries({ queryKey: qk.domain(did) });
+      qc.invalidateQueries({ queryKey: qk.domainWebhook(did) });
     },
   });
 }
