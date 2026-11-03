@@ -3,22 +3,24 @@
 import { useEffect, useState, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useGoals, useAgents, useSquads, useDomains, useCreateGoal, useCancelGoal, useReopenGoal, useDeleteGoal, useGoalEvents } from "@/lib/queries";
-import { Badge, AttentionChip, ReviewPhaseBadge, Button, PageHeader, Empty, Dialog, Field, inputCls } from "@/components/ui";
+import { useGoals, useAgents, useSquads, useCancelGoal, useReopenGoal, useDeleteGoal, useGoalEvents } from "@/lib/queries";
+import { Badge, AttentionChip, ReviewPhaseBadge, PageBody, PageHeader, SectionCard, Segmented, Toolbar, Empty } from "@/components/ui";
 import { GoalStats } from "@/components/goal-stats";
 import { GoalBoard } from "@/components/goal-board";
 import { GoalBatchBar, GoalSelectCheckbox, CheckIcon } from "@/components/goal-batch-bar";
 import { cn } from "@/lib/utils";
 import type { Goal, GoalStatus } from "@/lib/types";
 
+// 六种状态全列出来：待办 → 进行中 → 待审批 → 已完成 / 失败 / 已取消。
+// 顺序照任务的生命周期走，而不是照枚举定义排。
 const STATUS_TABS: { label: string; value: GoalStatus | "all" }[] = [
   { label: "全部", value: "all" },
+  { label: "待办", value: "backlog" },
+  { label: "进行中", value: "active" },
   { label: "待审批", value: "review" },
-  { label: "backlog", value: "backlog" },
-  { label: "active", value: "active" },
-  { label: "done", value: "done" },
-  { label: "failed", value: "failed" },
-  { label: "cancelled", value: "cancelled" },
+  { label: "已完成", value: "done" },
+  { label: "失败", value: "failed" },
+  { label: "已取消", value: "cancelled" },
 ];
 
 // 卡片顶部状态色条（与 Badge 同色系，一眼可扫）
@@ -48,8 +50,6 @@ function GoalsPageInner() {
   const { data: goals, isLoading } = useGoals();
   const { data: agents } = useAgents();
   const { data: squads } = useSquads();
-  const { data: domains } = useDomains();
-  const createGoal = useCreateGoal();
   const cancelGoal = useCancelGoal();
   const reopenGoal = useReopenGoal();
   const deleteGoalMut = useDeleteGoal();
@@ -63,7 +63,6 @@ function GoalsPageInner() {
   ) as GoalStatus | "all";
   const setFilter = (v: GoalStatus | "all") =>
     router.replace(v === "all" ? "/goals" : `/goals?status=${v}`, { scroll: false });
-  const [showForm, setShowForm] = useState(false);
 
   // 视图：看板（拖拽为主）/ 列表（批量与筛选为主）。选择记在 localStorage，
   // 刷新后保持；默认看板——任务面板的主入口。
@@ -111,27 +110,26 @@ function GoalsPageInner() {
   };
 
   return (
-    <div className={cn("p-8 page-enter", view === "board" && "flex h-full flex-col")}>
+    <PageBody full={view === "board"}>
       <PageHeader
-        title="Goal"
+        title="任务"
+        desc="拖动卡片改状态，或者切到列表批量处理。"
         action={
           <div className="flex items-center gap-2">
-            <div className="flex items-center rounded-md border border-line bg-surface-1 p-0.5">
-              {(["board", "list"] as const).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => pickView(v)}
-                  className={cn(
-                    "rounded px-2.5 py-1 text-xs font-medium transition-colors",
-                    view === v ? "bg-surface-3 text-ink" : "text-ink-3 hover:text-ink"
-                  )}
-                >
-                  {v === "board" ? "看板" : "列表"}
-                </button>
-              ))}
-            </div>
-            <Button onClick={() => setShowForm(true)}>+ 新建</Button>
+            <Segmented
+              value={view}
+              onChange={pickView}
+              options={[
+                { value: "board", label: "看板" },
+                { value: "list", label: "列表" },
+              ]}
+            />
+            <Link
+              href="/goals/new"
+              className="inline-flex items-center justify-center rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink transition-colors duration-150 hover:bg-accent-dim"
+            >
+              + 新建
+            </Link>
           </div>
         }
       />
@@ -148,34 +146,20 @@ function GoalsPageInner() {
       ) : (
         <>
 
-      {/* Status filter tabs + 全选（作用于当前筛选，配合多选批量条） */}
-      <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
-        <div className="flex gap-1 flex-wrap">
-          {STATUS_TABS.map((tab) => {
-            const active = filter === tab.value;
-            const count = tab.value === "all"
-              ? goals?.length ?? 0
-              : goals?.filter((g) => g.status === tab.value).length ?? 0;
-            return (
-              <button
-                key={tab.value}
-                onClick={() => setFilter(tab.value)}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                  active
-                    ? "bg-surface-3 text-ink"
-                    : "bg-surface-2 text-ink-2 hover:bg-surface-3"
-                }`}
-              >
-                {tab.label}
-                {count > 0 && (
-                  <span className={`ml-1.5 ${active ? "text-ink-2" : "text-ink-3"}`}>
-                    {count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+      {/* 筛选：状态 tab + 全选（作用于当前筛选，配合多选批量条） */}
+      <Toolbar className="mb-3 justify-between">
+        <Segmented
+          value={filter}
+          onChange={setFilter}
+          options={STATUS_TABS.map((t) => ({
+            value: t.value,
+            label: `${t.label}${
+              (t.value === "all" ? goals?.length ?? 0 : goals?.filter((g) => g.status === t.value).length ?? 0) > 0
+                ? ` ${t.value === "all" ? goals?.length ?? 0 : goals?.filter((g) => g.status === t.value).length ?? 0}`
+                : ""
+            }`,
+          }))}
+        />
         {filtered.length > 0 && (
           <button
             type="button"
@@ -194,9 +178,10 @@ function GoalsPageInner() {
             {allFilteredSelected ? "取消全选" : "全选"}
           </button>
         )}
-      </div>
+      </Toolbar>
 
       {/* Goals — 卡片：状态色条 + 谁在干 + 元信息（不是表格的伪卡片） */}
+      <SectionCard title="任务列表" count={filtered.length}>
       {isLoading ? (
         <div className="text-sm text-ink-3 py-16 text-center">加载中…</div>
       ) : filtered.length === 0 ? (
@@ -308,15 +293,10 @@ function GoalsPageInner() {
           ))}
         </div>
       )}
+      </SectionCard>
         </>
       )}
 
-      {/* Create Goal dialog */}
-      {showForm && <NewGoalForm agents={agents} squads={squads} domains={domains} onClose={() => setShowForm(false)} />}
-
-      {createGoal.isError && (
-        <p className="text-sm text-red-400 mt-2">{String(createGoal.error)}</p>
-      )}
       {(cancelGoal.isError || reopenGoal.isError || deleteGoalMut.isError) && (
         <p className="text-sm text-red-400 mt-2">
           {String(cancelGoal.error ?? reopenGoal.error ?? deleteGoalMut.error)}
@@ -331,116 +311,6 @@ function GoalsPageInner() {
         onSelectionChange={setSelected}
         onBusyChange={setBatchBusyId}
       />
-    </div>
-  );
-}
-
-function NewGoalForm({
-  agents,
-  squads,
-  domains,
-  onClose,
-}: {
-  agents?: { id: string; name: string }[];
-  squads?: { id: string; name: string }[];
-  domains?: { id: string; name: string }[];
-  onClose: () => void;
-}) {
-  const createGoal = useCreateGoal();
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [domainId, setDomainId] = useState("");
-  const [domainErr, setDomainErr] = useState("");
-  const [assigneeType, setAssigneeType] = useState("");
-  const [assigneeId, setAssigneeId] = useState("");
-  const [assigneeErr, setAssigneeErr] = useState("");
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const body: Record<string, string> = { title };
-    if (description) body.description = description;
-    if (assigneeType && assigneeId) {
-      body.assignee_type = assigneeType;
-      body.assignee_id = assigneeId;
-      body.status = "active";
-    }
-    // A chosen assignee TYPE without a chosen agent/squad would silently
-    // drop the assignee and the backend rejects it as "agent goal without
-    // assignee_id" — fail loudly here instead.
-    if (assigneeType && !assigneeId) {
-      setAssigneeErr(assigneeType === "agent" ? "请选择一个 Agent——或先到「Agent」页创建 runtime 和 agent" : "请选择一个 Squad——或先到「Squad」页创建小队");
-      return;
-    }
-    // v2: agent/squad-executed goals must belong to a domain (DESIGN.md §2).
-    if (assigneeType === "agent" || assigneeType === "squad") {
-      if (!domainId) {
-        setDomainErr("请选择所属项目——agent 执行的 Goal 必须挂在一个项目上（项目提供 worktree 与验收策略）");
-        return;
-      }
-      body.domain_id = domainId;
-    }
-    createGoal.mutate(body as Record<string, string> & { title: string }, { onSuccess: onClose });
-  };
-
-  return (
-    <Dialog
-      title="新建 Goal"
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="outline" onClick={onClose}>取消</Button>
-          <Button type="submit" form="new-goal-form" disabled={createGoal.isPending}>
-            {createGoal.isPending ? "创建中…" : "创建"}
-          </Button>
-        </>
-      }
-    >
-      <form id="new-goal-form" onSubmit={handleSubmit} className="space-y-4">
-        <Field label="标题" hint="必填">
-          <input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} required placeholder="Goal 标题…" />
-        </Field>
-        <Field label="描述">
-          <textarea value={description} onChange={(e) => setDescription(e.target.value)} className={inputCls} rows={3} placeholder="可选描述…" />
-        </Field>
-        <Field label="所属项目" hint="agent/squad 执行的 Goal 必填">
-          <select value={domainId} onChange={(e) => setDomainId(e.target.value)} className={inputCls}>
-            <option value="">选择…</option>
-            {domains?.map((d) => (
-              <option key={d.id} value={d.id}>{d.name}</option>
-            ))}
-          </select>
-        </Field>
-        <Field label="负责人类型">
-          <select value={assigneeType} onChange={(e) => { setAssigneeType(e.target.value); setAssigneeId(""); }} className={inputCls}>
-            <option value="">无（进入 backlog）</option>
-            <option value="agent">Agent</option>
-            <option value="squad">Squad</option>
-          </select>
-        </Field>
-        {assigneeType === "agent" && (
-          <Field label="选择 Agent">
-            <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} className={inputCls} required>
-              <option value="">选择…</option>
-              {agents?.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-          </Field>
-        )}
-        {assigneeType === "squad" && (
-          <Field label="选择 Squad">
-            <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} className={inputCls} required>
-              <option value="">选择…</option>
-              {squads?.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </Field>
-        )}
-        {(createGoal.isError || domainErr || assigneeErr) && (
-          <p className="text-sm text-red-400">{domainErr || assigneeErr || String(createGoal.error)}</p>
-        )}
-      </form>
-    </Dialog>
+    </PageBody>
   );
 }

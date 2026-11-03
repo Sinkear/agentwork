@@ -4,7 +4,6 @@ import "./globals.css";
 import { Providers } from "@/components/providers";
 import { Nav } from "@/components/nav";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { ChatAssistant } from "@/components/chat-assistant";
 
 const plexSans = IBM_Plex_Sans({
   variable: "--font-plex-sans",
@@ -35,7 +34,7 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
+      lang="zh-CN"
       className={`${plexSans.variable} ${jetbrainsMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
@@ -48,7 +47,6 @@ export default function RootLayout({
           <main className="flex-1 overflow-auto">
             <ErrorBoundary>{children}</ErrorBoundary>
           </main>
-          <ChatAssistant />
         </Providers>
       </body>
     </html>

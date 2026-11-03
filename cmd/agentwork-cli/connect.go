@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/eushing/agentwork/internal/link"
+	"github.com/eushing/agentwork/internal/paths"
 	"github.com/eushing/agentwork/internal/zipx"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -30,22 +31,14 @@ var cliVersion = "0.0.1-beta.1"
 // stateFile is where connect persists the machine identity + last
 // connection state (status reads it — no IPC needed in Phase 1).
 func stateFile() string {
-	dir, err := os.UserHomeDir()
-	if err != nil {
-		return "agentwork-cli-state.json"
-	}
-	return filepath.Join(dir, ".agentwork", "agentwork-cli-state.json")
+	return paths.CLIState()
 }
 
 // defaultAgentsConfigPath is the auto-discovered agents.yaml location
 // (~/.agentwork/agents.yaml) — mirrors stateFile's convention. The file is
 // optional; its absence means the builtin probe table is used as-is.
 func defaultAgentsConfigPath() string {
-	dir, err := os.UserHomeDir()
-	if err != nil {
-		return "agents.yaml"
-	}
-	return filepath.Join(dir, ".agentwork", "agents.yaml")
+	return paths.AgentsConfig()
 }
 
 type cliState struct {

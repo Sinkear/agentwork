@@ -21,6 +21,7 @@ import (
 	"github.com/eushing/agentwork/internal/events"
 	"github.com/eushing/agentwork/internal/logging"
 	"github.com/eushing/agentwork/internal/notify"
+	"github.com/eushing/agentwork/internal/paths"
 	"github.com/eushing/agentwork/internal/proto"
 	"github.com/eushing/agentwork/internal/proto/acpbackend"
 	"github.com/eushing/agentwork/internal/proto/jsonlbackend"
@@ -41,9 +42,26 @@ func main() {
 		fmt.Printf("v%s\n", daemon.DaemonVersion)
 		return
 	}
+	// paths: print the resolved data layout (AGENTWORK_HOME-aware) — the
+	// operator's answer to "where does agentwork keep its data?".
+	if len(os.Args) >= 2 && os.Args[1] == "paths" {
+		fmt.Println(paths.Current().JSON())
+		return
+	}
+	// backup: consistent snapshot of the SQLite DB (+ optionally run files).
+	// Safe while the daemon is running; use it before replacing an artifact.
+	if len(os.Args) >= 2 && os.Args[1] == "backup" {
+		backupCmd(os.Args[2:])
+		return
+	}
 	addr := flag.String("addr", "127.0.0.1:47813", "HTTP listen address")
-	dbPath := flag.String("db", "", "SQLite path (default ~/.agentwork/agentwork.db)")
+	dbPath := flag.String("db", "", "SQLite path (default $AGENTWORK_HOME/agentwork.db)")
 	flag.Parse()
+
+	if _, err := paths.EnsureHome(); err != nil {
+		fmt.Fprintf(os.Stderr, "agentwork home: %v\n", err)
+		os.Exit(1)
+	}
 
 	st, err := store.Open(*dbPath)
 	if err != nil {
@@ -53,11 +71,12 @@ func main() {
 
 	// slog + lumberjack: the daemon's structured logger writes its compact
 	// line format (RFC3339 [LEVEL] msg — the tailer and /logs parse it) to
-	// BOTH stdout and ~/.agentwork/daemon.log (10MB size rotation, 3
+	// BOTH stdout and $AGENTWORK_HOME/daemon.log (10MB size rotation, 3
 	// compressed backups). The runtime level is one atomic knob — the Web
 	// panel's PUT /logs/level — and persists in app_settings.
 	lj := &lumberjack.Logger{Filename: logging.DefaultPath(), MaxSize: 10, MaxBackups: 3, Compress: true}
 	slog.SetDefault(slog.New(logging.NewHandler(io.MultiWriter(os.Stdout, lj))))
+	logging.Infof("agentwork: home=%s db=%s", paths.Home(), paths.DB())
 	if raw, err := service.NewSettingsService(st).Get(context.Background(), "logging.level"); err == nil && raw != "" {
 		logging.SetLevel(logging.ParseLevel(raw))
 		logging.Infof("logging: level restored to %s", logging.GetLevel())

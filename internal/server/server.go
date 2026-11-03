@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -906,12 +907,34 @@ func extractJSONRPCID(frame []byte) json.RawMessage {
 	return probe.ID
 }
 
-// corsMiddleware allows the Next.js dev server (localhost:3000) to call the
-// API and WS endpoint cross-origin. Single-user local use; no credentialed
-// requests, no origin allow-list beyond the dev port.
+// corsMiddleware allows the Next.js dev server to call the API and WS
+// endpoint cross-origin. Single-user local use; no credentialed requests, so
+// the allow-list is just the two loopback spellings of the web port (47814)
+// plus 3000, which older bookmarks/scripts still point at.
+// The Web UI normally talks to Next, which proxies /backend/* same-origin, so
+// CORS is only needed when a browser hits the daemon directly (dev server on a
+// non-default port, custom WEB_PORT, a reverse proxy preview). Allow any
+// loopback origin rather than pinning ports: the daemon binds 127.0.0.1 by
+// default and refuses to start on a public interface without auth, so
+// reflecting a localhost Origin adds no exposure beyond the local machine.
+func localDevOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+		if origin := r.Header.Get("Origin"); localDevOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Add("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == "OPTIONS" {

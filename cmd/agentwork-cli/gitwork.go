@@ -11,6 +11,7 @@ import (
 
 	"github.com/eushing/agentwork/internal/gitutil"
 	"github.com/eushing/agentwork/internal/link"
+	"github.com/eushing/agentwork/internal/paths"
 )
 
 // gitwork — the machine's git execution (CLI 分支 Phase 3): the bare repo
@@ -29,18 +30,13 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 // (~/.agentwork/runs/<runID> — one run owns its directory; crash leftovers
 // are reclaimed by the same path on re-dispatch).
 func machineRunWorkdir(runID string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".agentwork", "runs", runID)
+	return paths.RunWorktree(runID)
 }
 
 // ensureBareRepo clones the domain repo ONCE per machine (bare, mirrors
 // remote branches into refs/remotes/origin/*) and fetches fresh state.
 func ensureBareRepo(ctx context.Context, p link.RunDispatchParams) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	repo := filepath.Join(home, ".agentwork", "repos", p.DomainID)
+	repo := paths.RepoDir(p.DomainID)
 	url := gitutil.CloneURL(p.GitURL, p.GitCredentials)
 	// Existence alone is not "cloned": a half-written dir from a crashed
 	// clone would pass os.Stat and then fail every fetch. A git repo has a
@@ -149,11 +145,7 @@ func ensureGitWorkdir(ctx context.Context, p link.RunDispatchParams) (workdir, r
 // goalAgentWorkdir is the persistent workdir for a WRITABLE run — keyed by
 // (goal, agent) for owner runs, (goal, subgoal, agent) for sub-goal runs.
 func goalAgentWorkdir(goalID, subGoalID, agentID string) string {
-	home, _ := os.UserHomeDir()
-	if subGoalID != "" {
-		return filepath.Join(home, ".agentwork", "runs", "goal", goalID, "sg", subGoalID, agentID)
-	}
-	return filepath.Join(home, ".agentwork", "runs", "goal", goalID, agentID)
+	return paths.GoalAgent(goalID, subGoalID, agentID)
 }
 
 // pruneStaleGoalWorkdirs removes persistent goal worktrees untouched for
@@ -161,11 +153,7 @@ func goalAgentWorkdir(goalID, subGoalID, agentID string) string {
 // otherwise accumulate forever: the daemon's sweeps never reach the
 // machine's disk.
 func pruneStaleGoalWorkdirs() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	root := filepath.Join(home, ".agentwork", "runs", "goal")
+	root := filepath.Join(paths.Runs(), "goal")
 	cutoff := time.Now().Add(-30 * 24 * time.Hour)
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil || !info.IsDir() {
@@ -184,7 +172,7 @@ func pruneStaleGoalWorkdirs() {
 
 // commitAndPush commits the run's changes onto the branch (when there are
 // any) and pushes it to the remote as agentwork/<branch> — the 中转 push.
-// A no-change run pushes nothing. Returns the pushed commit's sha ('' =
+// A no-change run pushes nothing. Returns the pushed commit's sha (” =
 // nothing staged): the sha rides the terminal report, and the daemon
 // hard-fails a completed run whose reported sha it cannot adopt — a lost
 // push must never masquerade as "no changes to verify".

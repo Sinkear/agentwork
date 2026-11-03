@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/eushing/agentwork/internal/logging"
+	"github.com/eushing/agentwork/internal/paths"
 	"github.com/eushing/agentwork/internal/service"
 )
 
@@ -26,7 +27,7 @@ var digestMu sync.Mutex
 
 // ── marker helpers ──
 
-// digestScheduleID returns the built-in schedule's id ('' = not seeded).
+// digestScheduleID returns the built-in schedule's id (” = not seeded).
 func (d *Daemon) digestScheduleID(ctx context.Context) string {
 	var v string
 	if err := d.st.DB().QueryRowContext(ctx,
@@ -55,7 +56,7 @@ func (d *Daemon) isDigestGoal(ctx context.Context, goalID string) bool {
 	return d.digestGoalIDForGoal(ctx, goalID) != ""
 }
 
-// digestGoalIDForGoal returns goalID if the goal is a digest firing, else ''.
+// digestGoalIDForGoal returns goalID if the goal is a digest firing, else ”.
 func (d *Daemon) digestGoalIDForGoal(ctx context.Context, goalID string) string {
 	var createdByType, createdByID string
 	err := d.st.DB().QueryRowContext(ctx,
@@ -72,7 +73,7 @@ func (d *Daemon) digestGoalIDForGoal(ctx context.Context, goalID string) string 
 }
 
 // digestGoalIDForRun resolves a finished run's goal and returns it when it
-// is a digest firing ('' = not digest / no goal).
+// is a digest firing (” = not digest / no goal).
 func (d *Daemon) digestGoalIDForRun(ctx context.Context, runID string) string {
 	var goalID, createdByType, createdByID string
 	err := d.st.DB().QueryRowContext(ctx,
@@ -138,15 +139,11 @@ func (d *Daemon) maybePickDigestExecutor(ctx context.Context, scheduleID, assign
 
 // ── collection (run finish) ──
 
-// digestRoot is where collected articles land: ~/.agentwork/digest/. The
+// digestRoot is where collected articles land: $AGENTWORK_HOME/digest/. The
 // daemon host's filesystem is what the reading frontend can reach (the
 // artifacts arrive over the link — the sandbox is opaque to us).
 func digestRoot() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(os.TempDir(), "agentwork-digest")
-	}
-	return filepath.Join(home, ".agentwork", "digest")
+	return paths.Digest()
 }
 
 // collectDigestBatch lands one firing's uploaded artifacts into the stable
@@ -289,9 +286,12 @@ func parseDigestManifest(raw string) []service.DigestManifestItem {
 // are not already escaped. Walks the raw bytes as a state machine so
 // structural quotes are left untouched; the first structural error wins —
 // anything the pass can't make valid is returned unchanged. E.g.
-//   {"title":"跨越"关键阈值"的模型","file":"1.md"}
+//
+//	{"title":"跨越"关键阈值"的模型","file":"1.md"}
+//
 // becomes
-//   {"title":"跨越\"关键阈值\"的模型","file":"1.md"}
+//
+//	{"title":"跨越\"关键阈值\"的模型","file":"1.md"}
 func repairDigestJson(raw string) ([]byte, error) {
 	// Breakpoints between structural tokens: quote ends a string, colon
 	// follows an object key, comma/brackets separate items. A quote preceded
@@ -349,7 +349,7 @@ func repairDigestJson(raw string) ([]byte, error) {
 }
 
 // digestH1Title extracts the first markdown H1 line ("# 标题") from an
-// article body for the metadata-less fallback path; '' when there is none.
+// article body for the metadata-less fallback path; ” when there is none.
 func digestH1Title(content string) string {
 	for _, line := range strings.Split(content, "\n") {
 		t := strings.TrimSpace(line)

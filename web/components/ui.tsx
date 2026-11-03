@@ -51,6 +51,22 @@ const STATUS_COLORS: Record<string, string> = {
   completed: "bg-emerald-500/10 text-emerald-300 dot-emerald",
 };
 
+// 状态的中文显示名：UI 里不再直接暴露 backlog/active 这类枚举值。
+export const STATUS_LABEL: Record<string, string> = {
+  backlog: "待办",
+  active: "进行中",
+  review: "待审批",
+  failed: "失败",
+  cancelled: "已取消",
+  done: "已完成",
+  completed: "已完成",
+  queued: "排队中",
+  running: "执行中",
+  online: "在线",
+  offline: "离线",
+  paused: "已暂停",
+};
+
 const STATUS_DOTS: Record<string, string> = {
   "dot-zinc": "bg-zinc-400",
   "dot-blue": "bg-blue-400",
@@ -98,7 +114,7 @@ export function Badge({ status, className }: { status: string; className?: strin
       )}
     >
       <span className={cn("h-1.5 w-1.5 rounded-full", dot, status === "running" && "animate-pulse")} />
-      {status}
+      {STATUS_LABEL[status] ?? status}
     </span>
   );
 }
@@ -298,5 +314,149 @@ export function Skeleton({ className }: { className?: string }) {
         className
       )}
     />
+  );
+}
+
+// ── Page body ──
+// 全站唯一的版面容器：统一最大宽度、内边距与垂直节奏。
+// 宽度对全站所有页面（含看板、对话）都是同一个 1360，切换视图/切页面时内容
+// 不会横向跳。`full` 只表达"这一页要占满高度"（看板/对话），不再影响宽度。
+export function PageBody({
+  children,
+  className,
+  full,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  full?: boolean; // 看板这类需要撑满高度/宽度的页面
+}) {
+  return (
+    <div
+      className={cn(
+        "mx-auto w-full max-w-[1360px] px-8 py-7 space-y-6 page-enter",
+        full && "h-full flex flex-col",
+        className
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ── Stat strip ──
+// 列表页顶部的概览条：一行 2–4 个数字，等宽字体、不用彩色卡片、不用图标堆叠。
+// 作用是把“这一页现在什么状况”压成一眼可读的一行，而不是让页面只剩一个列表。
+const STAT_TONE: Record<string, string> = {
+  default: "text-ink",
+  ok: "text-emerald-400",
+  warn: "text-amber-400",
+  err: "text-red-400",
+  info: "text-sky-400",
+  muted: "text-ink-3",
+};
+
+export function StatStrip({
+  items,
+  className,
+}: {
+  items: { label: string; value: React.ReactNode; hint?: string; tone?: keyof typeof STAT_TONE }[];
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap overflow-hidden rounded-lg border border-line bg-surface-1",
+        className
+      )}
+    >
+      {items.map((it) => (
+        <div
+          key={it.label}
+          className="min-w-[150px] flex-1 border-l border-line px-4 py-3 first:border-l-0"
+        >
+          <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-3">
+            {it.label}
+          </div>
+          <div className={cn("mt-1.5 font-mono text-xl tabular-nums leading-none", STAT_TONE[it.tone ?? "default"])}>
+            {it.value}
+          </div>
+          {it.hint && <div className="mt-1.5 truncate text-[11px] text-ink-3">{it.hint}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Section card ──
+// 列表主体：标题行（计数 + 右侧操作）+ 内容。列表行用 divide-line 分隔，
+// 不再给每张卡加阴影——层级靠底色和描边。
+export function SectionCard({
+  title,
+  count,
+  desc,
+  action,
+  children,
+  className,
+  bodyClassName,
+}: {
+  title?: string;
+  count?: number;
+  desc?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+  bodyClassName?: string;
+}) {
+  return (
+    <section className={cn("overflow-hidden rounded-lg border border-line bg-surface-1", className)}>
+      {(title || action) && (
+        <header className="flex items-center gap-2.5 border-b border-line px-4 py-2.5">
+          {title && <h2 className="text-sm font-medium text-ink">{title}</h2>}
+          {typeof count === "number" && (
+            <span className="font-mono text-[11px] text-ink-3">{count}</span>
+          )}
+          {desc && <span className="truncate text-xs text-ink-3">{desc}</span>}
+          {action && <div className="ml-auto flex items-center gap-2">{action}</div>}
+        </header>
+      )}
+      <div className={cn(bodyClassName)}>{children}</div>
+    </section>
+  );
+}
+
+// ── Toolbar ──
+// 页面内的筛选/搜索行：左侧控件，右侧计数或视图切换。
+export function Toolbar({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn("flex flex-wrap items-center gap-2", className)}>{children}</div>
+  );
+}
+
+// 分段控件（视图切换、范围切换）：一处定义，全站同款。
+export function Segmented<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string }[];
+}) {
+  return (
+    <div className="flex items-center gap-0.5 rounded-md border border-line bg-surface-1 p-0.5">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          onClick={() => onChange(o.value)}
+          className={cn(
+            "rounded px-2.5 py-1 text-xs font-medium transition-colors duration-150",
+            value === o.value ? "bg-surface-3 text-ink" : "text-ink-3 hover:text-ink"
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
   );
 }

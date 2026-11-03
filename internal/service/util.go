@@ -5,10 +5,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/eushing/agentwork/internal/paths"
 )
 
 // ErrNotFound is returned by Get* when no row matches.
@@ -29,10 +30,10 @@ type validationError struct {
 	detail map[string]any
 }
 
-func (e *validationError) Error() string                  { return e.msg }
-func (e *validationError) Unwrap() error                  { return ErrValidation }
-func (e *validationError) Code() string                   { return e.code }
-func (e *validationError) Detail() map[string]any         { return e.detail }
+func (e *validationError) Error() string          { return e.msg }
+func (e *validationError) Unwrap() error          { return ErrValidation }
+func (e *validationError) Code() string           { return e.code }
+func (e *validationError) Detail() map[string]any { return e.detail }
 
 // NewValidationError returns an error that satisfies errors.Is(err, ErrValidation).
 func NewValidationError(msg string) error { return &validationError{msg: msg} }
@@ -134,13 +135,10 @@ func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 // ── filesystem layout helpers (shared with the daemon) ──
 
-// RunsRoot is the root of all run/domain filesystem state (~/.agentwork/runs).
+// RunsRoot is the root of all run/domain filesystem state
+// ($AGENTWORK_HOME/runs, ~/.agentwork/runs by default).
 func RunsRoot() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(os.TempDir(), "agentwork-runs")
-	}
-	return filepath.Join(home, ".agentwork", "runs")
+	return paths.Runs()
 }
 
 // SanitizeDirName turns a domain name into a safe directory name — a

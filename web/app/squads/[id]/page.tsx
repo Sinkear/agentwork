@@ -3,8 +3,32 @@
 import { useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { useSquads, useAgents, useSquadMembers, useAddSquadMember, useUpdateSquad, useRemoveSquadMember, useGoalEvents, useDomains, usePatchDomainAssignees } from "@/lib/queries";
-import { Button, PageHeader, Empty, Dialog, Field, inputCls } from "@/components/ui";
+import {
+  useSquads,
+  useAgents,
+  useSquadMembers,
+  useAddSquadMember,
+  useUpdateSquad,
+  useRemoveSquadMember,
+  useGoalEvents,
+  useDomains,
+  usePatchDomainAssignees,
+  useGoals,
+} from "@/lib/queries";
+import {
+  Button,
+  PageBody,
+  PageHeader,
+  SectionCard,
+  StatStrip,
+  Empty,
+  Skeleton,
+  Dialog,
+  Field,
+  inputCls,
+} from "@/components/ui";
+import { Users, GitBranch, Trash2 } from "lucide-react";
+import { cn, relTime } from "@/lib/utils";
 import type { Domain, Squad, SquadMember } from "@/lib/types";
 
 export default function SquadDetailPage() {
@@ -14,7 +38,8 @@ export default function SquadDetailPage() {
   const { data: squads } = useSquads();
   const { data: agents } = useAgents();
   const { data: members, isLoading } = useSquadMembers(id);
-  const addMember = useAddSquadMember();
+  const { data: goals } = useGoals();
+  const { data: domains } = useDomains();
   const updateSquad = useUpdateSquad();
   const removeMember = useRemoveSquadMember();
   const [showAdd, setShowAdd] = useState(false);
@@ -27,103 +52,214 @@ export default function SquadDetailPage() {
   const squad = squads?.find((s) => s.id === id);
   const agentName = (aid: string) => agents?.find((a) => a.id === aid)?.name ?? aid;
 
+  // 真数据派生：人数、reviewer 数、绑到本 squad 的仓库、状态为 active 的任务。
+  const reviewerCount = (members ?? []).filter((m) => m.role === "reviewer").length;
+  const agentMembers = (members ?? []).filter((m) => m.member_type === "agent").length;
+  const humanMembers = (members ?? []).filter((m) => m.member_type === "human").length;
+  const boundRepos = (domains ?? []).filter(
+    (d) => d.issue_repo !== "" && (d.issue_assignee === id || d.pull_assignee === id),
+  );
+  const trackedRepoCount = (domains ?? []).filter((d) => d.type === "repo" && d.issue_repo !== "").length;
+  const squadGoals = (goals ?? []).filter(
+    (g) => g.assignee_type === "squad" && g.assignee_id === id,
+  );
+  const activeGoals = squadGoals.filter((g) => g.status === "active").length;
+  const reviewGoals = squadGoals.filter((g) => g.status === "review").length;
+
+  const openEdit = () => {
+    if (!squad) return;
+    setEditName(squad.name);
+    setEditLeader(squad.leader_id);
+    setEditDesc(squad.description || "");
+    setEditInstr(squad.instructions || "");
+    setShowEdit(true);
+  };
+
   if (!squad) {
-    if (squads === undefined) return <div className="p-8 text-sm text-ink-3">加载中…</div>;
-    return <div className="p-8 text-sm text-ink-3">找不到 Squad。</div>;
+    return (
+      <PageBody>
+        <PageHeader title="小队详情" desc="成员、任务与仓库接入" />
+        {squads === undefined ? (
+          <div className="space-y-3">
+            <Skeleton className="h-24" />
+            <Skeleton className="h-44" />
+          </div>
+        ) : (
+          <SectionCard bodyClassName="p-0">
+            <Empty icon={<Users className="h-4 w-4" />}>
+              找不到这个 Squad，可能已被删除。
+              <Link href="/squads" className="mt-1 block text-accent hover:text-accent-dim">
+                返回小队列表
+              </Link>
+            </Empty>
+          </SectionCard>
+        )}
+      </PageBody>
+    );
   }
 
   return (
-    <div className="p-8 max-w-4xl space-y-5">
-      <div>
-        <Link href="/squads" className="text-sm text-ink-3 hover:text-ink-2 hover:underline">
-          ← 返回列表
-        </Link>
-        <h1 className="text-lg font-semibold text-ink mt-3">{squad.name}</h1>
-      </div>
+    <PageBody>
+      <PageHeader
+        title={squad.name}
+        desc={squad.description || "这支小队还没有描述。"}
+        action={
+          <div className="flex items-center gap-3">
+            <Link
+              href="/squads"
+              className="text-xs text-ink-3 transition-colors hover:text-ink-2"
+            >
+              ← 返回小队列表
+            </Link>
+            <Button variant="outline" onClick={openEdit}>
+              编辑
+            </Button>
+          </div>
+        }
+      />
 
-      {/* Squad info */}
-      <div className="bg-surface-1 rounded-xl border border-line p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <span className="text-ink-3">Leader：</span>
-              <span className="text-ink-2">{agentName(squad.leader_id)}</span>
-            </div>
-            <div>
-              <span className="text-ink-3">创建时间：</span>
-              <span className="text-ink-2">{new Date(squad.created_at).toLocaleString()}</span>
-            </div>
+      <StatStrip
+        items={[
+          {
+            label: "成员数",
+            value: members?.length ?? 0,
+            hint: reviewerCount > 0 ? `${reviewerCount} 名 reviewer` : "agent / human 成员",
+          },
+          {
+            label: "负责仓库",
+            value: boundRepos.length,
+            tone: boundRepos.length > 0 ? "info" : "muted",
+            hint: `共跟踪 ${trackedRepoCount} 个仓库`,
+          },
+          {
+            label: "进行中任务",
+            value: activeGoals,
+            tone: activeGoals > 0 ? "info" : "muted",
+            hint: reviewGoals > 0 ? `另有 ${reviewGoals} 个待审批` : "状态 active 的任务",
+          },
+        ]}
+      />
+
+      {/* 小队信息：leader / 创建时间 / 成员构成 / instructions */}
+      <SectionCard
+        title="概览"
+        desc="Leader 接任务并分派给成员；instructions 会注入 leader 的运行"
+      >
+        <dl className="divide-y divide-line">
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+            <dt className="text-xs text-ink-3">Leader</dt>
+            <dd className="truncate text-sm text-ink-2">{agentName(squad.leader_id)}</dd>
           </div>
-          <Button variant="outline" onClick={() => { setEditName(squad.name); setEditLeader(squad.leader_id); setEditDesc(squad.description || ""); setEditInstr(squad.instructions || ""); setShowEdit(true); }}>
-            编辑
-          </Button>
-        </div>
-        {squad.description && (
-          <div>
-            <span className="text-xs text-ink-3 block mb-1">描述</span>
-            <p className="text-sm text-ink-2">{squad.description}</p>
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+            <dt className="text-xs text-ink-3">成员构成</dt>
+            <dd className="font-mono text-xs text-ink-2">
+              {members?.length ?? 0} 人（agent {agentMembers} · human {humanMembers}）
+            </dd>
           </div>
-        )}
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+            <dt className="text-xs text-ink-3">创建时间</dt>
+            <dd className="font-mono text-xs text-ink-2" title={squad.created_at}>
+              {new Date(squad.created_at).toLocaleString()}
+            </dd>
+          </div>
+        </dl>
         {squad.instructions && (
-          <div>
-            <span className="text-xs text-ink-3 block mb-1">Instructions</span>
-            <p className="text-sm text-ink-2 whitespace-pre-wrap">{squad.instructions}</p>
+          <div className="border-t border-line px-4 py-3">
+            <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-3">
+              Instructions
+            </div>
+            <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-ink-2">
+              {squad.instructions}
+            </p>
           </div>
         )}
-      </div>
+      </SectionCard>
 
       {/* Members */}
-      <div className="bg-surface-1 rounded-xl border border-line overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-line flex items-center justify-between">
-          <span className="text-xs font-medium text-ink-3 uppercase tracking-wide">
-            成员{members && members.length > 0 && `（${members.length}）`}
-          </span>
-          <Button onClick={() => setShowAdd(true)}>+ 添加</Button>
-        </div>
-        <div className="p-4">
-          {isLoading ? (
-            <div className="text-sm text-ink-3 text-center py-8">加载中…</div>
-          ) : !members || members.length === 0 ? (
-            <Empty>暂无成员。</Empty>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-line text-left text-xs font-medium text-ink-3 uppercase tracking-wide">
-                  <th className="px-3 py-2">类型</th>
-                  <th className="px-3 py-2">名称</th>
-                  <th className="px-3 py-2">角色</th>
-                  <th className="px-3 py-2">添加时间</th>
-                  <th className="px-3 py-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {members.map((m: SquadMember) => (
-                  <tr key={m.id} className="border-b border-line">
-                    <td className="px-3 py-2">
-                      <span className={`px-2 py-0.5 text-xs rounded ${m.member_type === "agent" ? "bg-blue-500/10 text-blue-300" : "bg-surface-2 text-ink-2"}`}>
-                        {m.member_type}
+      <SectionCard
+        title="成员"
+        count={members?.length ?? 0}
+        desc="leader 由 squad 自身指定；reviewer 在进审批时被平台自动拉入"
+        bodyClassName="p-0"
+        action={
+          <Button onClick={() => setShowAdd(true)} className="h-7 px-2.5 text-xs">
+            + 添加
+          </Button>
+        }
+      >
+        {isLoading ? (
+          <div className="divide-y divide-line">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="flex items-center gap-3 px-4 py-2.5">
+                <Skeleton className="h-5 w-12" />
+                <Skeleton className="h-3 w-48" />
+              </div>
+            ))}
+          </div>
+        ) : !members || members.length === 0 ? (
+          <Empty icon={<Users className="h-4 w-4" />}>
+            暂无成员。点「+ 添加」把 agent 拉进小队。
+          </Empty>
+        ) : (
+          <ul className="divide-y divide-line">
+            {members.map((m: SquadMember) => {
+              const isLeader = m.member_type === "agent" && m.member_id === squad.leader_id;
+              const memberName =
+                m.member_type === "agent" ? agentName(m.member_id) || m.member_id : m.member_id;
+              return (
+                <li key={m.id} className="flex items-center gap-3 px-4 py-2.5">
+                  <span
+                    className={cn(
+                      "inline-flex shrink-0 items-center rounded border px-1.5 py-0.5 font-mono text-[10px] font-medium",
+                      m.member_type === "agent"
+                        ? "border-blue-500/30 bg-blue-500/10 text-blue-300"
+                        : "border-line bg-surface-2 text-ink-2",
+                    )}
+                  >
+                    {m.member_type}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm text-ink-2">{memberName}</span>
+                      {isLeader && (
+                        <span className="inline-flex items-center rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                          leader
+                        </span>
+                      )}
+                      {m.role === "reviewer" && (
+                        <span className="inline-flex items-center rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+                          reviewer
+                        </span>
+                      )}
+                      {!isLeader && m.role && m.role !== "reviewer" && (
+                        <span className="font-mono text-[10px] text-ink-3">{m.role}</span>
+                      )}
+                    </div>
+                    <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-ink-3">
+                      <span className="font-mono" title={m.member_id}>
+                        {m.member_id.slice(0, 8)}
                       </span>
-                    </td>
-                    <td className="px-3 py-2 text-ink-2">
-                      {m.member_type === "agent" ? (agentName(m.member_id) || m.member_id) : m.member_id}
-                    </td>
-                    <td className="px-3 py-2 text-ink-3">{m.role || "-"}</td>
-                    <td className="px-3 py-2 text-ink-3 text-xs">{new Date(m.created_at).toLocaleString()}</td>
-                    <td className="px-3 py-2">
-                      <button
-                        onClick={() => removeMember.mutate({ squadId: id, memberId: m.member_id })}
-                        disabled={removeMember.isPending && removeMember.variables?.memberId === m.member_id}
-                        className="text-red-400 hover:text-red-300 text-xs disabled:opacity-50"
-                        title="移除该成员"
-                      >✕</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
+                      <span>·</span>
+                      <span title={new Date(m.created_at).toLocaleString()}>
+                        {relTime(m.created_at)}加入
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => removeMember.mutate({ squadId: id, memberId: m.member_id })}
+                    disabled={removeMember.isPending && removeMember.variables?.memberId === m.member_id}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-3 transition-colors hover:bg-surface-2 hover:text-red-400 disabled:opacity-40"
+                    title="移除该成员"
+                    aria-label={`移除成员 ${memberName}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </SectionCard>
 
       {/* 成员移除失败必须显示——后端 400 错误静默等于「点了没反应」。 */}
       {removeMember.isError && (
@@ -131,7 +267,13 @@ export default function SquadDetailPage() {
       )}
 
       {/* 仓库接入：squad ↔ repo 的绑定在两边都能看见、都能改（契约 3.3c） */}
-      <RepoAccessSection squadId={id} agents={agents} squads={squads} />
+      <SectionCard
+        title="仓库接入"
+        count={trackedRepoCount}
+        desc="绑定后，该仓库的新 issue / PR 会路由给本 squad 的 leader"
+      >
+        <RepoAccessSection squadId={id} agents={agents} squads={squads} />
+      </SectionCard>
 
       {/* Add member dialog */}
       {showAdd && (
@@ -188,7 +330,7 @@ export default function SquadDetailPage() {
           </div>
         </Dialog>
       )}
-    </div>
+    </PageBody>
   );
 }
 
@@ -267,6 +409,7 @@ function AddMemberDialog({
 // independent toggles (issue route / PR route); clicking a bound one clears
 // it, clicking an unbound one takes it over — the same PATCH the domain
 // dialog exposes, so both sides stay in sync through query invalidation.
+// 外层版面由详情页的 SectionCard 提供；这里只负责内容与四字段整体覆盖。
 function RepoAccessSection({
   squadId,
   agents,
@@ -318,31 +461,35 @@ function RepoAccessSection({
   };
 
   return (
-    <div className="bg-surface-1 rounded-xl border border-line overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-line">
-        <span className="text-xs font-medium text-ink-3 uppercase tracking-wide">仓库接入</span>
-      </div>
-      <div className="p-4 space-y-2.5">
-        <p className="text-xs text-ink-3">绑定后，该仓库的新 issue/PR 会路由给本 squad 的 leader。</p>
-        {isLoading ? (
-          <div className="text-sm text-ink-3 text-center py-6">加载中…</div>
-        ) : repos.length === 0 ? (
-          <p className="text-sm text-ink-3">还没有跟踪仓库的项目——先去 Domains 页创建一个 repo 类型的 domain。</p>
-        ) : (
-          <div className="space-y-1.5">
-            {repos.map((d) => (
-              <div key={d.id} className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-2" title={d.issue_repo}>
+    <div className="p-4">
+      {isLoading ? (
+        <div className="space-y-2">
+          <Skeleton className="h-5 w-full" />
+          <Skeleton className="h-5 w-full" />
+        </div>
+      ) : repos.length === 0 ? (
+        <Empty icon={<GitBranch className="h-4 w-4" />}>
+          还没有跟踪仓库的项目——先去 Domains 页创建一个 repo 类型的 domain。
+        </Empty>
+      ) : (
+        <div className="divide-y divide-line">
+          {repos.map((d) => (
+            <div key={d.id} className="flex flex-wrap items-center gap-2 py-2.5 first:pt-0 last:pb-0">
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-mono text-xs text-ink-2" title={d.issue_repo}>
                   {d.issue_repo}
-                </span>
-                {toggleBtn(d, "issue")}
-                {toggleBtn(d, "pull")}
+                </div>
+                <div className="mt-0.5 truncate text-[10px] text-ink-3">
+                  {d.name} · {d.default_branch || "默认分支"}
+                </div>
               </div>
-            ))}
-          </div>
-        )}
-        {patch.isError && <p className="text-xs text-red-400">{String(patch.error)}</p>}
-      </div>
+              {toggleBtn(d, "issue")}
+              {toggleBtn(d, "pull")}
+            </div>
+          ))}
+        </div>
+      )}
+      {patch.isError && <p className="mt-2 text-xs text-red-400">{String(patch.error)}</p>}
     </div>
   );
 }

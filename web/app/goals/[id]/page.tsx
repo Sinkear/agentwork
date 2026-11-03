@@ -10,7 +10,7 @@ import { GoalRuns } from "@/components/goal-runs";
 import { GoalSubGoals } from "@/components/goal-subgoals";
 import { GoalChanges } from "@/components/goal-changes";
 import { GoalStatusBar, GoalTimeline } from "@/components/goal-timeline";
-import { Badge, AttentionChip } from "@/components/ui";
+import { Badge, AttentionChip, PageBody } from "@/components/ui";
 import type { Goal } from "@/lib/types";
 
 export default function GoalDetailPage() {
@@ -43,7 +43,7 @@ function GoalDetailPageInner() {
       : "-";
 
   return (
-    <div className="p-8 space-y-5 max-w-4xl page-enter">
+    <PageBody>
       {/* Breadcrumb */}
       <div>
         {/* 从带筛选的列表进来（?status=…）时，返回列表保持筛选不丢 */}
@@ -95,6 +95,6 @@ function GoalDetailPageInner() {
 
       {/* Runs */}
       <GoalRuns goalId={id} />
-    </div>
+    </PageBody>
   );
 }

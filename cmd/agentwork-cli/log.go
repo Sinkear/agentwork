@@ -3,9 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/eushing/agentwork/internal/paths"
 )
 
 // The machine-side sidecar's operational log — connect lifecycle,
@@ -39,13 +40,10 @@ func cliLogf(format string, args ...any) {
 	cliLogMu.Lock()
 	defer cliLogMu.Unlock()
 	if cliLogFile == nil {
-		home, err := os.UserHomeDir()
-		if err != nil {
+		if _, err := paths.EnsureHome(); err != nil {
 			return
 		}
-		dir := filepath.Join(home, ".agentwork")
-		_ = os.MkdirAll(dir, 0o755)
-		f, err := os.OpenFile(filepath.Join(dir, "cli.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		f, err := os.OpenFile(paths.CLILog(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			return
 		}

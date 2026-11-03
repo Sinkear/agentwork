@@ -36,6 +36,7 @@ import (
 	"github.com/eushing/agentwork/internal/gitutil"
 	"github.com/eushing/agentwork/internal/issue"
 	"github.com/eushing/agentwork/internal/notify"
+	"github.com/eushing/agentwork/internal/paths"
 	"github.com/eushing/agentwork/internal/proto"
 	"github.com/eushing/agentwork/internal/service"
 	"github.com/eushing/agentwork/internal/store"
@@ -1208,13 +1209,10 @@ func (d *Daemon) dispatchOnce(ctx context.Context) {
 // deliver) are serialized per domain (decision 2-10): concurrent fetches
 // would collide on index.lock.
 
-// runsRoot is where run worktrees and the domain bare repos live.
+// runsRoot is where run worktrees and the domain bare repos live
+// ($AGENTWORK_HOME/runs).
 func runsRoot() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(os.TempDir(), "agentwork-runs")
-	}
-	return filepath.Join(home, ".agentwork", "runs")
+	return paths.Runs()
 }
 
 func domainRepoPath(domainID string) string {

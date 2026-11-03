@@ -2,9 +2,39 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useSquads, useAgents, useCreateSquad, useAddSquadMember, useDeleteSquad, useImportTeam, useGoalEvents, useDomains } from "@/lib/queries";
-import { Button, PageHeader, Empty, Dialog, Field, inputCls, ConfirmDialog } from "@/components/ui";
+import { useQueries } from "@tanstack/react-query";
+import { listSquadMembers } from "@/lib/api";
+import {
+  qk,
+  useSquads,
+  useAgents,
+  useCreateSquad,
+  useAddSquadMember,
+  useDeleteSquad,
+  useImportTeam,
+  useGoalEvents,
+  useDomains,
+} from "@/lib/queries";
+import {
+  Button,
+  PageBody,
+  PageHeader,
+  SectionCard,
+  StatStrip,
+  Toolbar,
+  Segmented,
+  Empty,
+  Skeleton,
+  Dialog,
+  Field,
+  inputCls,
+  ConfirmDialog,
+} from "@/components/ui";
+import { Users, Search, Trash2, ChevronRight } from "lucide-react";
+import { relTime } from "@/lib/utils";
 import type { Domain, Squad } from "@/lib/types";
+
+type RepoFilter = "all" | "bound" | "unbound";
 
 export default function SquadsPage() {
   useGoalEvents();
@@ -16,13 +46,42 @@ export default function SquadsPage() {
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [repoFilter, setRepoFilter] = useState<RepoFilter>("all");
+
+  // 成员合计需要每个小队各自的 roster；squad 列表接口不带 members，
+  // 这里按 squad id 复用 detail 页同一个 query key，数据仍是同一条真数据。
+  const memberQueries = useQueries({
+    queries: (squads ?? []).map((s) => ({
+      queryKey: qk.squadMembers(s.id),
+      queryFn: () => listSquadMembers(s.id),
+    })),
+  });
 
   const agentName = (aid: string) => agents?.find((a) => a.id === aid)?.name ?? aid;
+  const repoDomains = (domains ?? []).filter((d) => d.issue_repo !== "");
+  const isBound = (squadId: string) =>
+    repoDomains.some((d) => d.issue_assignee === squadId || d.pull_assignee === squadId);
+  const memberCount = (i: number) => memberQueries[i]?.data?.length;
+  const membersLoading = memberQueries.some((mq) => mq.isPending);
+  const totalMembers = memberQueries.reduce((n, mq) => n + (mq.data?.length ?? 0), 0);
+  const boundSquadCount = (squads ?? []).filter((s) => isBound(s.id)).length;
+
+  const q = query.trim().toLowerCase();
+  const visibleSquads = (squads ?? []).filter((s) => {
+    if (repoFilter === "bound" && !isBound(s.id)) return false;
+    if (repoFilter === "unbound" && isBound(s.id)) return false;
+    if (!q) return true;
+    return [s.name, s.description ?? "", s.id, agentName(s.leader_id)].some((v) =>
+      v.toLowerCase().includes(q)
+    );
+  });
 
   return (
-    <div className="p-8">
+    <PageBody>
       <PageHeader
-        title="Squad"
+        title="小队"
+        desc="Squad 把一组 agent 编成小队：leader 接任务并分派，reviewer 在审批时把关；仓库绑定决定 issue / PR 路由给谁。"
         action={
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => setShowImport(true)}>导入团队</Button>
@@ -31,50 +90,129 @@ export default function SquadsPage() {
         }
       />
 
-      {isLoading ? (
-        <div className="text-sm text-ink-3 py-16 text-center">加载中…</div>
-      ) : !squads || squads.length === 0 ? (
-        <Empty>暂无 Squad。点「+ 新建」创建一个，或「导入团队」从代码仓导入。</Empty>
-      ) : (
-        <div className="bg-surface-1 rounded-xl border border-line overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line bg-surface-0/50 text-left text-xs font-medium text-ink-3 uppercase tracking-wide">
-                <th className="px-4 py-3">名称</th>
-                <th className="px-4 py-3">Leader</th>
-                <th className="px-4 py-3">描述</th>
-                <th className="px-4 py-3">创建时间</th>
-                <th className="px-4 py-3 w-20"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {squads.map((s: Squad) => (
-                <tr key={s.id} className="border-b border-line last:border-0 hover:bg-surface-0/60">
-                  <td className="px-4 py-3 font-medium text-ink">
-                    <Link href={`/squads/${s.id}`} className="hover:text-blue-400 hover:underline">
-                      {s.name}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-ink-2">{agentName(s.leader_id)}</td>
-                  <td className="px-4 py-3 text-ink-3 max-w-[220px]">
-                    <div className="truncate">{s.description || "-"}</div>
-                    <SquadRepos squadId={s.id} domains={domains} />
-                  </td>
-                  <td className="px-4 py-3 text-ink-3">{new Date(s.created_at).toLocaleString()}</td>
-                  <td className="px-4 py-3 text-right">
-                    <button
-                      onClick={() => setDeleteTarget(s.id)}
-                      className="text-xs text-ink-3 hover:text-red-400 transition-colors"
-                    >
-                      删除
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <StatStrip
+        items={[
+          { label: "小队数", value: squads?.length ?? 0, hint: `${boundSquadCount} 个已绑仓库` },
+          {
+            label: "成员合计",
+            value: squads === undefined || membersLoading ? "…" : totalMembers,
+            hint: "按各小队 roster 合计",
+          },
+          {
+            label: "已绑仓库的小队",
+            value: boundSquadCount,
+            tone: boundSquadCount > 0 ? "info" : "muted",
+            hint: `共 ${repoDomains.length} 个可路由仓库`,
+          },
+        ]}
+      />
+
+      <SectionCard
+        title="小队"
+        count={visibleSquads.length}
+        desc={q ? `筛选自 ${squads?.length ?? 0} 个` : undefined}
+        bodyClassName="p-0"
+        action={
+          <Toolbar>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-3" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="搜索名称 / leader / 描述…"
+                className="w-52 rounded-md border border-line bg-surface-2 py-1.5 pl-7 pr-2.5 text-xs text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-accent-dim"
+              />
+            </div>
+            <Segmented
+              value={repoFilter}
+              onChange={setRepoFilter}
+              options={[
+                { value: "all", label: "全部" },
+                { value: "bound", label: "已绑仓库" },
+                { value: "unbound", label: "未绑" },
+              ]}
+            />
+          </Toolbar>
+        }
+      >
+        {isLoading ? (
+          <div className="divide-y divide-line">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="flex items-center gap-3 px-4 py-3.5">
+                <Skeleton className="h-7 w-7 rounded-md" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-3 w-44" />
+                  <Skeleton className="h-3 w-72" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : !squads || squads.length === 0 ? (
+          <Empty icon={<Users className="h-4 w-4" />}>
+            暂无 Squad。点「+ 新建」创建一个，或「导入团队」从代码仓导入。
+          </Empty>
+        ) : visibleSquads.length === 0 ? (
+          <Empty icon={<Search className="h-4 w-4" />}>没有匹配当前搜索/筛选条件的小队。</Empty>
+        ) : (
+          <ul className="divide-y divide-line">
+            {visibleSquads.map((s: Squad) => {
+              const idx = (squads ?? []).findIndex((x) => x.id === s.id);
+              const count = memberCount(idx);
+              return (
+                <li key={s.id} className="px-4 py-3 transition-colors hover:bg-surface-2/40">
+                  <div className="flex items-start gap-3">
+                    <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-line bg-surface-2 text-ink-3">
+                      <Users className="h-3.5 w-3.5" />
+                    </span>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Link
+                          href={`/squads/${s.id}`}
+                          className="truncate text-sm font-medium text-ink transition-colors hover:text-accent"
+                        >
+                          {s.name}
+                        </Link>
+                        <span className="font-mono text-[11px] text-ink-3" title={s.id}>
+                          {s.id.slice(0, 8)}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 line-clamp-1 text-xs text-ink-3">
+                        {s.description || "未填写描述"}
+                      </p>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-3">
+                        <span>Leader · {agentName(s.leader_id)}</span>
+                        <span className="font-mono">{count === undefined ? "…" : count} 名成员</span>
+                        <span title={new Date(s.created_at).toLocaleString()}>
+                          {relTime(s.created_at)}创建
+                        </span>
+                      </div>
+                      <SquadRepos squadId={s.id} domains={domains} />
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <Link
+                        href={`/squads/${s.id}`}
+                        className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink"
+                      >
+                        详情
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </Link>
+                      <button
+                        onClick={() => setDeleteTarget(s.id)}
+                        className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-ink-3 transition-colors hover:bg-surface-2 hover:text-red-400"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </SectionCard>
 
       {showForm && <NewSquadForm agents={agents} onClose={() => setShowForm(false)} />}
       {showImport && (
@@ -96,9 +234,9 @@ export default function SquadsPage() {
       {/* 删除失败必须显示——后端守卫（squad 被 goal/schedule 引用）返回
           400 coded error，静默等于「点了没反应」。 */}
       {deleteSquad.isError && (
-        <p className="text-sm text-red-400 mt-3">{String(deleteSquad.error)}</p>
+        <p className="text-sm text-red-400">{String(deleteSquad.error)}</p>
       )}
-    </div>
+    </PageBody>
   );
 }
 

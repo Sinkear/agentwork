@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/eushing/agentwork/internal/link"
+	"github.com/eushing/agentwork/internal/paths"
 	"github.com/eushing/agentwork/internal/proto"
 	"github.com/eushing/agentwork/internal/proto/acpbackend"
 	"github.com/eushing/agentwork/internal/runtime"
@@ -475,11 +476,7 @@ func shortSHA(s string) string {
 // pendingReportFile is where unreported terminal states wait for the next
 // connection.
 func pendingReportFile() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "pending-reports.json"
-	}
-	return filepath.Join(home, ".agentwork", "pending-reports.json")
+	return paths.PendingReports()
 }
 
 // stashPendingReport appends a terminal report that could not be delivered.
@@ -532,8 +529,7 @@ func flushPendingReports(peer *link.Peer) {
 // agentProfileDir is where config.push lands the agent's AGENTS.md
 // (~/.agentwork/agents/<agentID>/).
 func agentProfileDir(agentID string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".agentwork", "agents", agentID)
+	return paths.AgentProfileDir(agentID)
 }
 
 // writeAgentProfile persists the pushed system prompt as AGENTS.md
@@ -589,8 +585,7 @@ func syncAgentProfile(agentID, workdir string) string {
 // platform-managed staging dir; the executor copies them into each run's
 // workdir at spawn.
 func machineSkillRoot(agentID string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".agentwork", "skills", agentID)
+	return paths.MachineSkillRoot(agentID)
 }
 
 // skillSubdir maps a probed CLI (the acp_spawn executable) to its
@@ -711,19 +706,14 @@ func removeStaleSkillCopies(target string, current []string) {
 
 // machineProcWorkdir is where a processor run works on the machine.
 func machineProcWorkdir(runID string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".agentwork", "runs", "proc", runID)
+	return paths.Proc(runID)
 }
 
 // scratchWorkdir derives the local workdir for a scratch-domain run
 // (mirrors the daemon's layout: runs/scratch/<domain>/goals/<goalID>,
 // sub-goals under sg/<subGoalID>).
 func scratchWorkdir(p link.RunDispatchParams) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	base := filepath.Join(home, ".agentwork", "runs", "scratch", sanitizeName(p.DomainName), "goals", p.GoalID)
+	base := paths.ScratchGoal(sanitizeName(p.DomainName), p.GoalID)
 	if p.SubGoalID != "" {
 		base = filepath.Join(base, "sg", p.SubGoalID)
 	}
@@ -763,11 +753,7 @@ func ensureAgentworkShim() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".agentwork", "bin")
+	dir := paths.BinDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

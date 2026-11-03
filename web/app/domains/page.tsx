@@ -1,15 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { FolderGit2, Plus } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useDomains, useDomain, useAgents, useSquads, useCreateDomain, useUpdateDomain, useCompileDomainPolicy,
   useDomainCompileRun, useFreezeDomainChecks, useGoalEvents, useGateStats, qk,
+  usePlatformSettings, useSavePlatformSettings,
 } from "@/lib/queries";
 import { listRunMessages, testDomainGit } from "@/lib/api";
 import type { ChatMessage } from "@/lib/api";
 import { useWSEvent } from "@/lib/ws";
-import { Button, Dialog, Field, inputCls, PageHeader, Empty, Badge } from "@/components/ui";
+import {
+  Button, Dialog, Field, inputCls, PageBody, PageHeader, Empty, Badge,
+  SectionCard, Skeleton, StatStrip,
+} from "@/components/ui";
 import { WebhookPanel } from "@/components/webhook-panel";
 import type { Domain, DomainGitTestResult, Checks, Guard, GateRule, Run } from "@/lib/types";
 import { groupMessages, StreamCards } from "@/lib/run-messages";
@@ -76,32 +81,92 @@ export default function DomainsPage() {
   const { data: domains, isLoading } = useDomains();
   const [showCreate, setShowCreate] = useState(false);
 
-  return (
-    <div>
-      <PageHeader title="项目" />
-      <p className="text-sm text-ink-3 -mt-3 mb-4">
-        项目是 goal 的归属地：一个共享代码仓库 + 一套"怎么算干完了"的验收标准。goal 必须挂在某个项目下。
-      </p>
-      <div className="mb-4">
-        <Button onClick={() => setShowCreate(true)}>新建项目</Button>
-      </div>
+  const list = domains ?? [];
+  const scratchCount = list.filter((d) => d.type === "scratch").length;
+  const issueBound = list.filter((d) => d.issue_assignee).length;
+  const prBound = list.filter((d) => d.pull_assignee).length;
+  const secretBound = list.filter((d) => d.webhook_secret).length;
 
-      {isLoading ? (
-        <p className="text-ink-3">加载中…</p>
-      ) : !domains?.length ? (
-        <Empty>还没有项目——创建一个项目并挂上你的代码仓库，agentwork 就能在项目里全自动干活。</Empty>
-      ) : (
-        <div className="space-y-4">
-          {domains.map((d) => (
-            <DomainCard key={d.id} domain={d} />
-          ))}
-        </div>
-      )}
+  return (
+    <PageBody className="space-y-5">
+      <PageHeader
+        title="项目仓库"
+        desc="项目是 goal 的归属地：一个共享代码仓库 + 一套「怎么算干完了」的验收标准。goal 必须挂在某个项目下。"
+        action={
+          <Button onClick={() => setShowCreate(true)} className="gap-1.5">
+            <Plus className="h-3.5 w-3.5" />
+            新建项目
+          </Button>
+        }
+      />
+
+      <StatStrip
+        items={[
+          {
+            label: "仓库数",
+            value: list.length,
+            hint: list.length === 0
+              ? "还没有项目"
+              : scratchCount
+                ? `${list.length - scratchCount} 个代码仓库 · ${scratchCount} 个无仓库`
+                : "全部为代码仓库",
+          },
+          {
+            label: "绑定 Issue 的",
+            value: issueBound,
+            tone: issueBound ? "info" : "muted",
+            hint: issueBound ? "issue 自动指派给负责人" : "还没有项目绑定 issue",
+          },
+          {
+            label: "绑定 PR 的",
+            value: prBound,
+            tone: prBound ? "info" : "muted",
+            hint: prBound ? "PR 自动指派给负责人" : "还没有项目绑定 PR",
+          },
+          {
+            label: "专属 Webhook",
+            value: secretBound,
+            tone: secretBound ? "ok" : "muted",
+            hint: secretBound ? "使用项目自己的 secret" : "均走全局 secret",
+          },
+        ]}
+      />
+
+      <SectionCard
+        title="仓库列表"
+        count={list.length}
+        desc="验收策略、issue / PR 指派与 webhook 都在每行的「编辑」里配置"
+        bodyClassName="p-0"
+      >
+        {isLoading ? (
+          <div className="divide-y divide-line">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="space-y-2 px-4 py-4">
+                <Skeleton className="h-4 w-52" />
+                <Skeleton className="h-3 w-80 max-w-full" />
+              </div>
+            ))}
+          </div>
+        ) : list.length === 0 ? (
+          <Empty icon={<FolderGit2 className="h-5 w-5" />}>
+            还没有项目——创建一个项目并挂上你的代码仓库，agentwork 就能在项目里全自动干活。
+          </Empty>
+        ) : (
+          <div className="divide-y divide-line">
+            {list.map((d) => (
+              <DomainCard key={d.id} domain={d} />
+            ))}
+          </div>
+        )}
+      </SectionCard>
 
       <GateHealthTable />
 
+      {/* 平台级参数从「设置」搬到它真正起作用的地方：webhook 签名。 */}
+      <GlobalWebhookSecretCard />
+
       {showCreate && <CreateDomainDialog onClose={() => setShowCreate(false)} />}
-    </div>
+    </PageBody>
   );
 }
 
@@ -294,31 +359,37 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
   }, [latestCompile]);
 
   return (
-    <div className="rounded-lg border border-line p-4 space-y-3">
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="font-medium">{d.name}</span>
-        {d.type === "scratch" && (
-          <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/30">无仓库项目</span>
-        )}
-        <span className={strengthBadge(d.verification_strength)}>{d.verification_strength} 验证</span>
-        {compiled ? (
-          <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30">策略已冻结</span>
-        ) : needsConfirm ? (
-          <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-purple-500/10 text-purple-300 ring-1 ring-purple-500/30">待确认</span>
-        ) : null}
-        {d.type === "repo" && (
-          <>
-            <AssigneeTag kind="issue" name={nameOf(d.issue_assignee_type, d.issue_assignee)} squad={d.issue_assignee_type === "squad"} />
-            <AssigneeTag kind="PR" name={nameOf(d.pull_assignee_type, d.pull_assignee)} squad={d.pull_assignee_type === "squad"} />
-          </>
-        )}
-        {d.type !== "scratch" && <span className="text-xs text-ink-3 ml-auto break-all">{d.git_url}</span>}
-        {d.type === "scratch" && d.scratch_dir && (
-          <span className="text-xs text-ink-3 ml-auto break-all font-mono">{d.scratch_dir}</span>
-        )}
+    <div className="space-y-3 px-4 py-4">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium text-ink">{d.name}</span>
+            {d.type === "scratch" && (
+              <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/30">无仓库项目</span>
+            )}
+            <span className={strengthBadge(d.verification_strength)}>{d.verification_strength} 验证</span>
+            {compiled ? (
+              <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30">策略已冻结</span>
+            ) : needsConfirm ? (
+              <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-purple-500/10 text-purple-300 ring-1 ring-purple-500/30">待确认</span>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            {d.type === "repo" && (
+              <>
+                <AssigneeTag kind="issue" name={nameOf(d.issue_assignee_type, d.issue_assignee)} squad={d.issue_assignee_type === "squad"} />
+                <AssigneeTag kind="PR" name={nameOf(d.pull_assignee_type, d.pull_assignee)} squad={d.pull_assignee_type === "squad"} />
+              </>
+            )}
+            {d.type !== "scratch" && <span className="min-w-0 break-all font-mono text-[11px] text-ink-3">{d.git_url}</span>}
+            {d.type === "scratch" && d.scratch_dir && (
+              <span className="min-w-0 break-all font-mono text-[11px] text-ink-3">{d.scratch_dir}</span>
+            )}
+          </div>
+        </div>
         <button
           onClick={() => setShowEdit(true)}
-          className="text-xs text-accent hover:text-accent hover:underline shrink-0"
+          className="shrink-0 text-xs text-accent transition-colors hover:underline"
         >
           编辑
         </button>
@@ -666,22 +737,89 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
 // GateHealthTable shows each gate rule's decision history (M2 health data,
 // DESIGN.md §13): a gate approved every time is a candidate for removal;
 // one rejected repeatedly for tightening.
+// GlobalWebhookSecretCard：全局默认 webhook secret。
+// 以前它藏在「设置 → 平台设置」里，用户看不出它是干什么的；放在项目仓库页，
+// 旁边就是每个项目的专属 secret，关系一目了然：项目没配专属 → 用这里的。
+// 平台设置是整体覆盖（PUT 三个字段），所以保存时必须把 digest_time 原样带上，
+// 否则会把「每日摘要推送」的时间冲掉。
+function GlobalWebhookSecretCard() {
+  const { data: settings, isLoading } = usePlatformSettings();
+  const save = useSavePlatformSettings();
+  const [secret, setSecret] = useState<string | null>(null);
+  const value = secret ?? settings?.webhook_secret ?? "";
+  const dirty = secret !== null && secret !== (settings?.webhook_secret ?? "");
+
+  const persist = (next: string) => {
+    setSecret(next);
+    save.mutate(
+      { intake_agent: "", digest_time: settings?.digest_time ?? "", webhook_secret: next },
+      { onSuccess: () => setSecret(null) }
+    );
+  };
+
+  return (
+    <SectionCard
+      title="全局默认 webhook secret"
+      desc="项目没配专属 secret 时用它；配了专属的则优先用专属的"
+    >
+      <div className="space-y-3 p-4">
+        {isLoading ? (
+          <Skeleton className="h-9 w-full max-w-md" />
+        ) : (
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="min-w-0 flex-1 sm:max-w-md">
+              <span className="text-xs font-medium text-ink-2">secret</span>
+              <input
+                type="password"
+                value={value}
+                onChange={(e) => setSecret(e.target.value)}
+                placeholder="留空 = 只支持 5 分钟轮询兜底"
+                className={`${inputCls} mt-1 font-mono`}
+              />
+            </label>
+            <Button
+              onClick={() => persist(value)}
+              disabled={save.isPending || !dirty}
+            >
+              {save.isPending ? "保存中…" : "保存"}
+            </Button>
+            {settings?.webhook_secret ? (
+              <Button variant="outline" onClick={() => persist("")} disabled={save.isPending}>
+                清除
+              </Button>
+            ) : null}
+          </div>
+        )}
+        <p className="text-[11px] leading-relaxed text-ink-3">
+          GitHub 与 GitCode 共用这一个值。签名校验先看项目的专属 secret，没有再落回这里；
+          每个项目在「编辑」里能看到自己的 webhook 地址、已覆盖的事件与最近投递记录。
+        </p>
+        {save.isError && <p className="text-xs text-red-400">{String(save.error)}</p>}
+        {save.isSuccess && <p className="text-xs text-emerald-400">已保存</p>}
+      </div>
+    </SectionCard>
+  );
+}
+
 function GateHealthTable() {
   const { data: stats } = useGateStats();
   if (!stats?.length) return null;
   return (
-    <div className="mt-8 border-t border-line pt-6">
-      <h3 className="text-sm font-medium mb-1">卡点统计</h3>
-      <p className="text-xs text-ink-3 mb-2">所有项目的卡点审批记录</p>
-      <div className="rounded-lg border border-line overflow-hidden">
+    <SectionCard
+      title="卡点统计"
+      count={stats.length}
+      desc="所有项目的卡点审批记录：连批率高的建议放宽，频繁驳回的建议收紧"
+      bodyClassName="p-0"
+    >
+      <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-surface-2 text-left text-xs text-ink-3">
             <tr>
-              <th className="px-3 py-2">卡点规则</th>
-              <th className="px-3 py-2">决策总数</th>
-              <th className="px-3 py-2">批准</th>
-              <th className="px-3 py-2">驳回</th>
-              <th className="px-3 py-2">建议</th>
+              <th className="px-4 py-2 font-medium">卡点规则</th>
+              <th className="px-4 py-2 font-medium">决策总数</th>
+              <th className="px-4 py-2 font-medium">批准</th>
+              <th className="px-4 py-2 font-medium">驳回</th>
+              <th className="px-4 py-2 font-medium">建议</th>
             </tr>
           </thead>
           <tbody>
@@ -695,18 +833,18 @@ function GateHealthTable() {
                     : "—";
               return (
                 <tr key={s.rule} className="border-t border-line">
-                  <td className="px-3 py-2 font-mono text-xs">{s.rule}</td>
-                  <td className="px-3 py-2">{s.total}</td>
-                  <td className="px-3 py-2 text-emerald-300">{s.approved}</td>
-                  <td className="px-3 py-2 text-red-300">{s.rejected}</td>
-                  <td className="px-3 py-2 text-xs text-ink-2">{advice}</td>
+                  <td className="px-4 py-2 font-mono text-xs">{s.rule}</td>
+                  <td className="px-4 py-2">{s.total}</td>
+                  <td className="px-4 py-2 text-emerald-300">{s.approved}</td>
+                  <td className="px-4 py-2 text-red-300">{s.rejected}</td>
+                  <td className="px-4 py-2 text-xs text-ink-2">{advice}</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
-    </div>
+    </SectionCard>
   );
 }
 

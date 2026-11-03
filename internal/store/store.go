@@ -1,6 +1,7 @@
 // Package store is the SQLite persistence layer.
 //
-// Single-file SQLite (WAL mode) at ~/.agentwork/agentwork.db by default.
+// Single-file SQLite (WAL mode) at $AGENTWORK_HOME/agentwork.db by default
+// (~/.agentwork/agentwork.db when AGENTWORK_HOME is unset).
 // Schema is applied on Open via schema.sql (CREATE TABLE IF NOT EXISTS) —
 // no migration tool for now.
 package store
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/eushing/agentwork/internal/paths"
 	_ "modernc.org/sqlite"
 )
 
@@ -26,18 +28,16 @@ type Store struct {
 }
 
 // Open opens (creating if needed) the SQLite database at path and applies
-// the schema. If path is empty, defaults to ~/.agentwork/agentwork.db.
+// the schema. If path is empty, defaults to $AGENTWORK_HOME/agentwork.db.
 func Open(path string) (*Store, error) {
 	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("home dir: %w", err)
-		}
-		dir := filepath.Join(home, ".agentwork")
+		path = paths.DB()
+	}
+	if path != ":memory:" {
+		dir := filepath.Dir(path)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 		}
-		path = filepath.Join(dir, "agentwork.db")
 	}
 
 	// DSN pragmas apply to every pooled connection. foreign_keys,

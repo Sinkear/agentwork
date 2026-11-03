@@ -82,6 +82,9 @@ func main() {
 	case "version":
 		versionCmd()
 		return
+	case "paths":
+		pathsCmd()
+		return
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -195,10 +198,13 @@ Subcommands:
                                              (the platform owns the token and routes by source
                                              kind — a PR goal's comment lands on the PR; only
                                              for source-tracked goals, M4-B)
+  paths                                      print this machine's agentwork data paths (JSON)
+                                             (respects AGENTWORK_HOME, default ~/.agentwork)
 
   version                                    print the CLI build version and exit
 
 Environment (injected by daemon):
+  AGENTWORK_HOME         data root (default ~/.agentwork) — all durable state
   AGENTWORK_SERVER_URL   server base URL (default http://127.0.0.1:47813)
   AGENTWORK_GOAL_ID      current goal id (product plane)
   AGENTWORK_RUN_ID       current run id (execution plane)

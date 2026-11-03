@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Loader2 } from "lucide-react";
-import { AttentionChip, Button, Dialog, ReviewPhaseBadge } from "@/components/ui";
+import { AttentionChip, Button, Dialog, ReviewPhaseBadge, STATUS_LABEL } from "@/components/ui";
 import {
   useActivateGoal,
   useCancelGoal,
@@ -389,7 +389,7 @@ export function GoalBoard({
         <span>拖动卡片改状态；也可以点卡片底部的操作，或用「列表」视图批量处理。</span>
       </div>
 
-      <div ref={scrollRef} className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-1">
+      <div ref={scrollRef} className="flex min-h-0 flex-1 gap-2.5 overflow-x-auto pb-1">
         {COLUMNS.map((col) => {
           const items = byCol[col.id];
           const hovered = drag && hover?.col === col.id;
@@ -398,7 +398,8 @@ export function GoalBoard({
               key={col.id}
               data-board-col={col.id}
               className={cn(
-                "flex w-[272px] shrink-0 flex-col rounded-lg border transition-colors duration-150",
+                // 宽屏时五列均分铺满，窄屏（<1180）才横向滚动：min-w 保证卡片不被挤扁。
+                "flex min-w-[180px] flex-1 basis-[272px] flex-col rounded-lg border transition-colors duration-150",
                 "border-line bg-surface-0/60",
                 hovered && (hover!.legal ? "border-accent/45 bg-accent/[0.04]" : "border-amber-500/40 bg-amber-500/[0.05]")
               )}
@@ -554,7 +555,7 @@ export function GoalBoard({
                           </button>
                         )}
                         <span className="ml-auto font-mono text-[10px] text-ink-3/70">
-                          {g.status === "review" ? "待审批" : g.status}
+                          {STATUS_LABEL[g.status] ?? g.status}
                         </span>
                       </div>
                     </a>

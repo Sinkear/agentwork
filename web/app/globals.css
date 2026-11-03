@@ -78,7 +78,9 @@
 
   --color-ink: #1c1c1a;
   --color-ink-2: #565652;
-  --color-ink-3: #8f8f88;
+  /* Muted metadata: darkened from #8f8f88 — 11px mono timestamps and hints
+     were below AA contrast on paper and read as "看不清". */
+  --color-ink-3: #6a6a63;
 
   --color-line: #e9e9e6;
   --color-line-strong: #d6d6d1;
@@ -248,4 +250,17 @@ body {
 ::selection {
   background: color-mix(in srgb, var(--color-accent) 25%, transparent);
   color: var(--color-ink);
+}
+
+/* Affordance: every clickable control shows a pointer. Tailwind 的 preflight
+   不保证这一点，缺了它按钮/卡片看起来"点了没反应"。 */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
 }

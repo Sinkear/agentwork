@@ -10,7 +10,7 @@
 # 每个架构产出独立压缩包（dist/agentwork-v$VERSION-linux-<arch>.tar.gz）：
 #   bin/agentwork          CLI
 #   bin/agentwork-daemon   daemon（API :47813）
-#   web/server.js          前端自包含服务（:3000，无需 node_modules / 源码）
+#   web/server.js          前端自包含服务（:47814，无需 node_modules / 源码）
 #   web/.next/static       前端静态资源
 #   web/public             前端公共资源
 #   start-all.sh           一键启动 daemon + 前端
@@ -77,22 +77,31 @@ for arch in $ARCHS; do
 
   cat > "$REL/start-all.sh" <<'EOF'
 #!/bin/sh
-# 一键启动：daemon(:${DAEMON_PORT:-47813}) + 前端(:${WEB_PORT:-3000})。
+# 一键启动：daemon(:${DAEMON_PORT:-47813}) + 前端(:${WEB_PORT:-47814})。
 #   ./start-all.sh            前台运行（两个进程）
-#   WEB_PORT=3000 HOST=0.0.0.0 ./start-all.sh
+#   WEB_PORT=47814 HOST=0.0.0.0 ./start-all.sh
+#
+# 数据目录（agents / squads / goals / skills / runs）默认在
+# $AGENTWORK_HOME（缺省 ~/.agentwork），可用 AGENTWORK_HOME 或 AGENTWORK_DB
+# 指向一个制品之外、持久可写的位置；升级只换 bin/web，不碰这里。
 set -e
 cd "$(dirname "$0")"
 HOST="${HOST:-127.0.0.1}"
-WEB_PORT="${WEB_PORT:-3000}"
+WEB_PORT="${WEB_PORT:-47814}"
 DAEMON_PORT="${DAEMON_PORT:-47813}"
+AGENTWORK_HOME="${AGENTWORK_HOME:-$HOME/.agentwork}"
+export AGENTWORK_HOME
+DB="${AGENTWORK_DB:-$AGENTWORK_HOME/agentwork.db}"
+mkdir -p "$AGENTWORK_HOME"
 # 前端反代目标是构建期固化的 47813：改了 daemon 端口必须重新打包，
 # 否则页面能打开、/backend 全 500。
 if [ "$DAEMON_PORT" != "47813" ]; then
   echo "⚠ DAEMON_PORT=$DAEMON_PORT 与前端内置反代目标(47813)不一致——" >&2
   echo "  API 调用会失败。换端口请改 web/next.config.ts 后重新打包。" >&2
 fi
+echo "agentwork: home=$AGENTWORK_HOME db=$DB"
 
-./bin/agentwork-daemon -addr "127.0.0.1:$DAEMON_PORT" &
+./bin/agentwork-daemon -addr "127.0.0.1:$DAEMON_PORT" -db "$DB" &
 DAEMON_PID=$!
 trap 'kill $DAEMON_PID 2>/dev/null' EXIT INT TERM
 
@@ -109,15 +118,35 @@ EOF
 
 ## 快速开始
     ./start-all.sh
-    # 打开 http://127.0.0.1:3000
+    # 打开 http://127.0.0.1:47814
 
 ## 端口
-- 3000：Web 前端（/backend/* 与 /ws 由它反代到 daemon，浏览器无需直连 47813）
+- 47814：Web 前端（/backend/* 与 /ws 由它反代到 daemon，浏览器无需直连 47813）
 - 47813：daemon API（仅本机，不常用端口）
 
 ## 常用变量
-- WEB_PORT（默认 3000）、HOST（默认 127.0.0.1；对外暴露设 0.0.0.0）
+- WEB_PORT（默认 47814）、HOST（默认 127.0.0.1；对外暴露设 0.0.0.0）
 - DAEMON_PORT（默认 47813，改了它 Next 反代目标也要同步改）
+- AGENTWORK_HOME（默认 ~/.agentwork）：**所有持久数据（SQLite、runs、skills）的根目录**
+- AGENTWORK_DB：单独指定 SQLite 路径（优先于 AGENTWORK_HOME/agentwork.db）
+
+## 数据与升级（重要）
+制品（bin/、web/、start-all.sh）与数据（AGENTWORK_HOME）是分开的。升级时**只替换 bin/ 和 web/**，
+不要删除数据目录：
+1. 停掉旧 daemon（不要 delete/重新 deploy 沙箱，否则 /workspace 会被清空）；
+2. 可选：`./bin/agentwork-daemon backup -out /path/to/backups` 做一份一致性备份；
+3. 用新包覆盖 bin/ 和 web/（或解压新包到新目录，把 `AGENTWORK_HOME` 指到同一数据目录）；
+4. 用同一个 `AGENTWORK_HOME` 启动 `start-all.sh`；
+5. 打开 Web 确认 agents/teams/goals 仍在。
+
+> 在 job-environment 这类沙箱里，`~/.agentwork` 位于 `/workspace`；`stop → 替换 → start` 会保留它，
+> 但 `delete / deploy` 会清空 `/workspace`。要连 deploy 也不丢，需要把 `AGENTWORK_HOME` 指到宿主机
+> 持久目录（通过模板 writablePaths 挂进沙箱），例如 `/root/agentwork-data`。
+
+## 备份 / 恢复
+    ./bin/agentwork-daemon backup -out ./backups
+    ./bin/agentwork-daemon backup -out ./backups -with-files   # 连同 runs/skills
+恢复：停 daemon，把备份 db 覆盖 `$AGENTWORK_HOME/agentwork.db`（删除旧的 -wal/-shm），再启动。
 
 ## CLI
     ./bin/agentwork --help

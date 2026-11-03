@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 47814",
     "build": "next build",
-    "start": "next start"
+    "start": "next start -p 47814"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",

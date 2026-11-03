@@ -23,6 +23,7 @@ import (
 
 	"github.com/eushing/agentwork/internal/acp"
 	"github.com/eushing/agentwork/internal/link"
+	"github.com/eushing/agentwork/internal/paths"
 	"github.com/eushing/agentwork/internal/runtime"
 )
 
@@ -150,11 +151,7 @@ func (b *chatBridge) handleChatOpen(ctx context.Context, raw json.RawMessage, pe
 	// keys its session store by cwd, so session/list + session/load from
 	// the web work across connections and browser refreshes.
 	if p.Cwd == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, &link.RPCError{Code: link.CodeInternal, Message: "home: " + err.Error()}
-		}
-		p.Cwd = filepath.Join(home, ".agentwork", "chat", p.AgentID)
+		p.Cwd = paths.ChatDir(p.AgentID)
 	}
 	if err := os.MkdirAll(p.Cwd, 0o755); err != nil {
 		return nil, &link.RPCError{Code: link.CodeInternal, Message: "mkdir chat cwd: " + err.Error()}

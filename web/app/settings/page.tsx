@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import {
-  useImStatus,
-  useConnectFeishu,
-  useDisconnectFeishu,
-  usePlatformSettings,
-  useSavePlatformSettings,
-} from "@/lib/queries";
-import { Button, PageHeader } from "@/components/ui";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { Check, Info, MessageSquare, RotateCcw } from "lucide-react";
+import { Button, PageBody, PageHeader, SectionCard } from "@/components/ui";
+import { cn } from "@/lib/utils";
+
+// 设置页只放“本机浏览器”的东西：外观与本机缓存。
+// 平台级参数按用途归到各自的页面——飞书连接/摘要时间在「IM」，webhook secret 在
+// 「项目仓库」。以前把这三样混在一页，用户看不出“平台设置”到底管什么。
 
 // ── 外观：双主题切换 ──
 // 持久化在 localStorage，layout 的首屏脚本在渲染前读回（无闪烁）。
@@ -44,228 +44,204 @@ function applyTheme(t: ThemeId) {
   }
 }
 
-// 主题预览缩略：一块 mini 版面（导航条 + 卡片 + 状态点），点整卡切换。
-function ThemeCard({ theme, selected, onSelect }: { theme: (typeof THEMES)[number]; selected: boolean; onSelect: () => void }) {
+// 主题卡：整卡可点，键盘可达（radiogroup + 方向键），点完焦点跟着走。
+// 之前鼠标点上去没有指针光标、也没有焦点环，看起来像"没反应"。
+function ThemeCard({
+  theme,
+  selected,
+  onSelect,
+  buttonRef,
+  tabIndex,
+  onKeyDown,
+}: {
+  theme: (typeof THEMES)[number];
+  selected: boolean;
+  onSelect: () => void;
+  buttonRef: (el: HTMLButtonElement | null) => void;
+  tabIndex: number;
+  onKeyDown: (e: React.KeyboardEvent<HTMLButtonElement>) => void;
+}) {
   const light = theme.id === "light";
   return (
     <button
+      ref={buttonRef}
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      tabIndex={tabIndex}
       onClick={onSelect}
-      aria-pressed={selected}
-      className={`text-left rounded-xl border p-4 transition-colors duration-150 ${
+      onKeyDown={onKeyDown}
+      className={cn(
+        "group cursor-pointer rounded-lg border p-3.5 text-left outline-none transition-colors duration-150",
+        "focus-visible:ring-2 focus-visible:ring-accent/40",
         selected
-          ? "border-accent ring-2 ring-accent/25"
-          : "border-line hover:border-line-strong"
-      }`}
+          ? "border-accent bg-accent/[0.04]"
+          : "border-line bg-surface-1 hover:border-line-strong hover:bg-surface-2"
+      )}
     >
-      {/* mini 预览：底色随主题实际值走（bg-surface-* 本身就是主题变量） */}
-      <div className={`rounded-lg border p-2.5 ${light ? "bg-white border-zinc-200" : "bg-[#131c2e] border-[#2b3854]"}`}>
-        <div className="flex items-center gap-1.5 mb-2">
+      {/* mini 预览：底色取自两套主题的实际值，一眼看出差别 */}
+      <div
+        className={`rounded-md border p-2.5 ${
+          light ? "border-zinc-200 bg-white" : "border-[#2b3854] bg-[#131c2e]"
+        }`}
+      >
+        <div className="mb-2 flex items-center gap-1.5">
           <span className="h-1.5 w-1.5 rounded-full bg-accent" />
           <span className={`h-1.5 w-10 rounded-full ${light ? "bg-zinc-300" : "bg-[#3d4f72]"}`} />
         </div>
-        <div className={`rounded-md p-2 ${light ? "bg-zinc-50" : "bg-[#1a2539]"}`}>
-          <div className="flex items-center justify-between mb-1.5">
+        <div className={`rounded p-2 ${light ? "bg-zinc-50" : "bg-[#1a2539]"}`}>
+          <div className="mb-1.5 flex items-center justify-between">
             <span className={`h-1.5 w-12 rounded-full ${light ? "bg-zinc-400" : "bg-[#8091b0]"}`} />
             <span className="h-1.5 w-1.5 rounded-full bg-green-400" />
           </div>
           <span className={`block h-1.5 w-8 rounded-full ${light ? "bg-zinc-300" : "bg-[#3d4f72]"}`} />
         </div>
       </div>
-      <p className="mt-3 text-sm font-medium text-ink">
-        {theme.zh}
-        <span className="ml-1.5 font-mono text-[10px] text-ink-3">{theme.name}</span>
-      </p>
-      <p className="mt-0.5 text-xs text-ink-3 leading-relaxed">{theme.desc}</p>
-      {selected && <p className="mt-1.5 text-xs font-medium text-accent">当前使用</p>}
+
+      <div className="mt-3 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-ink">{theme.zh}</p>
+          <p className="mt-0.5 font-mono text-[10px] text-ink-3">{theme.name}</p>
+        </div>
+        {selected && (
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink">
+            <Check className="h-3 w-3" />
+          </span>
+        )}
+      </div>
+      <p className="mt-1.5 text-xs leading-relaxed text-ink-3">{theme.desc}</p>
     </button>
   );
 }
 
-// Settings: the IM connect module + platform-wide settings (daily digest,
-// webhook secret). The intake parser is the system steward (auto-seeded).
-// The owner connects Feishu by scanning a QR code (SDK one-click app
-// registration) — after that, tasks can be created from Feishu or the Web
-// assistant dialog, and approvals answered from the notification cards.
 export default function SettingsPage() {
-  const { data: im, isLoading } = useImStatus();
-  const connect = useConnectFeishu();
-  const disconnect = useDisconnectFeishu();
-
-  // 主题是纯客户端状态：初值从首屏脚本写好的 dataset 读回，点选后同步更新，
-  // 卡片高亮才会立刻跟着走（不依赖任何一次查询刷新）。
+  // 主题是纯客户端状态：初值从首屏脚本写好的 dataset 读回。
   const [theme, setTheme] = useState<ThemeId>("light");
   useEffect(() => {
     setTheme(currentTheme());
   }, []);
-  const pickTheme = (t: ThemeId) => {
+
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const pickTheme = (t: ThemeId, idx: number) => {
     applyTheme(t);
     setTheme(t);
+    refs.current[idx]?.focus();
   };
 
-  const status = im?.status ?? "idle";
+  // 方向键在两张卡之间移动并立即选中（radiogroup 的标准交互）。
+  const onCardKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, idx: number) => {
+    const dir =
+      e.key === "ArrowRight" || e.key === "ArrowDown"
+        ? 1
+        : e.key === "ArrowLeft" || e.key === "ArrowUp"
+          ? -1
+          : 0;
+    if (!dir) return;
+    e.preventDefault();
+    const next = (idx + dir + THEMES.length) % THEMES.length;
+    pickTheme(THEMES[next].id, next);
+  };
+
+  const [note, setNote] = useState("");
+  const resetLocal = () => {
+    try {
+      localStorage.removeItem("agentwork-chat-history");
+      localStorage.removeItem("agentwork-goals-view");
+    } catch {}
+    applyTheme("light");
+    setTheme("light");
+    setNote("已清空本机偏好与对话记录");
+    window.setTimeout(() => setNote(""), 2500);
+  };
 
   return (
-    <div className="p-8">
-      <PageHeader title="Settings" desc="通知、平台参数与外观。"/>
+    <PageBody>
+      <PageHeader
+        title="设置"
+        desc="外观与本机数据。平台级参数按用途分散：推送在「IM」，webhook secret 在「项目仓库」。"
+      />
 
-      <div className="max-w-xl space-y-8">
-        {/* 外观 */}
-        <section>
-          <h2 className="text-lg font-medium mb-2">外观</h2>
-          <p className="text-sm text-ink-3 mb-4">选择界面主题，立即生效并记住。</p>
-          <div className="grid grid-cols-2 gap-3">
-            {THEMES.map((t) => (
-              <ThemeCard
-                key={t.id}
-                theme={t}
-                selected={theme === t.id}
-                onSelect={() => pickTheme(t.id)}
-              />
-            ))}
-          </div>
-        </section>
-
-        {/* 飞书通知 */}
-        <section>
-          <h2 className="text-lg font-medium mb-2">飞书通知（IM 连接）</h2>
-        <p className="text-sm text-ink-3 mb-4">
-          里程碑事件（待审批 / 完成 / 合入 / 失败）会推送到飞书。扫码连接，之后你只需要在审批卡点出现。
-        </p>
-
-        {isLoading ? (
-          <p className="text-ink-3">加载中…</p>
-        ) : status === "connected" ? (
-          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 space-y-2">
-            <p className="text-emerald-300 font-medium">已连接飞书</p>
-            <p className="text-xs text-emerald-300">
-              应用 {im?.app_id ? `（${im.app_id.slice(0, 8)}…）` : ""} · 推送目标 {im?.receive_id?.slice(0, 12) || "未捕获"}
-            </p>
-            <div className="pt-2">
-              <Button variant="danger" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>
-                {disconnect.isPending ? "断开中…" : "断开连接"}
-              </Button>
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-w-0 space-y-5">
+          <SectionCard title="外观" desc="界面主题，点选即切换并记住">
+            <div role="radiogroup" aria-label="界面主题" className="grid gap-3 p-4 sm:grid-cols-2">
+              {THEMES.map((t, idx) => (
+                <ThemeCard
+                  key={t.id}
+                  theme={t}
+                  selected={theme === t.id}
+                  onSelect={() => pickTheme(t.id, idx)}
+                  buttonRef={(el) => {
+                    refs.current[idx] = el;
+                  }}
+                  tabIndex={theme === t.id ? 0 : -1}
+                  onKeyDown={(e) => onCardKeyDown(e, idx)}
+                />
+              ))}
             </div>
-            {/* 断开失败必须显示——静默等于「点了没反应」。 */}
-            {disconnect.isError && (
-              <p className="text-xs text-red-400">断开失败：{String(disconnect.error)}</p>
-            )}
-          </div>
-        ) : status === "reconnecting" ? (
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 space-y-2">
-            <p className="text-amber-300 font-medium">连接中断，正在自动重连…</p>
-            <p className="text-xs text-amber-300">网络恢复后会自动恢复，无需操作。</p>
-          </div>
-        ) : status === "waiting_qr" || status === "waiting_message" ? (
-          <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-4 space-y-3">
-            <p className="text-blue-300 font-medium">
-              {status === "waiting_qr" ? "用飞书扫码完成连接" : "已扫码——给机器人发条消息完成连接"}
-            </p>
-            {im?.qr?.img_base64 ? (
-              <img
-                src={`data:image/png;base64,${im.qr.img_base64}`}
-                alt="飞书连接二维码"
-                className="w-56 h-56 bg-surface-1 p-2 rounded"
-              />
-            ) : (
-              <p className="text-sm text-blue-400">二维码生成中…</p>
-            )}
-            <ol className="text-xs text-blue-300 space-y-1 list-decimal list-inside">
-              <li>用飞书 App 扫码（或打开链接 {im?.qr?.url ? "在飞书里打开" : "…"}）</li>
-              <li>授权后会自动创建应用并建立长连接</li>
-              <li>给机器人发任意一条消息（如"hi"）——推送目标即被捕获</li>
-            </ol>
-            {status === "waiting_message" && (
-              <p className="text-sm text-blue-300 font-medium">等待你在飞书里给机器人发消息…</p>
-            )}
-          </div>
-        ) : status === "failed" ? (
-          <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 space-y-2">
-            <p className="text-red-300 font-medium">连接失败</p>
-            <p className="text-xs text-red-300 break-all">{im?.error || "未知错误"}</p>
-            <Button onClick={() => connect.mutate()} disabled={connect.isPending}>
-              {connect.isPending ? "重试中…" : "重新连接"}
-            </Button>
-            {/* 重试失败同样要显示——此前 connect.isError 只在 idle 分支渲染。 */}
-            {connect.isError && <p className="text-sm text-red-400">{String(connect.error)}</p>}
-          </div>
-        ) : (
-          <div className="rounded-lg border border-line p-4 space-y-3">
-            <p className="text-sm text-ink-2">尚未连接飞书。连接后，任务完成、卡点待审、合入结果都会推到这里。</p>
-            <Button onClick={() => connect.mutate()} disabled={connect.isPending}>
-              {connect.isPending ? "连接中…" : "连接飞书"}
-            </Button>
-            {connect.isError && <p className="text-sm text-red-400">{String(connect.error)}</p>}
-          </div>
-        )}
-        </section>
-      </div>
+          </SectionCard>
 
-      <PlatformSettingsSection />
-    </div>
-  );
-}
-
-// PlatformSettingsSection configures the platform-wide settings: the daily
-// digest time and the webhook secret. The intake parser agent is the
-// system-internal steward (auto-seeded, no configuration needed).
-function PlatformSettingsSection() {
-  const { data: settings, isLoading } = usePlatformSettings();
-  const save = useSavePlatformSettings();
-  const [digestTime, setDigestTime] = useState<string | null>(null);
-  const [webhookSecret, setWebhookSecret] = useState<string | null>(null);
-
-  const current = (k: string, fallback: string) =>
-    k === "digest_time"
-      ? (digestTime ?? settings?.digest_time ?? "")
-      : (webhookSecret ?? settings?.webhook_secret ?? "");
-
-  return (
-    <div className="max-w-xl mt-10">
-      <h2 className="text-lg font-medium mb-1">平台设置</h2>
-      <p className="text-sm text-ink-3 mb-4">
-        飞书和 Web 助手的自然语言指令由系统管家 agent 自动解析，无需手动配置。
-      </p>
-
-      {isLoading ? (
-        <p className="text-ink-3">加载中…</p>
-      ) : (
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm text-ink-2 mb-1">每日摘要时间（HH:MM，本地）</label>
-            <input
-              type="text"
-              className="w-full rounded border border-line-strong px-2 py-1.5 text-sm"
-              placeholder="09:00"
-              value={current("digest_time", "")}
-              onChange={(e) => setDigestTime(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-ink-2 mb-1">平台 webhook secret（可选，M4-B，GitHub/GitCode 共用）</label>
-            <input
-              type="password"
-              className="w-full rounded border border-line-strong px-2 py-1.5 text-sm"
-              placeholder="配了才有实时 issue 触发（不配则 5 分钟轮询兜底）"
-              value={current("webhook_secret", "")}
-              onChange={(e) => setWebhookSecret(e.target.value)}
-            />
-          </div>
-          <Button
-            onClick={() =>
-              save.mutate({
-                intake_agent: "",
-                digest_time: current("digest_time", ""),
-                webhook_secret: current("webhook_secret", ""),
-              })
-            }
-            disabled={save.isPending || (!digestTime && !webhookSecret)}
-          >
-            {save.isPending ? "保存中…" : "保存"}
-          </Button>
-          {save.isError && <p className="text-sm text-red-400">{String(save.error)}</p>}
-          {save.isSuccess && <p className="text-sm text-emerald-400">已保存</p>}
+          <SectionCard title="本机数据" desc="只影响这台机器的浏览器，不动服务端">
+            <div className="flex flex-wrap items-center gap-3 p-4">
+              <Button variant="outline" onClick={resetLocal} className="gap-1.5">
+                <RotateCcw className="h-3.5 w-3.5" /> 清空偏好与对话记录
+              </Button>
+              <span className="text-[11px] text-ink-3">
+                包括：主题、任务页视图、与管家的本地对话记录（CLI 侧的历史不受影响）。
+              </span>
+              {note && <p className="w-full text-xs text-emerald-400">{note}</p>}
+            </div>
+          </SectionCard>
         </div>
-      )}
-    </div>
+
+        <aside className="space-y-4">
+          <SectionCard title="现在的样子">
+            <dl className="divide-y divide-line">
+              <div className="flex items-center justify-between px-4 py-2.5">
+                <dt className="text-xs text-ink-3">界面主题</dt>
+                <dd className="font-mono text-xs text-ink">
+                  {theme === "light" ? "Studio Paper" : "Terminal Studio"}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between px-4 py-2.5">
+                <dt className="text-xs text-ink-3">保存位置</dt>
+                <dd className="font-mono text-[11px] text-ink-3">localStorage</dd>
+              </div>
+              <div className="flex items-center justify-between px-4 py-2.5">
+                <dt className="text-xs text-ink-3">推送 / 签名</dt>
+                <dd className="flex items-center gap-2 text-[11px] text-ink-3">
+                  <Link href="/im" className="text-accent hover:underline">
+                    IM
+                  </Link>
+                  <Link href="/domains" className="text-accent hover:underline">
+                    项目仓库
+                  </Link>
+                </dd>
+              </div>
+            </dl>
+          </SectionCard>
+
+          <Link
+            href="/im"
+            className="flex items-start gap-2.5 rounded-lg border border-line bg-surface-0 px-4 py-3 transition-colors hover:border-accent/40"
+          >
+            <MessageSquare className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-3" />
+            <span className="min-w-0">
+              <span className="block text-xs font-medium text-ink">飞书通知搬到了 IM</span>
+              <span className="mt-0.5 block text-[11px] leading-relaxed text-ink-3">
+                扫码连接、每日摘要时间都在那一页。
+              </span>
+            </span>
+          </Link>
+
+          <div className="flex gap-2.5 rounded-lg border border-line bg-surface-0 px-4 py-3">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-3" />
+            <p className="text-[11px] leading-relaxed text-ink-3">
+              主题只影响这台机器的浏览器；推送与 webhook 属于平台级参数，对所有连接的 web 端生效。
+            </p>
+          </div>
+        </aside>
+      </div>
+    </PageBody>
   );
 }

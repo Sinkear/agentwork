@@ -2,8 +2,34 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useSchedules, useAgents, useSquads, useDomains, useCreateSchedule, useUpdateSchedule, useDeleteSchedule, useSetScheduleEnabled, useGoalEvents, useScheduleRuns } from "@/lib/queries";
-import { Button, PageHeader, Empty, Dialog, Field, inputCls, ConfirmDialog, Badge } from "@/components/ui";
+import { CalendarClock, Plus } from "lucide-react";
+import {
+  useSchedules,
+  useAgents,
+  useSquads,
+  useDomains,
+  useCreateSchedule,
+  useUpdateSchedule,
+  useDeleteSchedule,
+  useSetScheduleEnabled,
+  useGoalEvents,
+  useScheduleRuns,
+} from "@/lib/queries";
+import {
+  Button,
+  PageBody,
+  PageHeader,
+  Empty,
+  Dialog,
+  Field,
+  inputCls,
+  ConfirmDialog,
+  Badge,
+  SectionCard,
+  Skeleton,
+  StatStrip,
+} from "@/components/ui";
+import { cn, relTime } from "@/lib/utils";
 import type { Schedule } from "@/lib/types";
 
 export default function SchedulesPage() {
@@ -26,78 +52,148 @@ export default function SchedulesPage() {
   const assigneeLabel = (s: Schedule) =>
     s.assignee_type === "squad" ? (squadName(s.assignee_id) || s.assignee_id) : (agentName(s.assignee_id) || s.assignee_id);
 
+  const list = schedules ?? [];
+  const enabledCount = list.filter((s) => s.enabled).length;
+  // 最近一次触发 = 所有任务里最大的 last_run_at（'' 表示从未触发）。
+  const lastRunAt = list.reduce((acc, s) => (s.last_run_at > acc ? s.last_run_at : acc), "");
+  // 下次触发 = 已启用任务里最早的 next_run_at，回答「这套调度下一次动是什么时候」。
+  const nextRunAt = list.reduce((acc, s) => {
+    if (!s.enabled || !s.next_run_at) return acc;
+    return !acc || s.next_run_at < acc ? s.next_run_at : acc;
+  }, "");
+
   return (
-    <div className="p-8">
+    <PageBody className="space-y-5">
       <PageHeader
-        title="Schedule"
-        action={<Button onClick={() => setShowForm(true)}>+ 新建</Button>}
+        title="定时任务"
+        desc="按 cron 自动派生 goal：每次触发在所属项目里创建一个任务，并派给指定的 agent 或小队。"
+        action={
+          <Button onClick={() => setShowForm(true)} className="gap-1.5">
+            <Plus className="h-3.5 w-3.5" />
+            新建
+          </Button>
+        }
       />
 
-      {isLoading ? (
-        <div className="text-sm text-ink-3 py-16 text-center">加载中…</div>
-      ) : !schedules || schedules.length === 0 ? (
-        <Empty>暂无定时任务。点「+ 新建」创建一个。</Empty>
-      ) : (
-        <div className="bg-surface-1 rounded-xl border border-line overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line bg-surface-0/50 text-left text-xs font-medium text-ink-3 uppercase tracking-wide">
-                <th className="px-4 py-3">名称</th>
-                <th className="px-4 py-3">Cron</th>
-                <th className="px-4 py-3">负责人</th>
-                <th className="px-4 py-3">项目</th>
-                <th className="px-4 py-3">时区</th>
-                <th className="px-4 py-3">下次触发</th>
-                <th className="px-4 py-3">创建时间</th>
-                <th className="px-4 py-3 w-28"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {schedules.map((s: Schedule) => (
-                <tr key={s.id} className="border-b border-line last:border-0 hover:bg-surface-0/60">
-                  <td className="px-4 py-3">
+      <StatStrip
+        items={[
+          {
+            label: "定时任务",
+            value: list.length,
+            hint: list.length === 0
+              ? "还没有任务"
+              : enabledCount === list.length
+                ? "全部启用中"
+                : `${enabledCount} 个已启用`,
+          },
+          {
+            label: "已启用",
+            value: enabledCount,
+            tone: enabledCount ? "ok" : "muted",
+            hint: list.length ? `${list.length - enabledCount} 个已停用` : "还没有任务",
+          },
+          {
+            label: "最近一次触发",
+            value: lastRunAt ? relTime(lastRunAt) : "从未",
+            tone: lastRunAt ? "info" : "muted",
+            hint: lastRunAt
+              ? new Date(lastRunAt).toLocaleString("zh-CN", { hour12: false })
+              : "创建后由 cron 自动触发",
+          },
+          {
+            label: "下次触发",
+            value: nextRunAt ? relTime(nextRunAt) : "—",
+            tone: nextRunAt ? "info" : "muted",
+            hint: nextRunAt
+              ? new Date(nextRunAt).toLocaleString("zh-CN", { hour12: false })
+              : "没有已启用的任务",
+          },
+        ]}
+      />
+
+      <SectionCard
+        title="任务列表"
+        count={list.length}
+        desc="点名称查看触发历史；右侧开关控制启停"
+      >
+        {isLoading ? (
+          <div className="divide-y divide-line">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="flex items-center gap-3 px-4 py-3.5">
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-4 w-44" />
+                  <Skeleton className="h-3 w-64" />
+                </div>
+                <Skeleton className="h-5 w-9 rounded-full" />
+              </div>
+            ))}
+          </div>
+        ) : list.length === 0 ? (
+          <Empty icon={<CalendarClock className="h-5 w-5" />}>
+            暂无定时任务。点右上角「新建」创建一条 cron 任务——它会按计划自动创建 goal。
+          </Empty>
+        ) : (
+          <div className="divide-y divide-line">
+            {list.map((s: Schedule) => (
+              <div key={s.id} className="flex flex-wrap items-start gap-x-4 gap-y-2 px-4 py-3">
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       onClick={() => setDetail(s)}
-                      className="font-medium text-ink hover:text-accent hover:underline transition-colors text-left"
+                      className="truncate text-sm font-medium text-ink transition-colors hover:text-accent hover:underline text-left"
                     >
                       {s.name}
                     </button>
-                  </td>
-                  <td className="px-4 py-3">
-                    <code className="text-xs bg-surface-2 px-1.5 py-0.5 rounded text-ink-2">{s.cron_expression}</code>
-                  </td>
-                  <td className="px-4 py-3 text-ink-2">{assigneeLabel(s)}</td>
-                  <td className="px-4 py-3 text-ink-2">{domainName(s.domain_id)}</td>
-                  <td className="px-4 py-3 text-ink-3">{s.timezone || "UTC"}</td>
-                  <td className="px-4 py-3 text-ink-3 text-xs">
-                    {s.next_run_at ? new Date(s.next_run_at).toLocaleString("zh-CN") : "-"}
-                  </td>
-                  <td className="px-4 py-3 text-ink-3 text-xs">
-                    {new Date(s.created_at).toLocaleString("zh-CN")}
-                  </td>
-                  <td className="px-4 py-3 text-right space-x-3">
+                    <code className="rounded border border-line bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-ink-2">
+                      {s.cron_expression}
+                    </code>
+                    <span className="font-mono text-[10px] text-ink-3">{s.timezone || "UTC"}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-3">
+                    <span>负责人 {assigneeLabel(s)}</span>
+                    <span>项目 {domainName(s.domain_id)}</span>
+                    <span>创建于 {relTime(s.created_at)}</span>
+                  </div>
+                </div>
+
+                <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
+                  <div className="min-w-[132px]">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-3">下次触发</div>
+                    <div className="mt-0.5 text-xs text-ink-2">
+                      {s.next_run_at ? relTime(s.next_run_at) : "—"}
+                    </div>
+                    {s.next_run_at && (
+                      <div className="text-[10px] text-ink-3">
+                        {new Date(s.next_run_at).toLocaleString("zh-CN", { hour12: false })}
+                      </div>
+                    )}
+                  </div>
+                  <LastRunBadge schedule={s} />
+                  <Toggle
+                    enabled={s.enabled}
+                    pending={setEnabled.isPending && setEnabled.variables?.id === s.id}
+                    onToggle={() => setEnabled.mutate({ id: s.id, enabled: !s.enabled })}
+                  />
+                  <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setEnabled.mutate({ id: s.id, enabled: !s.enabled })}
-                      disabled={setEnabled.isPending && setEnabled.variables?.id === s.id}
-                      className={`text-xs transition-colors disabled:opacity-50 ${
-                        s.enabled ? "text-emerald-400 hover:text-emerald-300" : "text-ink-3 hover:text-ink-2"
-                      }`}
+                      onClick={() => setEditTarget(s)}
+                      className="text-xs text-ink-3 transition-colors hover:text-ink"
                     >
-                      {s.enabled ? "启用中" : "已停用"}
+                      编辑
                     </button>
                     <button
                       onClick={() => setDeleteTarget(s.id)}
-                      className="text-xs text-ink-3 hover:text-red-400 transition-colors"
+                      className="text-xs text-ink-3 transition-colors hover:text-red-400"
                     >
                       删除
                     </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </SectionCard>
 
       {showForm && <NewScheduleForm agents={agents} squads={squads} domains={domains} onClose={() => setShowForm(false)} />}
       {detail && (
@@ -131,11 +227,69 @@ export default function SchedulesPage() {
 
       {/* 启停/删除失败必须显示——静默等于「点了没反应」。 */}
       {(setEnabled.isError || deleteSchedule.isError) && (
-        <p className="text-sm text-red-400 mt-3">
+        <p className="text-sm text-red-400">
           {String(setEnabled.error ?? deleteSchedule.error)}
         </p>
       )}
+    </PageBody>
+  );
+}
+
+// LastRunBadge 显示最近一次触发的真实结果：读该任务的触发历史（最新一条），
+// goal 状态即这次触发的产出状态；调度失败（dispatched 未落库 goal）显示 failed。
+// 从未触发过不发请求，直接给文案。
+function LastRunBadge({ schedule }: { schedule: Schedule }) {
+  const { data: runs, isLoading } = useScheduleRuns(schedule.id, !!schedule.last_run_at);
+  const last = runs?.[0];
+  return (
+    <div className="min-w-[86px]">
+      <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-3">最近结果</div>
+      <div className="mt-1">
+        {!schedule.last_run_at ? (
+          <span className="text-[11px] text-ink-3">未触发</span>
+        ) : isLoading && !last ? (
+          <span className="text-[11px] text-ink-3">读取中…</span>
+        ) : last ? (
+          <Badge status={last.status === "failed" ? "failed" : last.goal_status || "pending"} />
+        ) : (
+          <span className="text-[11px] text-ink-3">无记录</span>
+        )}
+      </div>
     </div>
+  );
+}
+
+// Toggle 是启停开关：role=switch + aria-checked，颜色只走语义 token。
+function Toggle({
+  enabled,
+  pending,
+  onToggle,
+}: {
+  enabled: boolean;
+  pending: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      aria-label={enabled ? "停用" : "启用"}
+      title={enabled ? "点击停用" : "点击启用"}
+      disabled={pending}
+      onClick={onToggle}
+      className={cn(
+        "relative h-5 w-9 shrink-0 rounded-full border transition-colors duration-150 disabled:opacity-50",
+        enabled ? "border-accent bg-accent" : "border-line-strong bg-surface-3"
+      )}
+    >
+      <span
+        className={cn(
+          "absolute top-0.5 h-3.5 w-3.5 rounded-full transition-[left] duration-150",
+          enabled ? "left-[18px] bg-accent-ink" : "left-0.5 bg-ink-3"
+        )}
+      />
+    </button>
   );
 }
 
