@@ -38,7 +38,8 @@ $AGENTWORK_HOME/                默认 ~/.agentwork，可用 AGENTWORK_HOME 覆�
 ```
 
 `AGENTWORK_DB` 可单独指定 SQLite 路径，优先于 `$AGENTWORK_HOME/agentwork.db`。
-两者不一致时，`healthz?verbose=1` 会同时给出 `home` 和 `db`——以 `db` 为准判断“到底读写哪个库”。
+两者不一致时，以 `agentwork-daemon paths` 输出的 `database` 为准判断“到底读写哪个库”
+（`/healthz` 只返回 "ok"，没有 home/db 字段）。
 
 ## 机器侧 CLI（独立，不必和 daemon 同一目录）
 
@@ -80,9 +81,9 @@ $AGENTWORK_HOME/                默认 ~/.agentwork，可用 AGENTWORK_HOME 覆�
 ## 自检命令
 
 ```bash
-agentwork-daemon paths                 # 当前 home/db/runs/... 全量 JSON
+agentwork-daemon paths                 # 当前 home/db/runs/... 全量 JSON（数据根唯一权威来源）
 agentwork-daemon version
-curl -s 'http://127.0.0.1:<port>/healthz?verbose=1'
+curl -s http://127.0.0.1:<port>/healthz    # 只返回 "ok"——没有 home/db JSON，别指望它
 agentwork-daemon backup -out /root/agentwork-backups        # 一致性快照
 agentwork-daemon backup -out /root/agentwork-backups -with-files
 ```
