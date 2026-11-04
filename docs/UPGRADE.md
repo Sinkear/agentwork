@@ -35,6 +35,9 @@ DAEMON_PORT=17450 AGENTWORK_COMPILE_VERSION=0.0.1-beta.3 ./package.sh
 
 推荐使用仓库里的脚本：
 
+> 同一套流程也已封装成 skill：`skills/agentwork-artifact-swap/`（含本脚本副本与路径速查），
+> 可直接拷到目标主机使用。脚本改动后请同步 `cp scripts/jem-swap-release.sh skills/agentwork-artifact-swap/scripts/`。
+
 ```bash
 cd /home/sinkear/developer/agentwork
 
@@ -57,7 +60,7 @@ cd /home/sinkear/developer/agentwork
 3. 定位数据库（`--data-home` / `--db`，或从运行中 daemon 的 `/healthz?verbose=1`，最后才是 sandbox 自动发现）；
 4. **stop** 并轮询到 `stopped`；
 5. 备份 `agentwork.db` + `-wal` + `-shm`，做 `PRAGMA integrity_check`，并打包 `runs/skills`；
-6. 备份旧 `bin/`、`web/` 到临时回滚目录；
+6. 备份旧 `bin/`、`web/`：临时回滚目录（本次运行内自动回滚）+ 备份目录里的 `previous-bin/`、`previous-web/`（事后手工回滚）；
 7. 只替换 `$RUNTIME_DIR/bin/{agentwork,agentwork-daemon}` 和 `$RUNTIME_DIR/web`；
 8. **start** 并轮询到 `running`；
 9. 校验版本、HTTP、DB 计数；

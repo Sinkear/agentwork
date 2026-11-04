@@ -176,6 +176,7 @@ agentwork stats                 #   or set AGENTWORK_SERVER_URL)
 - [Paths and data layout](docs/PATHS.md) — every directory/env var, and what must survive an upgrade
 - [Upgrade without losing data](docs/UPGRADE.md) — stop → backup → replace only bin/web → start, including JEM
 - [Turn your workflow into a template](docs/TEMPLATES.md) — export with `agentwork-daemon export-template`
+- [Artifact-swap skill](skills/agentwork-artifact-swap/SKILL.md) — the same data-safe flow, portable to the target host
 
 ## Tech stack
 

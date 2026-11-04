@@ -159,6 +159,13 @@ RB="$WORK/rollback"
 mkdir -p "$RB"
 cp -a "$RUNTIME_DIR/bin" "$RB/bin" 2>/dev/null || true
 [ -d "$RUNTIME_DIR/web" ] && cp -a "$RUNTIME_DIR/web" "$RB/web" 2>/dev/null || true
+# $RB lives under $WORK, which the EXIT trap deletes. Keep a durable copy of
+# the previous artifact so you can roll back days later, not just this run.
+if [ "$DO_BACKUP" = 1 ] && [ -n "${BK:-}" ]; then
+  cp -a "$RUNTIME_DIR/bin" "$BK/previous-bin" 2>/dev/null || true
+  [ -d "$RUNTIME_DIR/web" ] && cp -a "$RUNTIME_DIR/web" "$BK/previous-web" 2>/dev/null || true
+  log "previous artifact kept: $BK/previous-bin $BK/previous-web"
+fi
 
 cp "$REL/bin/agentwork" "$RUNTIME_DIR/bin/agentwork.new"
 cp "$REL/bin/agentwork-daemon" "$RUNTIME_DIR/bin/agentwork-daemon.new"
