@@ -28,7 +28,7 @@ func digestSeedFixture(t *testing.T, withRuntime bool) (*store.Store, *AgentServ
 		if _, err := st.DB().Exec(`INSERT INTO machine (id,name,status,created_at) VALUES ('m1','box','connected','2026-01-01T00:00:00Z')`); err != nil {
 			t.Fatalf("insert machine: %v", err)
 		}
-		if _, err := st.DB().Exec(`INSERT INTO runtime (id,name,machine_id,args,env,status,created_at) VALUES ('r1','claude@box','m1','[]','{}','active','2026-01-01T00:00:00Z')`); err != nil {
+		if _, err := st.DB().Exec(`INSERT INTO runtime (id,name,machine_id,args,env,status,created_at) VALUES ('r1','hwcloud@box','m1','[]','{}','active','2026-01-01T00:00:00Z')`); err != nil {
 			t.Fatalf("insert runtime: %v", err)
 		}
 	}
