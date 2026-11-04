@@ -23,6 +23,7 @@ import (
 	"github.com/eushing/agentwork/internal/link"
 	"github.com/eushing/agentwork/internal/logging"
 	"github.com/eushing/agentwork/internal/notify"
+	"github.com/eushing/agentwork/internal/paths"
 	"github.com/eushing/agentwork/internal/server/handler"
 	"github.com/eushing/agentwork/internal/server/ws"
 	"github.com/eushing/agentwork/internal/service"
@@ -148,6 +149,15 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("verbose") != "" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status": "ok",
+				"home":   paths.Home(),
+				"db":     paths.DB(),
+			})
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})

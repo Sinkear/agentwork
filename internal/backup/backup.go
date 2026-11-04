@@ -57,11 +57,14 @@ func Create(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	ts := time.Now().Format("20060102-150405")
-	base := filepath.Join(opts.OutDir, "agentwork-"+ts)
-	dbDst := base + ".db"
-	for i := 1; fileExists(dbDst); i++ {
-		dbDst = fmt.Sprintf("%s-%d.db", base, i)
+	dir := filepath.Join(opts.OutDir, "agentwork-"+ts)
+	for i := 1; fileExists(dir); i++ {
+		dir = fmt.Sprintf("%s-%d", filepath.Join(opts.OutDir, "agentwork-"+ts), i)
 	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("backup: create snapshot dir: %w", err)
+	}
+	dbDst := filepath.Join(dir, "agentwork.db")
 
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -106,13 +109,13 @@ func Create(ctx context.Context, opts Options) (*Result, error) {
 		Counts:       counts,
 	}
 	if opts.WithFiles {
-		filesDst := base + "-files.tar.gz"
+		filesDst := filepath.Join(dir, "agentwork-files.tar.gz")
 		if err := archiveFiles(paths.Home(), filesDst); err != nil {
 			return nil, fmt.Errorf("backup: archive files: %w", err)
 		}
 		res.Files = filesDst
 	}
-	manifest := base + ".manifest.json"
+	manifest := filepath.Join(dir, "agentwork.db.manifest.json")
 	res.Manifest = manifest
 	raw, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {

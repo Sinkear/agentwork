@@ -876,6 +876,25 @@ func TestApplyProjectMissingGitURL(t *testing.T) {
 	}
 }
 
+func TestApplyProjectUsesSpecGitURL(t *testing.T) {
+	c := newTemplateCluster(t)
+	ctx := context.Background()
+	yaml := strings.Replace(projectTemplateYAML,
+		"    default_branch: main",
+		"    git_url: https://gitcode.com/acme/from-template.git\n    default_branch: main", 1)
+	c.putTemplate(t, TemplateKindProject, "go-service", yaml)
+	res, err := c.apply.ApplyProject(ctx, "go-service", ApplyProjectOverrides{Name: "模板带仓库"})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Domain == nil || res.Domain.GitURL != "https://gitcode.com/acme/from-template.git" {
+		t.Fatalf("domain git_url = %+v", res.Domain)
+	}
+	if c.gitProbe.lastURL != "https://gitcode.com/acme/from-template.git" {
+		t.Fatalf("probed %q", c.gitProbe.lastURL)
+	}
+}
+
 func TestApplyProjectScratchSkipsGit(t *testing.T) {
 	c := newTemplateCluster(t)
 	ctx := context.Background()

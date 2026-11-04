@@ -154,7 +154,7 @@ enforced server-side. Plus `subgoal verify`, `change integrate`, and the
   link and pulls work (`run.poll`); it executes runs, hosts the per-agent chat
   bridge (spawns the CLI, relays ACP frames unparsed, tears down gracefully
   with stdin EOF before the kill)
-- **Per-run worktrees** — `~/.agentwork/runs/<runID>` ephemeral git worktrees
+- **Per-run worktrees** — `$AGENTWORK_HOME/runs/<runID>` (default `~/.agentwork`) ephemeral git worktrees
   against per-domain bare repos; crash recovery replays terminal runs and
   re-derives attention at startup
 - **Coordinator** — derived OwnerAttention (integration / recovery /
@@ -170,6 +170,13 @@ agentwork connect               # the machine side: pulls dispatches, runs them,
 agentwork goal list --limit 5   # debugging commands (default http://localhost:47813,
 agentwork stats                 #   or set AGENTWORK_SERVER_URL)
 ```
+
+## Data, upgrades, and templates
+
+- [Paths and data layout](docs/PATHS.md) — every directory/env var, and what must survive an upgrade
+- [Upgrade without losing data](docs/UPGRADE.md) — stop → backup → replace only bin/web → start, including JEM
+- [Turn your workflow into a template](docs/TEMPLATES.md) — export with `agentwork-daemon export-template`
+- [Artifact-swap skill](skills/agentwork-artifact-swap/SKILL.md) — the same data-safe flow, portable to the target host
 
 ## Tech stack
 

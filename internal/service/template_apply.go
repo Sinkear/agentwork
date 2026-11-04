@@ -45,10 +45,10 @@ const (
 // ── squad-template spec ──
 
 type squadSpec struct {
-	Strategy     string             `yaml:"strategy"` // create | upsert (default upsert)
-	Agents       []tplAgent         `yaml:"agents"`
-	Squad        tplSquad           `yaml:"squad"`
-	SuggestedGoal *tplSuggestedGoal `yaml:"suggested_goal"` // optional: pre-fill the goal create dialog after apply
+	Strategy      string            `yaml:"strategy"` // create | upsert (default upsert)
+	Agents        []tplAgent        `yaml:"agents"`
+	Squad         tplSquad          `yaml:"squad"`
+	SuggestedGoal *tplSuggestedGoal `yaml:"suggested_goal,omitempty"` // optional: pre-fill the goal create dialog after apply
 }
 
 // tplSuggestedGoal is the suggested first-goal prompt a template carries —
@@ -65,9 +65,9 @@ type tplSuggestedGoal struct {
 // apply creates the agent + a same-named scratch domain (the goal default
 // project) and returns the suggested goal prompt.
 type agentSpec struct {
-	Strategy      string             `yaml:"strategy"` // create | upsert (default upsert)
-	Agent         tplAgent           `yaml:"agent"`
-	SuggestedGoal *tplSuggestedGoal  `yaml:"suggested_goal"`
+	Strategy      string            `yaml:"strategy"` // create | upsert (default upsert)
+	Agent         tplAgent          `yaml:"agent"`
+	SuggestedGoal *tplSuggestedGoal `yaml:"suggested_goal,omitempty"`
 }
 
 // tplAgent is one agent to create/update. Runtime names the runtime
@@ -101,9 +101,9 @@ type tplMember struct {
 // ── project-template spec ──
 
 type projectSpec struct {
-	Repo      *tplRepoCreate `yaml:"repo"` // nil = user supplies git_url
+	Repo      *tplRepoCreate `yaml:"repo,omitempty"` // nil = user supplies git_url
 	Domain    tplDomain      `yaml:"domain"`
-	Team      *squadSpec     `yaml:"team"` // optional agents+squad riding the project
+	Team      *squadSpec     `yaml:"team,omitempty"` // optional agents+squad riding the project
 	Goals     []tplGoal      `yaml:"goals"`
 	Schedules []tplSchedule  `yaml:"schedules"`
 }
@@ -122,7 +122,8 @@ type tplRepoCreate struct {
 }
 
 type tplDomain struct {
-	Type              string `yaml:"type"` // repo | scratch (default repo)
+	Type              string `yaml:"type"`              // repo | scratch (default repo)
+	GitURL            string `yaml:"git_url,omitempty"` // repo domains: existing remote
 	DefaultBranch     string `yaml:"default_branch"`
 	GitIdentity       string `yaml:"git_identity"`
 	IssueAssignee     string `yaml:"issue_assignee"`
@@ -185,7 +186,7 @@ type ApplyItem struct {
 // ApplyResult is the apply response: the created roots + every step.
 type ApplySquadResult struct {
 	Squad         *Squad            `json:"squad,omitempty"`
-	Domain        *Domain           `json:"domain,omitempty"`        // auto-created scratch domain (goal default project)
+	Domain        *Domain           `json:"domain,omitempty"` // auto-created scratch domain (goal default project)
 	Agents        []*Agent          `json:"agents,omitempty"`
 	Skills        []*Skill          `json:"skills,omitempty"`
 	SuggestedGoal *tplSuggestedGoal `json:"suggested_goal,omitempty"` // pre-fill the goal create dialog after apply
@@ -214,11 +215,11 @@ type ApplyAgentOverrides struct {
 // auto-created scratch domain (the goal default project) + the suggested goal
 // prompt the frontend pre-fills.
 type ApplyAgentResult struct {
-	Domain        *Domain            `json:"domain,omitempty"`
-	Agent         *Agent             `json:"agent,omitempty"`
-	Skills        []*Skill           `json:"skills,omitempty"`
-	SuggestedGoal *tplSuggestedGoal  `json:"suggested_goal,omitempty"`
-	Items         []ApplyItem        `json:"items"`
+	Domain        *Domain           `json:"domain,omitempty"`
+	Agent         *Agent            `json:"agent,omitempty"`
+	Skills        []*Skill          `json:"skills,omitempty"`
+	SuggestedGoal *tplSuggestedGoal `json:"suggested_goal,omitempty"`
+	Items         []ApplyItem       `json:"items"`
 }
 
 // TemplateApplyService orchestrates a template apply through the existing
@@ -429,7 +430,7 @@ func (s *TemplateApplyService) resolveAgentSkillIDs(ctx context.Context, skills 
 // absent AND machine connected). A runtime whose machine went offline is
 // still status='active' in the DB (offline is machine-side, read-derived),
 // so filtering only on runtime.status would bind agents to dead machines
-// that Claim then refuses to dispatch. Legacy/local runtimes (machine_id='')
+// that Claim then refuses to dispatch. Legacy/local runtimes (machine_id=”)
 // are always usable.
 func (s *TemplateApplyService) usableRuntimeIDs(ctx context.Context) ([]string, error) {
 	rows, err := s.st.DB().QueryContext(ctx,
@@ -519,7 +520,7 @@ func (s *TemplateApplyService) upsertAgent(ctx context.Context, strategy string,
 		Name: finalName, Description: a.Description, RuntimeID: runtimeID,
 		SystemPrompt: a.SystemPrompt, Model: a.Model, Env: a.Env,
 		McpServers: tplMcpServersToAcp(a.McpServers),
-		Skills: skillIDs, MaxConcurrent: a.MaxConcurrent,
+		Skills:     skillIDs, MaxConcurrent: a.MaxConcurrent,
 	}
 	if strategy == conflictCreate {
 		out, err := s.agentSvc.Create(ctx, desired)
@@ -747,7 +748,7 @@ func (s *TemplateApplyService) ensureScratchDomain(ctx context.Context, name str
 		map[string]any{"name": name})
 }
 
-// domainIDByName resolves a domain id by exact name ('' = not found).
+// domainIDByName resolves a domain id by exact name (” = not found).
 func (s *TemplateApplyService) domainIDByName(ctx context.Context, name string) string {
 	var id string
 	_ = s.st.DB().QueryRowContext(ctx, `SELECT id FROM domain WHERE name=?`, name).Scan(&id)
@@ -935,6 +936,9 @@ func (s *TemplateApplyService) ApplyProject(ctx context.Context, templateID stri
 		if strings.TrimSpace(ov.GitCredentials) == "" && ov.RepoToken != "" {
 			ov.GitCredentials = ov.RepoToken
 		}
+	}
+	if strings.TrimSpace(gitURL) == "" {
+		gitURL = strings.TrimSpace(spec.Domain.GitURL)
 	}
 	// 2. Domain config.
 	dType := spec.Domain.Type

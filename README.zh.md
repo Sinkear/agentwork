@@ -142,7 +142,7 @@ agent 只通过 `agentwork` CLI（守护进程二进制的 shim，spawn 时放�
 - **机器执行器** — `agentwork connect` 持有一条常驻 JSON-RPC 链接并拉取
   工作（`run.poll`）；它执行 run、托管每个 agent 的聊天桥（spawn CLI、原样
   中继 ACP 帧、关闭时先 stdin EOF 优雅收尾再杀进程）
-- **run 级 worktree** — `~/.agentwork/runs/<runID>` 临时 git worktree，基于每域
+- **run 级 worktree** — `$AGENTWORK_HOME/runs/<runID>`（默认 `~/.agentwork`）临时 git worktree，基于每域
   bare 仓；崩溃恢复在启动时重放未仲裁的终态 run 并重推导 attention
 - **Coordinator** — 派生的 OwnerAttention（integration / recovery /
   user_action）在有活干时才唤醒 owner
@@ -156,6 +156,13 @@ agentwork connect               # 机器侧：拉取派发、执行 run、托管
 agentwork goal list --limit 5   # 调试命令（默认连 http://localhost:47813，
 agentwork stats                 #   或设 AGENTWORK_SERVER_URL）
 ```
+
+## 数据、升级与模板
+
+- [路径与数据布局](docs/PATHS.md) — 每个目录/环境变量，以及升级时哪些必须保留
+- [保留数据的升级](docs/UPGRADE.md) — stop → 备份 → 只换 bin/web → start，含 JEM 方案
+- [把最佳实践做成模板](docs/TEMPLATES.md) — 用 `agentwork-daemon export-template` 导出并复用
+- [制品替换 skill](skills/agentwork-artifact-swap/SKILL.md) — 同一套“不丢数据”流程，可拷到目标机器直接用
 
 ## 技术栈
 

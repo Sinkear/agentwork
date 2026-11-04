@@ -54,6 +54,12 @@ func main() {
 		backupCmd(os.Args[2:])
 		return
 	}
+	// export-template: snapshot an existing agent/squad/project as reusable
+	// YAML for the user's template repository.
+	if len(os.Args) >= 2 && os.Args[1] == "export-template" {
+		exportTemplateCmd(os.Args[2:])
+		return
+	}
 	addr := flag.String("addr", "127.0.0.1:47813", "HTTP listen address")
 	dbPath := flag.String("db", "", "SQLite path (default $AGENTWORK_HOME/agentwork.db)")
 	flag.Parse()
