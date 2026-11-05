@@ -184,6 +184,34 @@ export interface WebhookRegisterResult {
   hook: Webhook;
 }
 
+// ── Connection（仓库连接：每条连接一套独立 webhook + secret） ──
+// 镜像 internal/service/connection.go。同一仓库可被多个小队同时接入，
+// 每条 connection 有独立的 webhook 路径，因此互不覆盖。
+export interface Connection {
+  id: string;
+  squad_id: string;
+  domain_id: string;
+  provider: string; // github | gitcode
+  repo: string; // owner/repo
+  events: string[]; // issues | pull_request
+  secret_set: boolean;
+  webhook_path: string; // /webhooks/{provider}/{id}
+  created_at: string;
+  secret?: string; // 仅 POST /squads/{id}/connections 响应一次性返回明文
+}
+
+// GET /connections/{id}/webhook 的宿主侧 hook 与投递日志视图。
+export interface ConnectionWebhookStatus {
+  connection_id: string;
+  provider: string; // github | gitcode
+  repo: string; // owner/repo
+  path: string; // /webhooks/{provider}/{id}
+  secret_set: boolean;
+  events_required: string[];
+  hooks: { supported: boolean; ok: boolean; error: string; items: Webhook[] };
+  deliveries: WebhookDelivery[]; // 最近 20 条，received_at DESC
+}
+
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 // DomainGitTestResult is the outcome of POST /domains/test (决策 6-24):

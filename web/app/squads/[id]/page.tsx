@@ -12,7 +12,7 @@ import {
   useRemoveSquadMember,
   useGoalEvents,
   useDomains,
-  usePatchDomainAssignees,
+  useConnections,
   useGoals,
 } from "@/lib/queries";
 import {
@@ -27,9 +27,10 @@ import {
   Field,
   inputCls,
 } from "@/components/ui";
-import { Users, GitBranch, Trash2 } from "lucide-react";
+import { Users, Trash2 } from "lucide-react";
 import { cn, relTime } from "@/lib/utils";
-import type { Domain, Squad, SquadMember } from "@/lib/types";
+import type { SquadMember } from "@/lib/types";
+import { SquadConnections } from "@/components/squad-connections";
 
 export default function SquadDetailPage() {
   useGoalEvents();
@@ -40,6 +41,7 @@ export default function SquadDetailPage() {
   const { data: members, isLoading } = useSquadMembers(id);
   const { data: goals } = useGoals();
   const { data: domains } = useDomains();
+  const { data: connections } = useConnections(id);
   const updateSquad = useUpdateSquad();
   const removeMember = useRemoveSquadMember();
   const [showAdd, setShowAdd] = useState(false);
@@ -56,9 +58,15 @@ export default function SquadDetailPage() {
   const reviewerCount = (members ?? []).filter((m) => m.role === "reviewer").length;
   const agentMembers = (members ?? []).filter((m) => m.member_type === "agent").length;
   const humanMembers = (members ?? []).filter((m) => m.member_type === "human").length;
-  const boundRepos = (domains ?? []).filter(
-    (d) => d.issue_repo !== "" && (d.issue_assignee === id || d.pull_assignee === id),
-  );
+  // 负责仓库 = 本 squad 的连接所指向的仓库 ∪ 旧版 domain assignee 绑定的仓库。
+  // Connection 是主路径；legacy 绑定仍显示，避免升级后数字突然归零。
+  const legacyBoundRepos = (domains ?? [])
+    .filter((d) => d.issue_repo !== "" && (d.issue_assignee === id || d.pull_assignee === id))
+    .map((d) => d.issue_repo);
+  const boundRepoCount = new Set([
+    ...(connections ?? []).map((c) => c.repo).filter(Boolean),
+    ...legacyBoundRepos,
+  ]).size;
   const trackedRepoCount = (domains ?? []).filter((d) => d.type === "repo" && d.issue_repo !== "").length;
   const squadGoals = (goals ?? []).filter(
     (g) => g.assignee_type === "squad" && g.assignee_id === id,
@@ -127,9 +135,9 @@ export default function SquadDetailPage() {
           },
           {
             label: "负责仓库",
-            value: boundRepos.length,
-            tone: boundRepos.length > 0 ? "info" : "muted",
-            hint: `共跟踪 ${trackedRepoCount} 个仓库`,
+            value: boundRepoCount,
+            tone: boundRepoCount > 0 ? "info" : "muted",
+            hint: `${connections?.length ?? 0} 条连接 · 共跟踪 ${trackedRepoCount} 个仓库`,
           },
           {
             label: "进行中任务",
@@ -266,14 +274,8 @@ export default function SquadDetailPage() {
         <p className="text-sm text-red-400">{String(removeMember.error)}</p>
       )}
 
-      {/* 仓库接入：squad ↔ repo 的绑定在两边都能看见、都能改（契约 3.3c） */}
-      <SectionCard
-        title="仓库接入"
-        count={trackedRepoCount}
-        desc="绑定后，该仓库的新 issue / PR 会路由给本 squad 的 leader"
-      >
-        <RepoAccessSection squadId={id} agents={agents} squads={squads} />
-      </SectionCard>
+      {/* 仓库接入：每条连接是独立 webhook（契约 3.3c / §5），同一仓库可被多个 squad 接入 */}
+      <SquadConnections squadId={id} />
 
       {/* Add member dialog */}
       {showAdd && (
@@ -402,94 +404,5 @@ function AddMemberDialog({
         )}
       </form>
     </Dialog>
-  );
-}
-
-// RepoAccessSection binds tracked repos to this squad. Each repo has two
-// independent toggles (issue route / PR route); clicking a bound one clears
-// it, clicking an unbound one takes it over — the same PATCH the domain
-// dialog exposes, so both sides stay in sync through query invalidation.
-// 外层版面由详情页的 SectionCard 提供；这里只负责内容与四字段整体覆盖。
-function RepoAccessSection({
-  squadId,
-  agents,
-  squads,
-}: {
-  squadId: string;
-  agents?: { id: string; name: string }[];
-  squads?: Squad[];
-}) {
-  const { data: domains, isLoading } = useDomains();
-  const patch = usePatchDomainAssignees();
-  const repos = (domains ?? []).filter((d) => d.type === "repo" && d.issue_repo !== "");
-
-  const nameOf = (type: string, aid: string) =>
-    type === "squad" ? squads?.find((s) => s.id === aid)?.name ?? "" : agents?.find((a) => a.id === aid)?.name ?? "";
-
-  const toggle = (d: Domain, kind: "issue" | "pull") => {
-    const bound = kind === "issue" ? d.issue_assignee === squadId : d.pull_assignee === squadId;
-    const next = bound ? "" : squadId;
-    patch.mutate({
-      domainId: d.id,
-      issue_assignee: kind === "issue" ? next : d.issue_assignee,
-      issue_assignee_type: kind === "issue" && !bound ? "squad" : d.issue_assignee_type,
-      pull_assignee: kind === "pull" ? next : d.pull_assignee,
-      pull_assignee_type: kind === "pull" && !bound ? "squad" : d.pull_assignee_type,
-    });
-  };
-
-  const toggleBtn = (d: Domain, kind: "issue" | "pull") => {
-    const bound = kind === "issue" ? d.issue_assignee === squadId : d.pull_assignee === squadId;
-    const other = kind === "issue" ? d.issue_assignee : d.pull_assignee;
-    const otherType = kind === "issue" ? d.issue_assignee_type : d.pull_assignee_type;
-    const otherName = other && other !== squadId ? nameOf(otherType, other) : "";
-    return (
-      <button
-        type="button"
-        onClick={() => toggle(d, kind)}
-        disabled={patch.isPending && patch.variables?.domainId === d.id}
-        title={bound ? "点击解绑" : otherName ? `当前由 ${otherName} 处理，点击改为本 squad` : "点击绑定给本 squad"}
-        className={`shrink-0 rounded border px-2 py-0.5 font-mono text-[10px] transition-colors disabled:opacity-50 ${
-          bound
-            ? "border-accent/40 bg-accent/10 text-accent"
-            : "border-line text-ink-3 hover:border-line-strong hover:text-ink-2"
-        }`}
-      >
-        {kind === "issue" ? "负责 issue" : "负责 PR"}
-      </button>
-    );
-  };
-
-  return (
-    <div className="p-4">
-      {isLoading ? (
-        <div className="space-y-2">
-          <Skeleton className="h-5 w-full" />
-          <Skeleton className="h-5 w-full" />
-        </div>
-      ) : repos.length === 0 ? (
-        <Empty icon={<GitBranch className="h-4 w-4" />}>
-          还没有跟踪仓库的项目——先去 Domains 页创建一个 repo 类型的 domain。
-        </Empty>
-      ) : (
-        <div className="divide-y divide-line">
-          {repos.map((d) => (
-            <div key={d.id} className="flex flex-wrap items-center gap-2 py-2.5 first:pt-0 last:pb-0">
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-mono text-xs text-ink-2" title={d.issue_repo}>
-                  {d.issue_repo}
-                </div>
-                <div className="mt-0.5 truncate text-[10px] text-ink-3">
-                  {d.name} · {d.default_branch || "默认分支"}
-                </div>
-              </div>
-              {toggleBtn(d, "issue")}
-              {toggleBtn(d, "pull")}
-            </div>
-          ))}
-        </div>
-      )}
-      {patch.isError && <p className="mt-2 text-xs text-red-400">{String(patch.error)}</p>}
-    </div>
   );
 }

@@ -597,6 +597,18 @@ func (s *DomainService) SetAssignees(ctx context.Context, id, issueAssignee, iss
 	if err != nil {
 		return nil, err
 	}
+	// Connections own issue/PR routing for this repo: the poller skips any
+	// domain that has one, and legacy webhook dispatch no-ops. Reject a
+	// non-empty legacy assignee instead of silently storing a value that
+	// nothing will ever act on.
+	var connCount int
+	if err := s.st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM connection WHERE domain_id=?`, id).Scan(&connCount); err != nil {
+		return nil, fmt.Errorf("count domain connections: %w", err)
+	}
+	if connCount > 0 && (issueAssignee != "" || pullAssignee != "") {
+		return nil, NewValidationError("该仓库已有小队连接接管 issue/PR 路由；请到小队详情页调整连接，或先删除连接再使用 domain 处理方")
+	}
 	d.IssueAssignee = issueAssignee
 	d.IssueAssigneeType = issueAssigneeType
 	d.PullAssignee = pullAssignee

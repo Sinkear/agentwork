@@ -812,7 +812,7 @@ func TestUpdateGoalForPullFallbackToCreate(t *testing.T) {
 	if err := st.DB().QueryRowContext(ctx, `SELECT id FROM domain WHERE name='d1'`).Scan(&domainID); err != nil {
 		t.Fatal(err)
 	}
-	created, err := p.UpdateGoalForPull(ctx, domainID, "a1", "agent", "github", "x/y", Pull{
+	created, err := p.UpdateGoalForPull(ctx, domainID, "a1", "agent", "github", "x/y", "", Pull{
 		Number: 9, Title: "late pr", Body: "b", HeadSHA: "ffff6666ffff6666",
 	})
 	if err != nil || !created {

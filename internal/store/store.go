@@ -89,6 +89,22 @@ func Open(path string) (*Store, error) {
 		`ALTER TABLE domain ADD COLUMN webhook_secret TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_webhook_delivery_domain ON webhook_delivery(domain_id, received_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_webhook_delivery_repo ON webhook_delivery(repo, received_at)`,
+		// Per-connection webhook routing: one delivery row can now name the
+		// connection it was routed to ('' = legacy /webhooks/{provider} path).
+		// The column lives in the migration (not schema.sql) for the same
+		// reason as goal_id above: an index on a missing column would fail on
+		// an old DB before the ALTER runs.
+		`ALTER TABLE webhook_delivery ADD COLUMN connection_id TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_delivery_connection ON webhook_delivery(connection_id, received_at)`,
+		// Per-connection goal dedupe: the same external issue/PR may be
+		// ingested by several repo connections (each with its own squad and
+		// webhook secret), so a source ref is no longer globally unique —
+		// uniqueness is (source_ref, connection_id). connection_id lives in
+		// the migration because the index references it and schema.sql runs
+		// before the ALTER on an old DB.
+		`ALTER TABLE goal ADD COLUMN connection_id TEXT NOT NULL DEFAULT ''`,
+		`DROP INDEX IF EXISTS uq_goal_source_ref`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_goal_source_ref_conn ON goal(source_ref, connection_id) WHERE source_ref != ''`,
 	} {
 		if _, err := db.Exec(mig); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()

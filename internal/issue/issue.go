@@ -228,7 +228,8 @@ type trackedDomain struct {
 func (p *Poller) Poll(ctx context.Context) (int, error) {
 	rows, err := p.st.DB().QueryContext(ctx,
 		`SELECT id, issue_provider, issue_repo, issue_assignee, issue_assignee_type, git_credentials, COALESCE(pull_assignee,''), COALESCE(pull_assignee_type,'') FROM domain
-		 WHERE issue_repo != '' AND git_credentials != '' AND (issue_assignee != '' OR COALESCE(pull_assignee,'') != '')`)
+		 WHERE issue_repo != '' AND git_credentials != '' AND (issue_assignee != '' OR COALESCE(pull_assignee,'') != '')
+		   AND NOT EXISTS (SELECT 1 FROM connection c WHERE c.domain_id = domain.id)`)
 	if err != nil {
 		return 0, err
 	}
@@ -252,6 +253,21 @@ func (p *Poller) Poll(ctx context.Context) (int, error) {
 	created := 0
 	for _, d := range doms {
 		n, err := p.pollDomain(ctx, d)
+		created += n
+		if err != nil {
+			return created, err
+		}
+	}
+	// Connections poll independently of the domain's legacy assignees: each
+	// connection carries its own squad + event subscription (contract §4).
+	// Goals are deduped per (source_ref, connection_id), so two connections
+	// watching the same repo each own one goal per issue/PR.
+	conns, err := p.trackedConnections(ctx)
+	if err != nil {
+		return created, err
+	}
+	for _, c := range conns {
+		n, err := p.pollConnection(ctx, c)
 		created += n
 		if err != nil {
 			return created, err
@@ -291,7 +307,7 @@ func (p *Poller) pollDomainIssues(ctx context.Context, d trackedDomain) (int, er
 	}
 	created := 0
 	for _, iss := range issues {
-		ok, err := p.CreateGoalForIssue(ctx, d.id, d.assignee, d.assigneeType, d.provider, d.repo, iss)
+		ok, err := p.CreateGoalForIssue(ctx, d.id, d.assignee, d.assigneeType, d.provider, d.repo, "", iss)
 		if err != nil {
 			return created, err
 		}
@@ -316,7 +332,7 @@ func (p *Poller) pollDomainPulls(ctx context.Context, d trackedDomain) (int, err
 	}
 	created := 0
 	for _, pr := range pulls {
-		ok, err := p.CreateGoalForPull(ctx, d.id, d.pullAssignee, d.pullAssigneeType, d.provider, d.repo, pr)
+		ok, err := p.CreateGoalForPull(ctx, d.id, d.pullAssignee, d.pullAssigneeType, d.provider, d.repo, "", pr)
 		if err != nil {
 			return created, err
 		}
@@ -327,15 +343,100 @@ func (p *Poller) pollDomainPulls(ctx context.Context, d trackedDomain) (int, err
 	return created, nil
 }
 
-// CreateGoalForIssue turns one issue into a goal (idempotent via the unique
-// source_ref). Shared by the poller AND the webhook handler — both triggers
+// trackedConnection is one polling candidate from the connection table: the
+// token comes from its domain (connections never duplicate credentials), and
+// the assignee is always the connection's squad.
+type trackedConnection struct {
+	id, domainID, squadID, provider, repo, events, secret, token string
+}
+
+// trackedConnections loads every connection whose domain has a platform token.
+func (p *Poller) trackedConnections(ctx context.Context) ([]trackedConnection, error) {
+	rows, err := p.st.DB().QueryContext(ctx,
+		`SELECT c.id, c.domain_id, c.squad_id, c.provider, c.repo, c.events, c.secret, d.git_credentials
+		   FROM connection c JOIN domain d ON d.id = c.domain_id
+		  WHERE d.git_credentials != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []trackedConnection
+	for rows.Next() {
+		var c trackedConnection
+		if err := rows.Scan(&c.id, &c.domainID, &c.squadID, &c.provider, &c.repo, &c.events, &c.secret, &c.token); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// pollConnection polls the repos of one connection, honouring its events
+// subscription (issues / pull_request) and routing goals to its squad.
+func (p *Poller) pollConnection(ctx context.Context, c trackedConnection) (int, error) {
+	wantIssues := connectionHasEvent(c.events, "issues")
+	wantPulls := connectionHasEvent(c.events, "pull_request")
+	if !wantIssues && !wantPulls {
+		return 0, nil
+	}
+	client, err := p.newProvider(c.provider, c.token)
+	if err != nil {
+		return 0, fmt.Errorf("connection %s: %w", c.id, err)
+	}
+	created := 0
+	if wantIssues {
+		issues, err := client.ListOpenIssues(ctx, c.repo)
+		if err != nil {
+			return created, fmt.Errorf("connection %s: %w", c.id, err)
+		}
+		for _, iss := range issues {
+			ok, err := p.CreateGoalForIssue(ctx, c.domainID, c.squadID, "squad", c.provider, c.repo, c.id, iss)
+			if err != nil {
+				return created, err
+			}
+			if ok {
+				created++
+			}
+		}
+	}
+	if wantPulls {
+		pulls, err := client.ListOpenPulls(ctx, c.repo)
+		if err != nil {
+			return created, fmt.Errorf("connection %s: %w", c.id, err)
+		}
+		for _, pr := range pulls {
+			ok, err := p.CreateGoalForPull(ctx, c.domainID, c.squadID, "squad", c.provider, c.repo, c.id, pr)
+			if err != nil {
+				return created, err
+			}
+			if ok {
+				created++
+			}
+		}
+	}
+	return created, nil
+}
+
+// connectionHasEvent checks a comma-separated events column.
+func connectionHasEvent(events, want string) bool {
+	for _, e := range strings.Split(events, ",") {
+		if strings.TrimSpace(e) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// CreateGoalForIssue turns one issue into a goal (idempotent per connection:
+// the unique key is (source_ref, connection_id); "" = legacy binding).
+// Shared by the poller AND the webhook handler — both triggers
 // converge on the same create path, so webhook + poll racing can never
 // double-create. Returns whether a goal was created.
-func (p *Poller) CreateGoalForIssue(ctx context.Context, domainID, assigneeID, assigneeType, provider, repo string, iss Issue) (bool, error) {
+func (p *Poller) CreateGoalForIssue(ctx context.Context, domainID, assigneeID, assigneeType, provider, repo, connectionID string, iss Issue) (bool, error) {
 	ref := SourceRef(provider, repo, iss.Number)
 	var exists int
 	if err := p.st.DB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM goal WHERE source_ref=?`, ref).Scan(&exists); err != nil {
+		`SELECT COUNT(*) FROM goal WHERE source_ref=? AND connection_id=?`, ref, connectionID).Scan(&exists); err != nil {
 		return false, err
 	}
 	if exists > 0 {
@@ -358,9 +459,10 @@ func (p *Poller) CreateGoalForIssue(ctx context.Context, domainID, assigneeID, a
 		CreatedByType: "system",
 		CreatedByID:   "issue-poll",
 		SourceRef:     ref,
+		ConnectionID:  connectionID,
 	})
 	if err != nil {
-		// A unique-source_ref violation means the webhook and the poll raced
+		// A unique-(source_ref, connection_id) violation means the webhook and the poll raced
 		// and the other side won — that IS the idempotent outcome, not an
 		// error (the caller must not surface it as a failed delivery).
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -382,17 +484,17 @@ func truncate(s string, n int) string {
 }
 
 // CreateGoalForPull turns one pull request into a goal (M4-B PR pull) — the
-// pull-request analogue of CreateGoalForIssue, idempotent via the unique
-// source_ref. The PR ref carries a "!" suffix (kind=pull): issue and PR
+// pull-request analogue of CreateGoalForIssue, idempotent per connection on
+// (source_ref, connection_id). The PR ref carries a "!" suffix (kind=pull): issue and PR
 // numbers are separate sequences on GitCode, so a bare "#" would collide.
 // The goal's description carries the PR context INCLUDING the source/target
 // branches — the run's prompt section points the agent at them (fetch the
 // source branch in the worktree to review the diff).
-func (p *Poller) CreateGoalForPull(ctx context.Context, domainID, assigneeID, assigneeType, provider, repo string, pr Pull) (bool, error) {
+func (p *Poller) CreateGoalForPull(ctx context.Context, domainID, assigneeID, assigneeType, provider, repo, connectionID string, pr Pull) (bool, error) {
 	ref := PullSourceRef(provider, repo, pr.Number)
 	var exists int
 	if err := p.st.DB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM goal WHERE source_ref=?`, ref).Scan(&exists); err != nil {
+		`SELECT COUNT(*) FROM goal WHERE source_ref=? AND connection_id=?`, ref, connectionID).Scan(&exists); err != nil {
 		return false, err
 	}
 	if exists > 0 {
@@ -410,6 +512,7 @@ func (p *Poller) CreateGoalForPull(ctx context.Context, domainID, assigneeID, as
 		CreatedByType: "system",
 		CreatedByID:   "pr-poll",
 		SourceRef:     ref,
+		ConnectionID:  connectionID,
 	})
 	if err != nil {
 		// A unique-source_ref violation is the idempotent outcome (another
@@ -523,15 +626,15 @@ func webhookCommentID() string {
 // byte-identical to the stored one) is a no-op. A goal that does not exist
 // yet falls back to CreateGoalForPull (a missed `opened` delivery self-heals
 // here). Returns whether the goal was refreshed.
-func (p *Poller) UpdateGoalForPull(ctx context.Context, domainID, assigneeID, assigneeType, provider, repo string, pr Pull) (bool, error) {
+func (p *Poller) UpdateGoalForPull(ctx context.Context, domainID, assigneeID, assigneeType, provider, repo, connectionID string, pr Pull) (bool, error) {
 	ref := PullSourceRef(provider, repo, pr.Number)
 	var goalID string
 	err := p.st.DB().QueryRowContext(ctx,
-		`SELECT id FROM goal WHERE source_ref=?`, ref).Scan(&goalID)
+		`SELECT id FROM goal WHERE source_ref=? AND connection_id=?`, ref, connectionID).Scan(&goalID)
 	if errors.Is(err, sql.ErrNoRows) {
 		// The goal does not exist (the `opened` webhook was missed): create it
 		// with the FRESH state — the update self-heals into a create.
-		return p.CreateGoalForPull(ctx, domainID, assigneeID, assigneeType, provider, repo, pr)
+		return p.CreateGoalForPull(ctx, domainID, assigneeID, assigneeType, provider, repo, connectionID, pr)
 	}
 	if err != nil {
 		return false, err
@@ -909,23 +1012,167 @@ func (h *WebhookHandler) Handle(ctx context.Context, body []byte, signature, tok
 	domainID := h.domainIDFor(ctx, repo)
 	secret, err := h.secretFor(ctx, repo)
 	if err != nil {
-		h.recordDelivery(ctx, repo, domainID, "", "", false, "webhook secret lookup: "+err.Error())
+		h.recordDelivery(ctx, repo, domainID, "", "", "", false, "webhook secret lookup: "+err.Error())
 		return fmt.Errorf("webhook secret lookup: %w", err)
 	}
 	if secret == "" {
-		h.recordDelivery(ctx, repo, domainID, "", "", false, "webhook not configured (no secret)")
+		h.recordDelivery(ctx, repo, domainID, "", "", "", false, "webhook not configured (no secret)")
 		return fmt.Errorf("webhook not configured (no secret)")
 	}
 	// GitHub: X-Hub-Signature-256. GitCode: X-GitCode-Signature-256 (same
 	// HMAC-SHA256) or X-GitCode-Token (plain password mode).
 	if !verifyWebhook(h.provider, secret, body, signature, tokenHeader) {
-		h.recordDelivery(ctx, repo, domainID, "", "", false, "bad signature")
+		h.recordDelivery(ctx, repo, domainID, "", "", "", false, "bad signature")
 		return fmt.Errorf("bad signature")
 	}
+	ev, event, err := parseWebhookPayload(body)
+	if err != nil {
+		h.recordDelivery(ctx, repo, domainID, "", "", "", false, err.Error())
+		return err
+	}
+	dispatchedID, err := h.dispatch(ctx, ev)
+	if dispatchedID != "" {
+		domainID = dispatchedID
+	}
+	if err != nil {
+		h.recordDelivery(ctx, repo, domainID, "", event, ev.Action, false, err.Error())
+		return err
+	}
+	// A delivery we deliberately do not act on (untracked repo, no handler,
+	// ignored action) is NOT an error for the platform — record it as ok.
+	h.recordDelivery(ctx, repo, domainID, "", event, ev.Action, true, "")
+	return nil
+}
+
+// ConnectionRoute is the routing context for one per-connection delivery: the
+// connection owns the secret, repo, subscription and squad assignee, so this
+// path never consults the domain's legacy assignee columns.
+type ConnectionRoute struct {
+	ConnectionID string
+	DomainID     string
+	AssigneeID   string
+	AssigneeType string
+	Repo         string
+	Secret       string
+	Events       []string
+}
+
+// HandleConnection processes one delivery for a specific connection
+// (POST /webhooks/{provider}/{connectionID}). It mirrors Handle — every
+// outcome is recorded in webhook_delivery, now attributed to the connection —
+// but verifies with the connection's OWN secret and routes to its squad.
+func (h *WebhookHandler) HandleConnection(ctx context.Context, body []byte, signature, tokenHeader string, route ConnectionRoute) error {
+	repo := route.Repo
+	if route.Secret == "" {
+		text := "webhook not configured (no secret for connection " + route.ConnectionID + ")"
+		h.recordDelivery(ctx, repo, route.DomainID, route.ConnectionID, "", "", false, text)
+		return fmt.Errorf("webhook not configured (no secret)")
+	}
+	if !verifyWebhook(h.provider, route.Secret, body, signature, tokenHeader) {
+		h.recordDelivery(ctx, repo, route.DomainID, route.ConnectionID, "", "", false, "bad signature")
+		return fmt.Errorf("bad signature")
+	}
+	ev, event, err := parseWebhookPayload(body)
+	if err != nil {
+		h.recordDelivery(ctx, repo, route.DomainID, route.ConnectionID, "", "", false, err.Error())
+		return err
+	}
+	// The payload must belong to THIS connection's repo. A valid signature
+	// only proves the sender knows the secret: the host hook (or a shared
+	// secret) could point at the wrong connection, so reject a repo mismatch
+	// instead of creating goals in the wrong squad.
+	if !strings.EqualFold(ev.Repository.FullName, route.Repo) {
+		err := fmt.Errorf("webhook repo %q does not match connection repo %q", ev.Repository.FullName, route.Repo)
+		h.recordDelivery(ctx, repo, route.DomainID, route.ConnectionID, event, ev.Action, false, err.Error())
+		return err
+	}
+	// Subscription filter: only event types this connection opted into.
+	if !connectionSubscribes(route.Events, event) {
+		h.recordDelivery(ctx, repo, route.DomainID, route.ConnectionID, event, ev.Action, true, "")
+		return nil
+	}
+	if err := h.dispatchConnection(ctx, ev, route); err != nil {
+		h.recordDelivery(ctx, repo, route.DomainID, route.ConnectionID, event, ev.Action, false, err.Error())
+		return err
+	}
+	h.recordDelivery(ctx, repo, route.DomainID, route.ConnectionID, event, ev.Action, true, "")
+	return nil
+}
+
+// dispatchConnection is dispatch for one connection: same event/action
+// gating, but the assignee is the route's squad (never a domain lookup).
+func (h *WebhookHandler) dispatchConnection(ctx context.Context, ev *webhookEvent, route ConnectionRoute) error {
+	assigneeType := route.AssigneeType
+	if assigneeType == "" {
+		assigneeType = "squad"
+	}
+	if ev.PullRequest != nil && ev.PullRequest.Number > 0 {
+		pr := Pull{
+			Number:       ev.PullRequest.Number,
+			Title:        ev.PullRequest.Title,
+			Body:         ev.PullRequest.Body,
+			HTMLURL:      ev.PullRequest.HTMLURL,
+			SourceBranch: ev.PullRequest.Head.Ref,
+			TargetBranch: ev.PullRequest.Base.Ref,
+			HeadSHA:      ev.PullRequest.Head.SHA,
+		}
+		switch ev.Action {
+		case "opened", "reopened":
+			if _, err := h.poller.CreateGoalForPull(ctx, route.DomainID, route.AssigneeID, assigneeType, h.provider, route.Repo, route.ConnectionID, pr); err != nil {
+				return err
+			}
+		case "synchronize", "edited":
+			if _, err := h.poller.UpdateGoalForPull(ctx, route.DomainID, route.AssigneeID, assigneeType, h.provider, route.Repo, route.ConnectionID, pr); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if ev.Action != "opened" && ev.Action != "reopened" {
+		return nil // only issue creation triggers goals
+	}
+	if ev.Issue.Number == 0 {
+		return nil
+	}
+	_, err := h.poller.CreateGoalForIssue(ctx, route.DomainID, route.AssigneeID, assigneeType, h.provider, route.Repo, route.ConnectionID, ev.Issue)
+	return err
+}
+
+// repoHasConnection reports whether any connection owns this repo+provider.
+// Legacy deliveries stay recorded but stop creating goals when true.
+func (h *WebhookHandler) repoHasConnection(ctx context.Context, repo string) bool {
+	if repo == "" {
+		return false
+	}
+	var n int
+	if err := h.st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM connection WHERE repo=? AND provider=?`, repo, h.provider).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
+// connectionSubscribes reports whether event is in the connection's list.
+func connectionSubscribes(events []string, event string) bool {
+	if event == "" {
+		return false
+	}
+	for _, e := range events {
+		if e == event {
+			return true
+		}
+	}
+	return false
+}
+
+// parseWebhookPayload decodes a verified body into the shared event shape and
+// computes the delivery event name (pull_request / issues / ""). It carries the
+// GitCode merge_request fallback so both the legacy and the per-connection
+// handlers parse identically.
+func parseWebhookPayload(body []byte) (*webhookEvent, string, error) {
 	var ev webhookEvent
 	if err := json.Unmarshal(body, &ev); err != nil {
-		h.recordDelivery(ctx, repo, domainID, "", "", false, "parse webhook payload: "+err.Error())
-		return fmt.Errorf("parse webhook payload: %w", err)
+		return nil, "", fmt.Errorf("parse webhook payload: %w", err)
 	}
 	// GitCode merge_request webhooks use a completely different payload
 	// format from GitHub. If the standard parse yielded nothing, try the
@@ -971,18 +1218,7 @@ func (h *WebhookHandler) Handle(ctx context.Context, body []byte, signature, tok
 	case ev.Issue.Number > 0:
 		event = "issues"
 	}
-	dispatchedID, err := h.dispatch(ctx, &ev)
-	if dispatchedID != "" {
-		domainID = dispatchedID
-	}
-	if err != nil {
-		h.recordDelivery(ctx, repo, domainID, event, ev.Action, false, err.Error())
-		return err
-	}
-	// A delivery we deliberately do not act on (untracked repo, no handler,
-	// ignored action) is NOT an error for the platform — record it as ok.
-	h.recordDelivery(ctx, repo, domainID, event, ev.Action, true, "")
-	return nil
+	return &ev, event, nil
 }
 
 // dispatch routes one verified + parsed payload. It returns the matched
@@ -990,6 +1226,12 @@ func (h *WebhookHandler) Handle(ctx context.Context, body []byte, signature, tok
 // delivery log can say which domain a delivery was routed to; the routing
 // itself is unchanged from the pre-log implementation.
 func (h *WebhookHandler) dispatch(ctx context.Context, ev *webhookEvent) (string, error) {
+	// Legacy isolation (contract §4): once any connection owns this repo, the
+	// old domain-level endpoint must not create goals too. The delivery is
+	// still recorded by the caller; only the routing is a no-op.
+	if h.repoHasConnection(ctx, ev.Repository.FullName) {
+		return "", nil
+	}
 	if ev.PullRequest != nil && ev.PullRequest.Number > 0 {
 		// PR event — the shared Pull shape (branches + head SHA drive the
 		// goal's description and the update detection).
@@ -1028,7 +1270,7 @@ func (h *WebhookHandler) dispatch(ctx context.Context, ev *webhookEvent) (string
 	if assigneeType == "" {
 		assigneeType = "agent"
 	}
-	if _, err := h.poller.CreateGoalForIssue(ctx, domainID, assignee, assigneeType, h.provider, ev.Repository.FullName, ev.Issue); err != nil {
+	if _, err := h.poller.CreateGoalForIssue(ctx, domainID, assignee, assigneeType, h.provider, ev.Repository.FullName, "", ev.Issue); err != nil {
 		return domainID, err
 	}
 	return domainID, nil
@@ -1079,15 +1321,15 @@ func (h *WebhookHandler) domainIDFor(ctx context.Context, repo string) string {
 	return id
 }
 
-func (h *WebhookHandler) recordDelivery(ctx context.Context, repo, domainID, event, action string, ok bool, errText string) {
+func (h *WebhookHandler) recordDelivery(ctx context.Context, repo, domainID, connectionID, event, action string, ok bool, errText string) {
 	wctx := context.WithoutCancel(ctx)
 	okInt := 0
 	if ok {
 		okInt = 1
 	}
 	if _, err := h.st.DB().ExecContext(wctx,
-		`INSERT INTO webhook_delivery (id,provider,repo,domain_id,event,action,ok,error,received_at) VALUES (?,?,?,?,?,?,?,?,?)`,
-		webhookNewID(), h.provider, repo, domainID, event, action, okInt, errText, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		`INSERT INTO webhook_delivery (id,provider,repo,domain_id,connection_id,event,action,ok,error,received_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		webhookNewID(), h.provider, repo, domainID, connectionID, event, action, okInt, errText, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		logging.Warnf("webhook: record delivery (%s %s %s): %v", h.provider, repo, event, err)
 		return
 	}
@@ -1139,6 +1381,11 @@ type gitCodeWebhookEvent struct {
 // The domain's PR 拉取处理方 column (pull_assignee) decides whether this
 // domain takes PRs at all.
 func (h *WebhookHandler) handlePullDelivery(ctx context.Context, action, repo string, pr Pull) (string, error) {
+	// Legacy isolation (contract §4): a repo with a connection routes through
+	// its per-connection endpoint, never through the domain-level fallback.
+	if h.repoHasConnection(ctx, repo) {
+		return "", nil
+	}
 	var domainID, assignee, assigneeType string
 	err := h.st.DB().QueryRowContext(ctx,
 		`SELECT id, COALESCE(pull_assignee,''), COALESCE(pull_assignee_type,'') FROM domain WHERE issue_repo=? AND issue_provider=?`, repo, h.provider).
@@ -1154,11 +1401,11 @@ func (h *WebhookHandler) handlePullDelivery(ctx context.Context, action, repo st
 	}
 	switch action {
 	case "opened", "reopened":
-		if _, err := h.poller.CreateGoalForPull(ctx, domainID, assignee, assigneeType, h.provider, repo, pr); err != nil {
+		if _, err := h.poller.CreateGoalForPull(ctx, domainID, assignee, assigneeType, h.provider, repo, "", pr); err != nil {
 			return domainID, err
 		}
 	case "synchronize", "edited":
-		if _, err := h.poller.UpdateGoalForPull(ctx, domainID, assignee, assigneeType, h.provider, repo, pr); err != nil {
+		if _, err := h.poller.UpdateGoalForPull(ctx, domainID, assignee, assigneeType, h.provider, repo, "", pr); err != nil {
 			return domainID, err
 		}
 	}
