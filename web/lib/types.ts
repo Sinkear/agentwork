@@ -74,6 +74,11 @@ export type GoalStatus =
   | "failed"
   | "cancelled";
 
+// 运行模式（goal 级开关，RSI 训练分析的入口）：
+//   infer = 只记录 run 级基础指标，不建分析会话（老 goal 缺省即此值）
+//   train = 记录结构 trace，goal 终态后自动产出分析报告
+export type ExecutionMode = "infer" | "train";
+
 export interface Goal {
   id: string;
   title: string;
@@ -92,6 +97,10 @@ export interface Goal {
   current_agent_id: string; // latest running/queued run's agent ('' = none)
   attention: string; // v2 OwnerAttention：'' | integration | wrapup | recovery | user_action
   review_phase: string; // 审查窗口派生阶段：'' | awaiting_review | reviewing | awaiting_approval（决策 6-19 延伸）
+  execution_mode?: ExecutionMode; // 缺省/旧数据视为 infer（后端 DDL 默认 infer）
+  content_capture?: string; // none|redacted|full（train 模式）
+  budget_usd?: number; // 分析预算（train 模式默认 2）
+  sample_rate?: number; // 采样率 0..1（train 模式默认 1）
 }
 
 export interface GateRule {
@@ -598,4 +607,124 @@ export interface TimelineItem {
   decision?: string;             // decision: approve|reject|redirect
   reason?: string;               // decision: the human's words
   review_duration_s?: number;    // decision: seconds spent in review
+}
+
+// ══════════════════════════════════════════════════════════════
+// RSI 训练分析（docs/research/rsi-summary.md §5.2 / §5.5）
+//
+// 契约要点：`metrics` / `baseline` / `attrs` 是对象、`evidence` 是数组，
+// 后端直接序列化 Go 结构体（不是 JSON 字符串）。这里仍按“对象或 unknown”
+// 读取，页面渲染前统一做容错——后端字段演进时旧前端不能白屏。
+// ══════════════════════════════════════════════════════════════
+
+// 会话状态机（后端 schema.sql）：waiting（会话已建，等这次 run 启动）→
+// collecting（持续收 span）→ analyzing（封存 trace、跑规则分析）→ ready；
+// failed / skipped 是终态。UI 对未知值原样显示，不崩、不误判。
+export type RsiSessionStatus =
+  | "waiting"
+  | "collecting"
+  | "analyzing"
+  | "ready"
+  | "failed"
+  | "skipped";
+
+export interface RsiSession {
+  id: string;
+  goal_id: string;
+  goal_title: string; // 列表 join goal 标题（后端已拼好，前端不再二次请求）
+  domain_id: string;
+  status: RsiSessionStatus;
+  trace_count: number;
+  cost_usd: number;
+  finding_count: number;
+  top_category: string; // '' = 未归因到具体瓶颈
+  top_title: string;
+  error: string;
+  started_at: string;
+  finished_at: string; // '' = 尚未结束
+  // 后端 RsiSession 已有、列表契约未强调的字段，按可选读。
+  content_capture?: string; // none|redacted|full
+  sample_rate?: number; // 0..1
+  budget_usd?: number;
+  sealed_at?: string;
+}
+
+// 严重度是后端的 info|warn|critical（rsi_analyze.go：score >= 0.5 的 warn 升为 critical）。
+export type RsiSeverity = "critical" | "warn" | "info";
+// 三级置信度（§4.3）：L1 单次观察 / L2 单 run 统计 / L3 跨 run 基线。
+export type RsiConfidence = "L1" | "L2" | "L3";
+export type RsiFindingStatus = "open" | "confirmed" | "dismissed";
+
+export interface RsiFinding {
+  id: string;
+  report_id: string;
+  // tool_slow|llm_slow|retries|context_pressure|duplicate_calls|serial_dependency|human_wait
+  category: string;
+  severity: RsiSeverity;
+  confidence: RsiConfidence;
+  title: string;
+  explanation: string; // 判据：命中规则 + 具体数值
+  suggestion: string;
+  // 后端 evidence_json 是 []string：span/run id 或 "metric=value" 测量串。
+  evidence: string[];
+  score: number; // 排序权重，越大越值得先看
+  status: RsiFindingStatus;
+}
+
+// 与后端 trace_span 表一一对应。时间戳是 epoch 毫秒（started_at_ms），
+// 不是 RFC3339 字符串——瀑布条直接做毫秒运算，别 Date.parse。
+export interface RsiSpan {
+  id: string;
+  session_id?: string;
+  run_id: string;
+  span_id: string; // 逻辑 span id；id 是行主键
+  kind: string; // run|llm|tool|verify|gate|human_wait
+  name: string;
+  started_at_ms: number;
+  ended_at_ms: number;
+  duration_ms: number;
+  status: string; // ok|error|cancelled
+  error_class: string;
+  retry_count: number;
+  tool_name: string;
+  args_hash?: string;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  context_used: number;
+  context_size: number;
+  content_bytes: number; // 采集到的内容字节（脱敏/仅结构模式下可能为 0）
+  parent_span_id: string;
+  attrs: Record<string, unknown>;
+  created_at?: string;
+}
+
+export interface RsiReport {
+  id: string;
+  session_id?: string;
+  status: string; // ready|failed
+  summary: string;
+  metrics: Record<string, unknown>;
+  baseline: Record<string, unknown>;
+  narrative: string; // 可选 LLM 归因（P1），M0 为空
+  created_at: string;
+  finished_at: string;
+  error: string;
+}
+
+export interface RsiDetail {
+  session: RsiSession;
+  report: RsiReport | null; // 会话还在 waiting/collecting/analyzing 时为 null
+  findings: RsiFinding[];
+  spans: RsiSpan[];
+}
+
+// GET /rsi/overview?days=30 —— 列表页顶部概览条。
+export interface RsiOverview {
+  sessions: number;
+  success_rate: number; // 0..1
+  cost_per_success: number; // USD
+  p95_lead_time_ms: number;
+  human_wait_ms: number;
+  findings: number;
 }

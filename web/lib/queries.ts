@@ -77,9 +77,20 @@ import {
   refreshTemplates,
   applySquadTemplate,
   applyProjectTemplate,
+  listRsiSessions,
+  getRsiSession,
+  getRsiOverview,
+  updateRsiFinding,
+  retryRsiSession,
 } from "./api";
 import { useWSEvent } from "./ws";
-import type { WSEvent, ApplySquadOverrides, ApplyProjectOverrides } from "./types";
+import type {
+  WSEvent,
+  ApplySquadOverrides,
+  ApplyProjectOverrides,
+  RsiDetail,
+  RsiSession,
+} from "./types";
 
 // ── Query keys ──
 export const qk = {
@@ -111,6 +122,9 @@ export const qk = {
   im: ["im"] as const,
   platformSettings: ["platform-settings"] as const,
   gateStats: ["gate-stats"] as const,
+  rsiSessions: ["rsi", "sessions"] as const,
+  rsiSession: (id: string) => ["rsi", "sessions", id] as const,
+  rsiOverview: (days: number) => ["rsi", "overview", days] as const,
   templates: ["templates"] as const,
   templatesByType: (type: string) => ["templates", { type }] as const,
   template: (kind: string, id: string) => ["templates", kind, id] as const,
@@ -840,4 +854,58 @@ export function useGoalEvents() {
     qc.invalidateQueries({ queryKey: ["team-import"] });
   });
   useWSEvent("team:import_failed", () => qc.invalidateQueries({ queryKey: ["team-import"] }));
+}
+
+// ── RSI 训练分析 hooks ──
+// 列表/详情不做服务端筛选：单机规模下会话只有几十上百条，客户端筛更跟手，
+// 也避免状态筛选切换时整页转圈。
+export function useRsiSessions() {
+  return useQuery({
+    queryKey: qk.rsiSessions,
+    queryFn: () => listRsiSessions(),
+    // 有会话还在采集/分析时，列表每 10s 刷新一次，状态自己走完；
+    // 全部终态就停，避免常驻轮询。
+    refetchInterval: (query) => {
+      const rows = query.state.data as RsiSession[] | undefined;
+      const active = rows?.some(
+        (s) => s.status === "waiting" || s.status === "collecting" || s.status === "analyzing"
+      );
+      return active ? 10_000 : false;
+    },
+  });
+}
+export function useRsiDetail(id: string) {
+  return useQuery({
+    queryKey: qk.rsiSession(id),
+    queryFn: () => getRsiSession(id),
+    enabled: !!id,
+    // 终态前 5s 轮询：collecting/analyzing 是后台 job，状态会自己往前走。
+    // 终态（ready/failed/skipped）停轮询，别让详情页一直打后端。
+    refetchInterval: (query) => {
+      const status = (query.state.data as RsiDetail | undefined)?.session?.status;
+      return status === "waiting" || status === "collecting" || status === "analyzing"
+        ? 5000
+        : false;
+    },
+  });
+}
+export function useRsiOverview(days = 30) {
+  return useQuery({ queryKey: qk.rsiOverview(days), queryFn: () => getRsiOverview(days) });
+}
+export function useUpdateRsiFinding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, status }: { id: string; status: "confirmed" | "dismissed" }) =>
+      updateRsiFinding(id, status),
+    // 确认/忽略改变 detail 里的 finding 状态与列表里的 finding_count，
+    // 统一刷 "rsi" 前缀（数量少，不做逐 key 维护）。
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["rsi"] }),
+  });
+}
+export function useRetryRsiSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: retryRsiSession,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["rsi"] }),
+  });
 }

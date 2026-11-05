@@ -245,6 +245,7 @@ func (f *eventForwarder) OnToolCall(tc acp.ToolCallUpdate) {
 		CallID: tc.ToolCallID,
 		Input:  toJSONString(tc.RawInput),
 		Output: extractOutput(tc.RawOutput),
+		Status: tc.Status,
 	}
 	if tc.Status == "completed" || tc.Status == "failed" {
 		ev.Type = proto.EventToolResult
@@ -301,5 +302,16 @@ func (f *eventForwarder) OnPlan(acp.Plan)                                  {}
 func (f *eventForwarder) OnAvailableCommandsUpdate([]acp.AvailableCommand) {}
 func (f *eventForwarder) OnModeUpdate(acp.SessionModeId)                   {}
 func (f *eventForwarder) OnConfigOptionUpdate([]acp.SessionConfigOption)   {}
-func (f *eventForwarder) OnUsageUpdate(int, int, *acp.Cost)                {}
+func (f *eventForwarder) OnUsageUpdate(used, total int, cost *acp.Cost) {
+	ev := proto.Event{
+		Type:        proto.EventUsage,
+		ContextUsed: used,
+		ContextSize: total,
+	}
+	if cost != nil {
+		ev.CostUSD = cost.Amount
+		ev.Currency = cost.Currency
+	}
+	f.push(ev)
+}
 func (f *eventForwarder) OnSessionInfo(string, map[string]any)             {}

@@ -103,6 +103,13 @@ func Open(path string) (*Store, error) {
 		// the migration because the index references it and schema.sql runs
 		// before the ALTER on an old DB.
 		`ALTER TABLE goal ADD COLUMN connection_id TEXT NOT NULL DEFAULT ''`,
+		// RSI (self-improvement): per-goal execution mode + trace collection
+		// knobs. Columns live in the migration for the same reason as
+		// connection_id — an old DB gains them before any index/query runs.
+		`ALTER TABLE goal ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'infer'`,
+		`ALTER TABLE goal ADD COLUMN content_capture TEXT NOT NULL DEFAULT 'redacted'`,
+		`ALTER TABLE goal ADD COLUMN budget_usd REAL NOT NULL DEFAULT 2`,
+		`ALTER TABLE goal ADD COLUMN sample_rate REAL NOT NULL DEFAULT 1`,
 		`DROP INDEX IF EXISTS uq_goal_source_ref`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_goal_source_ref_conn ON goal(source_ref, connection_id) WHERE source_ref != ''`,
 	} {

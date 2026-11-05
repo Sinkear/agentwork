@@ -195,7 +195,11 @@ CREATE TABLE IF NOT EXISTS goal (
     source_ref       TEXT NOT NULL DEFAULT '',     -- external source (M4-B): "github:owner/repo#123" — one goal per issue
     connection_id    TEXT NOT NULL DEFAULT '',     -- repo connection that ingested this goal ('' = legacy repo-level binding)
     execution_attempt INTEGER NOT NULL DEFAULT 0,  -- v2 (决策 6-9): machine-retry counter, authoritative; run.attempt is just the instance ordinal
-    attention        TEXT NOT NULL DEFAULT ''      -- v2 (决策 6-8): derived OwnerAttention persisted by Reconcile ('' | integration|wrapup|recovery|user_action)
+    attention        TEXT NOT NULL DEFAULT '',     -- v2 (决策 6-8): derived OwnerAttention persisted by Reconcile ('' | integration|wrapup|recovery|user_action)
+    execution_mode   TEXT NOT NULL DEFAULT 'infer', -- RSI: infer | train (train records a trace and analyzes it on terminal)
+    content_capture  TEXT NOT NULL DEFAULT 'redacted', -- RSI: none | redacted | full
+    budget_usd       REAL NOT NULL DEFAULT 2,      -- RSI: analysis budget ceiling (displayed/enforced later)
+    sample_rate      REAL NOT NULL DEFAULT 1       -- RSI: 0..1 trace sampling rate
 );
 
 CREATE INDEX IF NOT EXISTS idx_goal_assignee ON goal(assignee_type, assignee_id);
@@ -528,3 +532,105 @@ CREATE TABLE IF NOT EXISTS connection (
 );
 CREATE INDEX IF NOT EXISTS idx_connection_squad ON connection(squad_id);
 CREATE INDEX IF NOT EXISTS idx_connection_domain ON connection(domain_id);
+
+
+-- ── RSI (recursive self-improvement) ─────────────────────────────────────
+-- One training session per goal whose execution_mode='train'. Created with
+-- the goal, filled while runs execute (trace_span), then analyzed once the
+-- goal reaches a terminal state. waiting → collecting → analyzing →
+-- ready|failed (sampled-out goals end as 'skipped').
+CREATE TABLE IF NOT EXISTS training_session (
+    id              TEXT PRIMARY KEY,
+    goal_id         TEXT NOT NULL REFERENCES goal(id),
+    content_capture TEXT NOT NULL DEFAULT 'redacted',  -- none|redacted|full
+    sample_rate     REAL NOT NULL DEFAULT 1,
+    budget_usd      REAL NOT NULL DEFAULT 2,
+    status          TEXT NOT NULL DEFAULT 'waiting',   -- waiting|collecting|analyzing|ready|failed|skipped
+    trace_count     INTEGER NOT NULL DEFAULT 0,
+    cost_usd        REAL NOT NULL DEFAULT 0,
+    error           TEXT NOT NULL DEFAULT '',
+    started_at      TEXT NOT NULL,
+    sealed_at       TEXT NOT NULL DEFAULT '',
+    finished_at     TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_training_session_goal ON training_session(goal_id);
+CREATE INDEX IF NOT EXISTS idx_training_session_status ON training_session(status, started_at);
+
+-- trace_span is a wide observation table (Langfuse-style): one row per
+-- logical operation. kind: run|llm|tool|verify|gate|human_wait.
+CREATE TABLE IF NOT EXISTS trace_span (
+    id             TEXT PRIMARY KEY,
+    session_id     TEXT NOT NULL REFERENCES training_session(id),
+    run_id         TEXT NOT NULL DEFAULT '',
+    span_id        TEXT NOT NULL,
+    parent_span_id TEXT NOT NULL DEFAULT '',
+    kind           TEXT NOT NULL,
+    name           TEXT NOT NULL DEFAULT '',
+    started_at_ms  INTEGER NOT NULL DEFAULT 0,
+    ended_at_ms    INTEGER NOT NULL DEFAULT 0,
+    duration_ms    INTEGER NOT NULL DEFAULT 0,
+    status         TEXT NOT NULL DEFAULT 'ok',   -- ok|error|cancelled
+    error_class    TEXT NOT NULL DEFAULT '',
+    retry_count    INTEGER NOT NULL DEFAULT 0,
+    tool_name      TEXT NOT NULL DEFAULT '',
+    args_hash      TEXT NOT NULL DEFAULT '',
+    tokens_in      INTEGER NOT NULL DEFAULT 0,
+    tokens_out     INTEGER NOT NULL DEFAULT 0,
+    cost_usd       REAL NOT NULL DEFAULT 0,
+    context_used   INTEGER NOT NULL DEFAULT 0,
+    context_size   INTEGER NOT NULL DEFAULT 0,
+    content_bytes  INTEGER NOT NULL DEFAULT 0,
+    attrs_json     TEXT NOT NULL DEFAULT '{}',
+    created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trace_span_session ON trace_span(session_id, started_at_ms);
+CREATE INDEX IF NOT EXISTS idx_trace_span_run ON trace_span(run_id, started_at_ms);
+CREATE INDEX IF NOT EXISTS idx_trace_span_span ON trace_span(span_id);
+
+-- rsi_report: exactly one analysis output per session. metrics_json and
+-- baseline_json are objects the API decodes before returning.
+CREATE TABLE IF NOT EXISTS rsi_report (
+    id            TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL REFERENCES training_session(id),
+    status        TEXT NOT NULL DEFAULT 'ready',   -- ready|failed
+    summary       TEXT NOT NULL DEFAULT '',
+    metrics_json  TEXT NOT NULL DEFAULT '{}',
+    baseline_json TEXT NOT NULL DEFAULT '{}',
+    narrative     TEXT NOT NULL DEFAULT '',
+    error         TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    finished_at   TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rsi_report_session ON rsi_report(session_id);
+
+-- rsi_finding: one rule-based candidate optimization. confidence is
+-- L1 (observed once) | L2 (recurring pattern) | L3 (A/B verified). evidence_json
+-- is a JSON array of span/run ids + measurement text.
+CREATE TABLE IF NOT EXISTS rsi_finding (
+    id          TEXT PRIMARY KEY,
+    report_id   TEXT NOT NULL REFERENCES rsi_report(id),
+    category    TEXT NOT NULL,
+    severity    TEXT NOT NULL DEFAULT 'info',      -- info|warn|critical
+    confidence  TEXT NOT NULL DEFAULT 'L1',
+    title       TEXT NOT NULL,
+    explanation TEXT NOT NULL DEFAULT '',
+    suggestion  TEXT NOT NULL DEFAULT '',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    score       REAL NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'open',      -- open|confirmed|dismissed
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rsi_finding_report ON rsi_finding(report_id, score DESC);
+CREATE INDEX IF NOT EXISTS idx_rsi_finding_category ON rsi_finding(category, created_at);
+
+-- rsi_metric_snapshot: daily aggregate for the Training overview trend.
+CREATE TABLE IF NOT EXISTS rsi_metric_snapshot (
+    day             TEXT PRIMARY KEY,
+    sessions        INTEGER NOT NULL DEFAULT 0,
+    success_rate    REAL NOT NULL DEFAULT 0,
+    cost_per_success REAL NOT NULL DEFAULT 0,
+    p95_lead_time_ms INTEGER NOT NULL DEFAULT 0,
+    human_wait_ms   INTEGER NOT NULL DEFAULT 0,
+    findings        INTEGER NOT NULL DEFAULT 0,
+    updated_at      TEXT NOT NULL
+);

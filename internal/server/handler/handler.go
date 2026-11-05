@@ -61,6 +61,8 @@ type Handlers struct {
 	// Connection is the first-class squad ↔ repo binding: each row owns its
 	// own webhook path + secret (contract: 仓库连接).
 	Connection *service.ConnectionService
+	// RSI is the training-session / trace-analysis service (训练分析).
+	RSI *service.RSIService
 }
 
 func (h *Handlers) Mount(mux *http.ServeMux) {
@@ -100,6 +102,13 @@ func (h *Handlers) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /goals/{id}/changes", h.listGoalChanges)
 	mux.HandleFunc("GET /goals/{id}/comments", h.listComments)
 	mux.HandleFunc("POST /goals/{id}/comments", h.createComment)
+
+	// RSI (训练分析): sessions, findings, overview.
+	mux.HandleFunc("GET /rsi/sessions", h.listRsiSessions)
+	mux.HandleFunc("GET /rsi/sessions/{id}", h.getRsiSession)
+	mux.HandleFunc("GET /rsi/overview", h.rsiOverview)
+	mux.HandleFunc("PATCH /rsi/findings/{id}", h.patchRsiFinding)
+	mux.HandleFunc("POST /rsi/sessions/{id}/retry", h.retryRsiSession)
 
 	mux.HandleFunc("GET /squads", h.listSquads)
 	mux.HandleFunc("POST /squads", h.createSquad)
