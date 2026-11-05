@@ -17,6 +17,7 @@ import {
   ScrollText,
   Settings,
   MessagesSquare,
+  LayoutDashboard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -35,6 +36,7 @@ export const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: "工作台",
     items: [
+      { href: "/", label: "总览", icon: LayoutDashboard },
       { href: "/goals", label: "任务", icon: Target },
       { href: "/chat", label: "对话", icon: MessageSquare },
       { href: "/goals/new", label: "新建任务", icon: Plus, newTask: true },
@@ -78,6 +80,8 @@ export function Nav() {
 
   // 「新建任务」是 /goals 的子路径，但它是独立页面：同时亮会让人以为是同一件事。
   const isActive = (item: NavItem) => {
+    // "/" 必须精确匹配：startsWith("/") 会让所有路由都亮。
+    if (item.href === "/") return pathname === "/";
     if (item.newTask) return pathname === "/goals/new";
     if (item.href === "/goals") {
       return pathname === "/goals" || (pathname.startsWith("/goals/") && pathname !== "/goals/new");
@@ -87,11 +91,15 @@ export function Nav() {
 
   return (
     <nav className="sticky top-0 flex h-screen w-56 shrink-0 flex-col border-r border-line bg-surface-1/60 p-3 backdrop-blur">
-      {/* Logo：等宽字体 + 绿色状态点，终端产品名而不是渐变字。 */}
-      <div className="flex items-center gap-2 px-3 pb-4 pt-2">
+      {/* Logo：等宽字体 + 绿色状态点，终端产品名而不是渐变字。点它回总览。 */}
+      <Link
+        href="/"
+        title="返回总览"
+        className="flex items-center gap-2 rounded-md px-3 pb-4 pt-2 transition-colors hover:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+      >
         <span className="h-2 w-2 shrink-0 rounded-full bg-accent" />
         <span className="font-mono text-sm font-semibold tracking-tight text-ink">agentwork</span>
-      </div>
+      </Link>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
       {NAV_GROUPS.map((group) => (

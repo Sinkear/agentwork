@@ -89,9 +89,11 @@ function RuntimeRow({
         <span className="font-mono text-ink-2">{cliType(rt.name)}</span>
       </div>
 
-      <div className="flex items-center justify-between gap-2 text-xs md:block">
-        <span className="text-[11px] text-ink-3 md:hidden">模型</span>
-        <span className="truncate text-ink-2" title={models}>
+      {/* 模型列是定宽 grid item：父级必须 min-w-0/overflow-hidden，值用 block
+          truncate（inline 的 span 上 truncate 不生效），长模型串才不会压到「机器」。 */}
+      <div className="flex min-w-0 items-center justify-between gap-2 overflow-hidden text-xs md:block md:w-full">
+        <span className="shrink-0 text-[11px] text-ink-3 md:hidden">模型</span>
+        <span className="block min-w-0 truncate text-ink-2" title={models}>
           {models}
         </span>
       </div>

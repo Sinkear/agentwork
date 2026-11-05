@@ -59,6 +59,12 @@ import {
   registerDomainWebhook,
   patchDomainAssignees,
   setDomainWebhookSecret,
+  listConnections,
+  createSquadConnection,
+  updateConnection,
+  deleteConnection,
+  getConnectionWebhook,
+  registerConnectionWebhook,
   getImStatus,
   connectFeishu,
   disconnectFeishu,
@@ -99,6 +105,9 @@ export const qk = {
   domain: (id: string) => ["domains", id] as const,
   domainCompileRun: (id: string) => ["domains", id, "compile-run"] as const,
   domainWebhook: (id: string) => ["domainWebhook", id] as const,
+  connections: ["connections"] as const,
+  connectionsBySquad: (squadId: string) => ["connections", { squad_id: squadId }] as const,
+  connectionWebhook: (id: string) => ["connectionWebhook", id] as const,
   im: ["im"] as const,
   platformSettings: ["platform-settings"] as const,
   gateStats: ["gate-stats"] as const,
@@ -525,6 +534,69 @@ export function usePatchDomainAssignees(id?: string) {
       qc.invalidateQueries({ queryKey: qk.domains });
       qc.invalidateQueries({ queryKey: qk.domain(did) });
       qc.invalidateQueries({ queryKey: qk.domainWebhook(did) });
+    },
+  });
+}
+
+// ── Connection hooks（仓库连接：每条连接独立 webhook + secret） ──
+// A squad-scoped key lives under the same ["connections"] prefix, so every
+// mutation invalidates both the global list and any open squad's filtered view.
+export function useConnections(squadId?: string) {
+  return useQuery({
+    queryKey: squadId ? qk.connectionsBySquad(squadId) : qk.connections,
+    queryFn: () => listConnections(squadId),
+  });
+}
+export function useCreateConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ squadId, ...body }: { squadId: string; domain_id: string; events?: string[]; secret?: string }) =>
+      createSquadConnection(squadId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.connections });
+      // 创建 connection 会清空该 domain 的旧版 assignee，列表页/详情页的
+      // legacy 视图也要跟着刷新。
+      qc.invalidateQueries({ queryKey: qk.domains });
+    },
+  });
+}
+export function useUpdateConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; events?: string[]; secret?: string }) =>
+      updateConnection(id, body),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: qk.connections });
+      qc.invalidateQueries({ queryKey: qk.connectionWebhook(vars.id) });
+    },
+  });
+}
+export function useDeleteConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteConnection,
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.connections }),
+  });
+}
+// The status endpoint stays alive while a card is open: a real delivery can
+// land at any moment, and the host hook list is what "已注册/缺事件" derives from.
+export function useConnectionWebhook(id: string, enabled = true) {
+  return useQuery({
+    queryKey: qk.connectionWebhook(id),
+    queryFn: () => getConnectionWebhook(id),
+    enabled: enabled && !!id,
+    refetchInterval: 15000,
+  });
+}
+export function useRegisterConnectionWebhook(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    // id 可随变量覆盖：新建弹窗在拿到 create 响应之前并不知道 connection id。
+    mutationFn: ({ id: target, ...body }: { id?: string; url: string; events?: string[] }) =>
+      registerConnectionWebhook(target || id, body),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: qk.connectionWebhook(vars.id || id) });
+      qc.invalidateQueries({ queryKey: qk.connections });
     },
   });
 }

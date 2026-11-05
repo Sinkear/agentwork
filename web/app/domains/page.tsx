@@ -6,7 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   useDomains, useDomain, useAgents, useSquads, useCreateDomain, useUpdateDomain, useCompileDomainPolicy,
   useDomainCompileRun, useFreezeDomainChecks, useGoalEvents, useGateStats, qk,
-  usePlatformSettings, useSavePlatformSettings,
+  usePlatformSettings, useSavePlatformSettings, useConnections,
 } from "@/lib/queries";
 import { listRunMessages, testDomainGit } from "@/lib/api";
 import type { ChatMessage } from "@/lib/api";
@@ -863,6 +863,12 @@ function EditDomainDialog({ domain, onClose }: { domain: Domain; onClose: () => 
   const update = useUpdateDomain();
   const { data: agents } = useAgents();
   const { data: squads } = useSquads();
+  // 连接接管后，仓库的 issue/PR 路由由「小队 → 仓库连接」决定：旧版
+  // domain 级处理方会被后端丢弃（连接创建时已清空，Poller/dispatch 也会
+  // 跳过），这里显式说明并禁用，避免改了却不生效。
+  const { data: connections } = useConnections();
+  const managedConnections = (connections ?? []).filter((c) => c.domain_id === domain.id);
+  const connectionsManaged = managedConnections.length > 0;
   const [gitUrl, setGitUrl] = useState(domain.git_url);
   const [defaultBranch, setDefaultBranch] = useState(domain.default_branch || "main");
   const [gitIdentity, setGitIdentity] = useState(domain.git_identity);
@@ -947,17 +953,23 @@ function EditDomainDialog({ domain, onClose }: { domain: Domain; onClose: () => 
             </select>
           </div>
         </Field>
-        <Field label="issue 处理方" hint="agent 或 squad——处理方随时可以换">
+        {connectionsManaged && (
+          <div className="rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-ink-2">
+            该仓库已由 {managedConnections.length} 条小队连接接入，issue / PR 由连接独立投递（每条连接有自己的 webhook）。旧的 domain 级处理方在此模式下不生效，请到对应小队详情页的「仓库连接」里调整。
+          </div>
+        )}
+        <Field label="issue 处理方" hint={connectionsManaged ? "已由小队连接接管" : "agent 或 squad——处理方随时可以换"}>
           <div className="flex gap-2 items-center">
             <select
               value={issueAssigneeType}
               onChange={(e) => { setIssueAssigneeType(e.target.value); setIssueAssignee(""); }}
               className={inputCls}
+              disabled={connectionsManaged}
             >
               <option value="agent">Agent</option>
               <option value="squad">Squad</option>
             </select>
-            <select value={issueAssignee} onChange={(e) => setIssueAssignee(e.target.value)} className={inputCls}>
+            <select value={issueAssignee} onChange={(e) => setIssueAssignee(e.target.value)} className={inputCls} disabled={connectionsManaged}>
               <option value="">{issueAssigneeType === "agent" ? "选择 agent…" : "选择 squad…"}</option>
               {issueAssigneeType === "agent"
                 ? agents?.map((a) => (
@@ -969,17 +981,18 @@ function EditDomainDialog({ domain, onClose }: { domain: Domain; onClose: () => 
             </select>
           </div>
         </Field>
-        <Field label="PR 拉取处理方（选填）" hint={`与 issue 共用上面的跟踪仓库和平台${deriveIssueSrc(gitUrl) ? `（${deriveIssueSrc(gitUrl)}）` : ""}；选了处理方后，仓库的新 PR 自动变成任务，处理完只评论不关闭——合并/关闭由人决定`}>
+        <Field label="PR 拉取处理方（选填）" hint={connectionsManaged ? "已由小队连接接管" : `与 issue 共用上面的跟踪仓库和平台${deriveIssueSrc(gitUrl) ? `（${deriveIssueSrc(gitUrl)}）` : ""}；选了处理方后，仓库的新 PR 自动变成任务，处理完只评论不关闭——合并/关闭由人决定`}>
           <div className="flex gap-2 items-center">
             <select
               value={pullAssigneeType}
               onChange={(e) => { setPullAssigneeType(e.target.value); setPullAssignee(""); }}
               className={inputCls}
+              disabled={connectionsManaged}
             >
               <option value="agent">Agent</option>
               <option value="squad">Squad</option>
             </select>
-            <select value={pullAssignee} onChange={(e) => setPullAssignee(e.target.value)} className={inputCls}>
+            <select value={pullAssignee} onChange={(e) => setPullAssignee(e.target.value)} className={inputCls} disabled={connectionsManaged}>
               <option value="">{pullAssigneeType === "agent" ? "不拉取 PR（选择 agent 或 squad 开启）" : "不拉取 PR（选择 squad 开启）"}</option>
               {pullAssigneeType === "agent"
                 ? agents?.map((a) => (
@@ -993,7 +1006,7 @@ function EditDomainDialog({ domain, onClose }: { domain: Domain; onClose: () => 
         </Field>
         {/* webhook 面板绑定表单里的当前值（未保存也能先看地址/注册），
             react-query 按 domainId 缓存，关掉对话框不丢状态 */}
-        {domain.type === "repo" && (
+        {domain.type === "repo" && !connectionsManaged && (
           <WebhookPanel domainId={domain.id} provider={issueProvider} repo={issueRepo} />
         )}
         {update.isError && <p className="text-sm text-red-400">{String(update.error)}</p>}

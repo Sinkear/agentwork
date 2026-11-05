@@ -14,6 +14,7 @@ import {
   useImportTeam,
   useGoalEvents,
   useDomains,
+  useConnections,
 } from "@/lib/queries";
 import {
   Button,
@@ -32,7 +33,7 @@ import {
 } from "@/components/ui";
 import { Users, Search, Trash2, ChevronRight } from "lucide-react";
 import { relTime } from "@/lib/utils";
-import type { Domain, Squad } from "@/lib/types";
+import type { Connection, Domain, Squad } from "@/lib/types";
 
 type RepoFilter = "all" | "bound" | "unbound";
 
@@ -41,6 +42,7 @@ export default function SquadsPage() {
   const { data: squads, isLoading } = useSquads();
   const { data: agents } = useAgents();
   const { data: domains } = useDomains();
+  const { data: connections } = useConnections();
   const createSquad = useCreateSquad();
   const deleteSquad = useDeleteSquad();
   const [showForm, setShowForm] = useState(false);
@@ -60,12 +62,28 @@ export default function SquadsPage() {
 
   const agentName = (aid: string) => agents?.find((a) => a.id === aid)?.name ?? aid;
   const repoDomains = (domains ?? []).filter((d) => d.issue_repo !== "");
+
+  // 连接按 squad 分组：Connection 是主路径，同一仓库可出现在多个 squad 下。
+  const connectionsBySquad = new Map<string, Connection[]>();
+  for (const c of connections ?? []) {
+    const arr = connectionsBySquad.get(c.squad_id) ?? [];
+    arr.push(c);
+    connectionsBySquad.set(c.squad_id, arr);
+  }
+
+  // bound = 有连接，或仍是旧版 domain assignee 的绑定（升级后不突然归零）。
   const isBound = (squadId: string) =>
+    (connectionsBySquad.get(squadId)?.length ?? 0) > 0 ||
     repoDomains.some((d) => d.issue_assignee === squadId || d.pull_assignee === squadId);
   const memberCount = (i: number) => memberQueries[i]?.data?.length;
   const membersLoading = memberQueries.some((mq) => mq.isPending);
   const totalMembers = memberQueries.reduce((n, mq) => n + (mq.data?.length ?? 0), 0);
   const boundSquadCount = (squads ?? []).filter((s) => isBound(s.id)).length;
+  const connectionCount = connections?.length ?? 0;
+  const routableRepoCount = new Set([
+    ...(connections ?? []).map((c) => c.repo).filter(Boolean),
+    ...repoDomains.map((d) => d.issue_repo),
+  ]).size;
 
   const q = query.trim().toLowerCase();
   const visibleSquads = (squads ?? []).filter((s) => {
@@ -81,7 +99,7 @@ export default function SquadsPage() {
     <PageBody>
       <PageHeader
         title="小队"
-        desc="Squad 把一组 agent 编成小队：leader 接任务并分派，reviewer 在审批时把关；仓库绑定决定 issue / PR 路由给谁。"
+        desc="Squad 把一组 agent 编成小队：leader 接任务并分派，reviewer 在审批时把关；仓库连接决定 issue / PR 投递给谁。"
         action={
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => setShowImport(true)}>导入团队</Button>
@@ -99,10 +117,10 @@ export default function SquadsPage() {
             hint: "按各小队 roster 合计",
           },
           {
-            label: "已绑仓库的小队",
+            label: "已接入仓库的小队",
             value: boundSquadCount,
             tone: boundSquadCount > 0 ? "info" : "muted",
-            hint: `共 ${repoDomains.length} 个可路由仓库`,
+            hint: `${connectionCount} 条连接 · 共 ${routableRepoCount} 个可路由仓库`,
           },
         ]}
       />
@@ -128,8 +146,8 @@ export default function SquadsPage() {
               onChange={setRepoFilter}
               options={[
                 { value: "all", label: "全部" },
-                { value: "bound", label: "已绑仓库" },
-                { value: "unbound", label: "未绑" },
+                { value: "bound", label: "已接入" },
+                { value: "unbound", label: "未接入" },
               ]}
             />
           </Toolbar>
@@ -187,7 +205,11 @@ export default function SquadsPage() {
                           {relTime(s.created_at)}创建
                         </span>
                       </div>
-                      <SquadRepos squadId={s.id} domains={domains} />
+                      <SquadRepos
+                        squadId={s.id}
+                        connections={connectionsBySquad.get(s.id)}
+                        domains={domains}
+                      />
                     </div>
 
                     <div className="flex shrink-0 items-center gap-0.5">
@@ -240,30 +262,60 @@ export default function SquadsPage() {
   );
 }
 
-// SquadRepos is the reverse view of the domain's assignee badges (契约 3.3b):
-// which tracked repos route their issues/PRs here. It links to /domains,
-// where the binding is actually edited, so the row stays a read-only summary.
-function SquadRepos({ squadId, domains }: { squadId: string; domains?: Domain[] }) {
-  const repos = (domains ?? []).filter(
-    (d) => d.issue_repo !== "" && (d.issue_assignee === squadId || d.pull_assignee === squadId),
+// SquadRepos summarizes which repos feed this squad: Connection is the primary
+// path (each has its own webhook), legacy domain assignees fall back in so
+// pre-connection bindings remain visible. Links go to the connection section.
+function SquadRepos({
+  squadId,
+  connections,
+  domains,
+}: {
+  squadId: string;
+  connections?: Connection[];
+  domains?: Domain[];
+}) {
+  const connectedRepos = Array.from(
+    new Set((connections ?? []).map((c) => c.repo).filter(Boolean)),
   );
-  if (repos.length === 0) {
-    return <div className="mt-1 text-[11px] text-ink-3">未绑定仓库</div>;
+  const legacyRepos = Array.from(
+    new Set(
+      (domains ?? [])
+        .filter(
+          (d) =>
+            d.issue_repo !== "" &&
+            (d.issue_assignee === squadId || d.pull_assignee === squadId),
+        )
+        .map((d) => d.issue_repo),
+    ),
+  );
+  if (connectedRepos.length === 0 && legacyRepos.length === 0) {
+    return <div className="mt-1 text-[11px] text-ink-3">未接入仓库</div>;
   }
+
+  const isLegacy = connectedRepos.length === 0;
+  const repos = isLegacy ? legacyRepos : connectedRepos;
+  const shown = repos.slice(0, 2);
   return (
     <div className="mt-1 flex flex-wrap items-center gap-1.5">
-      {repos.map((d) => (
+      {shown.map((repo) => (
         <Link
-          key={d.id}
-          href="/domains"
+          key={repo}
+          href={`/squads/${squadId}#repo-connections`}
           className="inline-flex max-w-full items-center gap-1.5 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-ink-3 transition-colors hover:border-line-strong hover:text-ink-2"
-          title={d.issue_repo}
+          title={repo}
         >
-          <span className="truncate">{d.issue_repo}</span>
-          {d.issue_assignee === squadId && <span className="shrink-0 text-accent">issue</span>}
-          {d.pull_assignee === squadId && <span className="shrink-0 text-accent">PR</span>}
+          <span className="truncate">{repo}</span>
         </Link>
       ))}
+      {repos.length > 2 && (
+        <span
+          className="font-mono text-[10px] text-ink-3"
+          title={repos.slice(2).join("、")}
+        >
+          +{repos.length - 2}
+        </span>
+      )}
+      {isLegacy && <span className="font-mono text-[10px] text-ink-3">旧绑定</span>}
     </div>
   );
 }

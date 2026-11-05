@@ -58,6 +58,9 @@ type Handlers struct {
 	TemplateApply *service.TemplateApplyService
 	// Intake is the NL intake pipeline (Feishu IM + Web assistant).
 	Intake *notify.IntakeService
+	// Connection is the first-class squad ↔ repo binding: each row owns its
+	// own webhook path + secret (contract: 仓库连接).
+	Connection *service.ConnectionService
 }
 
 func (h *Handlers) Mount(mux *http.ServeMux) {
@@ -150,6 +153,17 @@ func (h *Handlers) Mount(mux *http.ServeMux) {
 	// (an empty string clears it, falling back to platform.webhook_secret).
 	mux.HandleFunc("PUT /domains/{id}/webhook/secret", h.setDomainWebhookSecret)
 	mux.HandleFunc("PATCH /domains/{id}/assignees", h.patchDomainAssignees)
+
+	// Repository connections (contract §3): every squad↔repo binding has its
+	// OWN /webhooks/{provider}/{connectionID} endpoint + secret, so two
+	// squads on one repo no longer overwrite each other.
+	mux.HandleFunc("GET /connections", h.listConnections)
+	mux.HandleFunc("POST /squads/{id}/connections", h.createSquadConnection)
+	mux.HandleFunc("PATCH /connections/{id}", h.updateConnection)
+	mux.HandleFunc("DELETE /connections/{id}", h.deleteConnection)
+	mux.HandleFunc("GET /connections/{id}/webhook", h.getConnectionWebhook)
+	mux.HandleFunc("POST /connections/{id}/webhook/register", h.registerConnectionWebhook)
+	mux.HandleFunc("POST /webhooks/{provider}/{connectionID}", h.connectionWebhook)
 
 	mux.HandleFunc("GET /gate-decisions/stats", h.gateStats)
 

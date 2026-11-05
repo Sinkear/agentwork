@@ -37,6 +37,10 @@ type Goal struct {
 	CreatedByID     string `json:"created_by_id"`
 	CreatedAt       string `json:"created_at"`
 	SourceRef       string `json:"source_ref"` // external source (M4-B): "github:owner/repo#123"
+	// ConnectionID is the repo connection that ingested this goal ('' = the
+	// legacy repo-level issue/pull binding). Several connections may watch the
+	// same repo — one per squad — and each owns its own goal per issue/PR.
+	ConnectionID string `json:"connection_id,omitempty"`
 	// Attention is the v2 derived OwnerAttention persisted by ReconcileGoal
 	// (决策 6-8): '' | integration | wrapup | recovery | user_action (comma-joined).
 	// integration = ready changes to merge; wrapup = verified sub-goals with no
@@ -252,9 +256,9 @@ func (s *GoalService) Create(ctx context.Context, g Goal) (*Goal, error) {
 		domainID = g.DomainID
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO goal (id,title,description,domain_id,assignee_type,assignee_id,status,handoff_note,created_by_type,created_by_id,created_at,source_ref)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		g.ID, g.Title, g.Description, domainID, g.AssigneeType, g.AssigneeID, g.Status, g.HandoffNote, g.CreatedByType, g.CreatedByID, g.CreatedAt, g.SourceRef); err != nil {
+		`INSERT INTO goal (id,title,description,domain_id,assignee_type,assignee_id,status,handoff_note,created_by_type,created_by_id,created_at,source_ref,connection_id)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		g.ID, g.Title, g.Description, domainID, g.AssigneeType, g.AssigneeID, g.Status, g.HandoffNote, g.CreatedByType, g.CreatedByID, g.CreatedAt, g.SourceRef, g.ConnectionID); err != nil {
 		return nil, fmt.Errorf("insert goal: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -319,7 +323,7 @@ func (s *GoalService) Create(ctx context.Context, g Goal) (*Goal, error) {
 
 func (s *GoalService) List(ctx context.Context) ([]Goal, error) {
 	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.attention,
+		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.connection_id,g.attention,
 		        (SELECT r.agent_id FROM run r WHERE r.goal_id = g.id AND r.status IN ('running','queued') ORDER BY r.created_at DESC LIMIT 1),
 		        CASE WHEN g.status != 'review' THEN ''
 		     WHEN (SELECT COUNT(*) FROM run r WHERE r.goal_id=g.id AND r.role='review' AND r.status IN ('queued','running')) = 0 THEN 'awaiting_approval'
@@ -334,7 +338,7 @@ func (s *GoalService) List(ctx context.Context) ([]Goal, error) {
 	for rows.Next() {
 		var g Goal
 		var domainID, currentAgent sql.NullString
-		if err := rows.Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.Attention, &currentAgent, &g.ReviewPhase); err != nil {
+		if err := rows.Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.ConnectionID, &g.Attention, &currentAgent, &g.ReviewPhase); err != nil {
 			return nil, err
 		}
 		g.DomainID = domainID.String
@@ -490,14 +494,14 @@ func (s *GoalService) Get(ctx context.Context, id string) (*Goal, error) {
 	var g Goal
 	var domainID, currentAgent sql.NullString
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.attention,
+		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.connection_id,g.attention,
 		        (SELECT r.agent_id FROM run r WHERE r.goal_id = g.id AND r.status IN ('running','queued') ORDER BY r.created_at DESC LIMIT 1),
 		        CASE WHEN g.status != 'review' THEN ''
 		     WHEN (SELECT COUNT(*) FROM run r WHERE r.goal_id=g.id AND r.role='review' AND r.status IN ('queued','running')) = 0 THEN 'awaiting_approval'
 		     WHEN (SELECT COUNT(*) FROM run r WHERE r.goal_id=g.id AND r.role='review' AND r.status='running') > 0 THEN 'reviewing'
 		     ELSE 'awaiting_review' END
 		 FROM goal g WHERE g.id=?`, id).
-		Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.Attention, &currentAgent, &g.ReviewPhase)
+		Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.ConnectionID, &g.Attention, &currentAgent, &g.ReviewPhase)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

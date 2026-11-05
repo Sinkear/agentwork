@@ -193,13 +193,13 @@ CREATE TABLE IF NOT EXISTS goal (
     created_by_id    TEXT NOT NULL DEFAULT '',
     created_at       TEXT NOT NULL,
     source_ref       TEXT NOT NULL DEFAULT '',     -- external source (M4-B): "github:owner/repo#123" — one goal per issue
+    connection_id    TEXT NOT NULL DEFAULT '',     -- repo connection that ingested this goal ('' = legacy repo-level binding)
     execution_attempt INTEGER NOT NULL DEFAULT 0,  -- v2 (决策 6-9): machine-retry counter, authoritative; run.attempt is just the instance ordinal
     attention        TEXT NOT NULL DEFAULT ''      -- v2 (决策 6-8): derived OwnerAttention persisted by Reconcile ('' | integration|wrapup|recovery|user_action)
 );
 
 CREATE INDEX IF NOT EXISTS idx_goal_assignee ON goal(assignee_type, assignee_id);
 CREATE INDEX IF NOT EXISTS idx_goal_status ON goal(status);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_goal_source_ref ON goal(source_ref) WHERE source_ref != '';
 
 -- run: one execution of a goal by one agent (execution plane). No authority:
 -- on terminal status the daemon calls GoalService.reconcileOnRunEnd(run),
@@ -511,3 +511,20 @@ CREATE TABLE IF NOT EXISTS agent_pin (
     created_at TEXT NOT NULL,                 -- RFC3339Nano; pin time, drives sidebar order
     PRIMARY KEY (agent_id)
 );
+-- connection: a first-class squad ↔ repository binding. Each row owns its
+-- OWN webhook path (/webhooks/{provider}/{id}) and secret, so two squads (or
+-- one squad twice) can track the same repository without overwriting each
+-- other's host hook / assignee. events is a comma-separated subset of
+-- "issues,pull_request".
+CREATE TABLE IF NOT EXISTS connection (
+    id         TEXT PRIMARY KEY,
+    squad_id   TEXT NOT NULL,
+    domain_id  TEXT NOT NULL,
+    provider   TEXT NOT NULL DEFAULT 'github',                    -- github | gitcode
+    repo       TEXT NOT NULL,                                     -- owner/repo
+    events     TEXT NOT NULL DEFAULT 'issues,pull_request',
+    secret     TEXT NOT NULL DEFAULT '',                          -- per-connection signing secret
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_connection_squad ON connection(squad_id);
+CREATE INDEX IF NOT EXISTS idx_connection_domain ON connection(domain_id);

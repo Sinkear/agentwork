@@ -106,6 +106,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		AgentPin:   service.NewAgentPinService(s.st, s.bus),
 		TeamImport: s.teamImportSvc,
 		Intake:     s.intakeSvc,
+		Connection: service.NewConnectionService(s.st, s.bus),
 		// M4-B: the real-time issue triggers (github + gitcode) share the
 		// poller's create path (source_ref idempotency makes webhook + poll
 		// racing safe). A repo's own webhook_secret wins over the

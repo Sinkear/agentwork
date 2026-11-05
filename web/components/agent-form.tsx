@@ -5,6 +5,26 @@ import { useCreateAgent, useUpdateAgent, useRuntimes, useSkills } from "@/lib/qu
 import type { Agent, McpServer } from "@/lib/types";
 import { Button, Dialog, Field, inputCls } from "@/components/ui";
 
+// 常用模型清单：只是输入便利，不限制可用模型——不在清单里的用「自定义…」。
+// 提交时仍然只写 agent.model 字段，后端/平台不感知这份清单。
+const COMMON_MODELS: string[] = [
+  // Claude
+  "claude-sonnet-4-5",
+  "claude-opus-4-1",
+  "claude-haiku-4-5",
+  // GPT
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-4.1",
+  // Gemini
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  // DeepSeek
+  "deepseek-chat",
+  "deepseek-reasoner",
+];
+const CUSTOM_MODEL = "__custom__";
+
 // KVRows is a name-value pair list editor (env vars / headers) — a "+"
 // appends an empty row, ✕ removes one. Rows carry {name, value} (the acp
 // wire shape), so the form never touches JSON.
@@ -58,6 +78,14 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
   const [runtimeId, setRuntimeId] = useState(agent?.runtime_id ?? "");
   const [systemPrompt, setSystemPrompt] = useState(agent?.system_prompt ?? "");
   const [model, setModel] = useState(agent?.model ?? "");
+  // 编辑已有 agent 时，model 不在常用清单里 → 自动落到「自定义…」并回填。
+  const [customModel, setCustomModel] = useState(
+    () => Boolean(agent?.model) && !COMMON_MODELS.includes(agent?.model ?? "")
+  );
+  // 记住上一次手输的模型 ID：在「常用项 ↔ 自定义…」之间来回切时不丢输入。
+  const [customDraft, setCustomDraft] = useState(() =>
+    Boolean(agent?.model) && !COMMON_MODELS.includes(agent?.model ?? "") ? (agent?.model ?? "") : ""
+  );
   const [envRows, setEnvRows] = useState<{ name: string; value: string }[]>(
     agent?.env ? Object.entries(agent.env).map(([name, value]) => ({ name, value })) : []
   );
@@ -162,7 +190,40 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
         </Field>
 
         <Field label="Model" hint="留空用 runtime 默认">
-          <input value={model} onChange={(e) => setModel(e.target.value)} className={inputCls} />
+          <select
+            value={customModel ? CUSTOM_MODEL : model}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === CUSTOM_MODEL) {
+                setCustomModel(true);
+                // 回到上次手输的值；首次进入自定义时 customDraft 为空。
+                setModel(customDraft);
+              } else {
+                if (customModel) setCustomDraft(model);
+                setCustomModel(false);
+                setModel(v);
+              }
+            }}
+            className={inputCls}
+          >
+            <option value="">runtime 默认（留空）</option>
+            {COMMON_MODELS.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+            <option value={CUSTOM_MODEL}>自定义…</option>
+          </select>
+          {customModel && (
+            <input
+              value={model}
+              onChange={(e) => {
+                setModel(e.target.value);
+                setCustomDraft(e.target.value);
+              }}
+              className={`${inputCls} mt-1.5`}
+              placeholder="输入模型 ID，如 claude-opus-4-1"
+              aria-label="自定义模型 ID"
+            />
+          )}
         </Field>
 
         <details className="text-xs">

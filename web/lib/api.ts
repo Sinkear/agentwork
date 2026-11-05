@@ -1,4 +1,4 @@
-import type { Runtime, Agent, Goal, Run, Comment, Squad, SquadMember, Schedule, Domain, Checks, TimelineItem, TeamImportResponse, TemplateSummary, TemplateDetail, ApplySquadOverrides, ApplySquadResult, ApplyProjectOverrides, ApplyProjectResult, TemplateFetchResult, WebhookStatus, WebhookRegisterResult } from "./types";
+import type { Runtime, Agent, Goal, Run, Comment, Squad, SquadMember, Schedule, Domain, Checks, TimelineItem, TeamImportResponse, TemplateSummary, TemplateDetail, ApplySquadOverrides, ApplySquadResult, ApplyProjectOverrides, ApplyProjectResult, TemplateFetchResult, WebhookStatus, WebhookRegisterResult, Connection, ConnectionWebhookStatus } from "./types";
 
 // 默认走同源 /backend/*（Next rewrites 转发到本机 daemon 47813）——反代出
 // 去时浏览器无需直连 daemon。本地直连场景可显式设置 NEXT_PUBLIC_API_URL。
@@ -251,6 +251,30 @@ export const patchDomainAssignees = (
 // falls back to the platform secret; the same secret is used by deliveries.
 export const setDomainWebhookSecret = (id: string, secret: string) =>
   api<Domain>(`/domains/${id}/webhook/secret`, { method: "PUT", body: JSON.stringify({ secret }) });
+// ── Connection（仓库连接：per-connection webhook 地址与 secret） ──
+// 同一仓库可以被多个小队各建一条 connection，各自有独立的
+// /webhooks/{provider}/{id} 端点，注册 hook 时互不覆盖。
+export const listConnections = (squadId?: string) =>
+  api<Connection[]>(`/connections${squadId ? `?squad_id=${encodeURIComponent(squadId)}` : ""}`);
+// Create returns the connection with a one-time plaintext `secret` field.
+export const createSquadConnection = (
+  squadId: string,
+  body: { domain_id: string; events?: string[]; secret?: string },
+) => api<Connection>(`/squads/${squadId}/connections`, { method: "POST", body: JSON.stringify(body) });
+export const updateConnection = (
+  id: string,
+  body: { events?: string[]; secret?: string },
+) => api<Connection>(`/connections/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+export const deleteConnection = (id: string) =>
+  api<void>(`/connections/${id}`, { method: "DELETE" });
+export const getConnectionWebhook = (id: string) =>
+  api<ConnectionWebhookStatus>(`/connections/${id}/webhook`);
+// Register the host repo's webhook for THIS connection (github only). The
+// URL must be exactly the connection's endpoint (origin + webhook_path).
+export const registerConnectionWebhook = (
+  id: string,
+  body: { url: string; events?: string[] },
+) => api<WebhookRegisterResult>(`/connections/${id}/webhook/register`, { method: "POST", body: JSON.stringify(body) });
 export const stopRun = (goalId: string, runId: string) =>
   api<void>(`/goals/${goalId}/runs/${runId}/stop`, { method: "POST" });
 
