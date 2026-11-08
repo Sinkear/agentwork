@@ -6,6 +6,7 @@ import Link from "next/link";
 import { ArrowRight, Check, Loader2, PenLine, Send, Sparkles, Trash2 } from "lucide-react";
 import { PageBody, PageHeader, SectionCard, Button, inputCls } from "@/components/ui";
 import { NewGoalForm } from "@/components/new-goal-form";
+import { StewardSetup } from "@/components/steward-setup";
 import { AcpChatClient, ChatEvent, PermissionRequest } from "@/lib/acp";
 import { listAgents, listGoals } from "@/lib/api";
 import { describeStewardFailure } from "@/lib/steward";
@@ -87,7 +88,7 @@ export default function NewGoalPage() {
       : (await listAgents()).find((a) => a.type === "steward");
     if (!steward) {
       setPhase("failed");
-      setError("还没有管家 agent——先连一台机器并重启服务，平台会自动创建管家。");
+      setError("还没有管家 agent。管家只会自动绑定 hwcloud CLI；可以在这里或「对话」页立即手动创建。");
       throw new Error("no steward");
     }
     stewardRef.current = steward.id;
@@ -227,6 +228,11 @@ export default function NewGoalPage() {
               desc="写目标就行，不用写实现步骤——管家会按平台的规矩补负责人和项目。"
             >
               <div className="space-y-3 p-4">
+                <StewardSetup
+                  onCreated={(id) => {
+                    stewardRef.current = id;
+                  }}
+                />
                 <textarea
                   autoFocus
                   value={text}

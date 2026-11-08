@@ -6,7 +6,7 @@ export async function describeStewardFailure(stewardId: string | null): Promise<
   try {
     const agents = await listAgents();
     const st = agents.find((a) => a.id === stewardId) ?? agents.find((a) => a.type === "steward");
-    if (!st) return "还没有管家 agent——先连一台机器并重启服务，平台会自动创建管家。";
+    if (!st) return "还没有管家 agent。管家只会自动绑定 hwcloud CLI；可以在「对话」页或「智能体」页手动创建一个。";
     if (!st.runtime_id) return "管家还没绑定运行时——去「智能体」页给它挑一台机器上的运行时。";
     const rts = await listRuntimes();
     const rt = rts.find((r) => r.id === st.runtime_id);
