@@ -169,7 +169,7 @@ func TestDeleteAgentSucceedsAtZeroRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "do it", worker, "", "agent", owner)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "do it", worker, "", nil, "agent", owner)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}

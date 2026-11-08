@@ -368,7 +368,7 @@ func TestSubGoalDispatchCommentChains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "子任务一", "实现登录", worker, "", "agent", owner)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "子任务一", "实现登录", worker, "", nil, "agent", owner)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestScratchSubGoalsAreNoCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "拆活", "子任务", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "拆活", "子任务", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("scratch goals must split (no-code sub-goals): %v", err)
 	}
@@ -580,10 +580,10 @@ func TestSubGoalRejectsReviewerAssignee(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := gs.CreateSubGoal(ctx, g.ID, "拆给审查者", "工作项", reviewer, "", "agent", leader); err == nil {
+	if _, err := gs.CreateSubGoal(ctx, g.ID, "拆给审查者", "工作项", reviewer, "", nil, "agent", leader); err == nil {
 		t.Fatal("dispatching work to a reviewer must be rejected (reviewers only review)")
 	}
-	if _, err := gs.CreateSubGoal(ctx, g.ID, "拆给干活的", "工作项", worker, "", "agent", leader); err != nil {
+	if _, err := gs.CreateSubGoal(ctx, g.ID, "拆给干活的", "工作项", worker, "", nil, "agent", leader); err != nil {
 		t.Fatalf("dispatching to a non-reviewer member must work: %v", err)
 	}
 }

@@ -239,7 +239,7 @@ func TestCreateSubGoal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, parent.ID, "work item", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, parent.ID, "work item", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestSubGoalRunLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestSubGoalRetryThenFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -637,7 +637,7 @@ func TestVerifierFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, qa, "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, qa, nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -743,7 +743,7 @@ func TestVerifySubGoalPermission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, qa, "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, qa, nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -805,7 +805,7 @@ func TestMarkChangeIntegratedConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -897,7 +897,7 @@ func TestGoalCancelDeleteCascade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -927,7 +927,7 @@ func TestGoalCancelDeleteCascade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal2: %v", err)
 	}
-	sg2, err := gs.CreateSubGoal(ctx, g2.ID, "work item 2", "sub", b, "", "agent", a)
+	sg2, err := gs.CreateSubGoal(ctx, g2.ID, "work item 2", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal 2: %v", err)
 	}
@@ -975,7 +975,7 @@ func TestOwnerRunStaysActiveWithPendingWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -1060,7 +1060,7 @@ func TestReconcileGoalNoRespawnWithoutProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -1121,7 +1121,7 @@ func TestAttentionClearsAfterIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -1284,7 +1284,7 @@ func TestRetrySubGoalResetsFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "desc", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "desc", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -1322,7 +1322,7 @@ func TestRetrySubGoalRejectsNonFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "desc", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "desc", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}

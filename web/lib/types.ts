@@ -290,6 +290,7 @@ export interface SubGoal {
   status: string; // running | verifying | verified | rejected | cancelled | failed
   execution_attempt: number;
   quality_iteration: number;
+  depends_on?: string[]; // 前置子任务 id 列表——全部 verified 后才释放执行
   created_at: string;
 }
 

@@ -39,7 +39,7 @@ func TestWakeNoteSurvivesReconcile(t *testing.T) {
 	}
 	// The verified sub-goal: its run finished just now, no Change — the
 	// deliverable lives in the feed (决策 6-8).
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "审核并修复 README.md", "核对 README 声明", owner, "", "agent", owner)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "审核并修复 README.md", "核对 README 声明", owner, "", nil, "agent", owner)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestWakeNoteRecoveryAndReadyEnglish(t *testing.T) {
 		`UPDATE run SET status='completed', queued_at='2020-01-01T00:00:00Z', finished_at='2020-01-01T00:01:00Z' WHERE goal_id=? AND role='owner'`, g.ID); err != nil {
 		t.Fatal(err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "Implement OAuth", "Add the OAuth handshake", owner, "", "agent", owner)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "Implement OAuth", "Add the OAuth handshake", owner, "", nil, "agent", owner)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}

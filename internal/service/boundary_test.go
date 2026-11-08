@@ -24,7 +24,7 @@ func TestCreateSubGoalRejectsNonActive(t *testing.T) {
 		if _, err := st.DB().ExecContext(ctx, `UPDATE goal SET status=? WHERE id=?`, status, g.ID); err != nil {
 			t.Fatal(err)
 		}
-		_, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", "agent", a)
+		_, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", nil, "agent", a)
 		if !errors.Is(err, ErrValidation) {
 			t.Fatalf("%s goal must reject sub-goal creation, got %v", status, err)
 		}
@@ -33,7 +33,7 @@ func TestCreateSubGoalRejectsNonActive(t *testing.T) {
 	if _, err := st.DB().ExecContext(ctx, `UPDATE goal SET status='active' WHERE id=?`, g.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", "agent", a); err != nil {
+	if _, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", nil, "agent", a); err != nil {
 		t.Fatalf("active goal must allow sub-goal creation, got %v", err)
 	}
 }
@@ -54,7 +54,7 @@ func TestVerifySubGoalVerifierIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, qa, "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, qa, nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestConflictDoesNotArmAttention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestAttentionNotArmedForNonActiveGoals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestReconcileAllActiveReArmsAttention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -591,7 +591,7 @@ func TestWrapUpAttentionAfterNoChangeVerification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -700,7 +700,7 @@ func TestConflictedChangeCannotBeReIntegrated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}

@@ -344,7 +344,7 @@ export function useSubGoals(goalId: string) {
 export function useCreateSubGoal() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ goalId, ...body }: { goalId: string; title: string; description?: string; assignee_id: string; verifier_id?: string }) =>
+    mutationFn: ({ goalId, ...body }: { goalId: string; title: string; description?: string; assignee_id: string; verifier_id?: string; depends_on?: string[] }) =>
       createSubGoal(goalId, body),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: qk.goalSubGoals(vars.goalId) });

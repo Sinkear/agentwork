@@ -1438,12 +1438,13 @@ func (h *Handlers) createSubGoal(w http.ResponseWriter, r *http.Request) {
 		Description string `json:"description"`
 		AssigneeID  string `json:"assignee_id"`
 		VerifierID  string `json:"verifier_id"`
+		DependsOn   []string `json:"depends_on"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	// HTTP = the human's surface (决策 6-1: human can split work).
-	out, err := h.Goal.CreateSubGoal(r.Context(), r.PathValue("id"), body.Title, body.Description, body.AssigneeID, body.VerifierID, "human", "")
+	out, err := h.Goal.CreateSubGoal(r.Context(), r.PathValue("id"), body.Title, body.Description, body.AssigneeID, body.VerifierID, body.DependsOn, "human", "")
 	writeJSON(w, out, err)
 }

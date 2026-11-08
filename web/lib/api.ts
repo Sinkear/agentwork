@@ -139,7 +139,7 @@ export const continueGoal = (id: string) =>
 export const listSubGoals = (goalId: string) => api<import("./types").SubGoal[]>(`/goals/${goalId}/sub-goals`);
 export const createSubGoal = (
   goalId: string,
-  body: { title: string; description?: string; assignee_id: string; verifier_id?: string }
+  body: { title: string; description?: string; assignee_id: string; verifier_id?: string; depends_on?: string[] }
 ) => api<import("./types").SubGoal>(`/goals/${goalId}/sub-goals`, { method: "POST", body: JSON.stringify(body) });
 // A sub-goal's verification rounds (v2: the audit trail behind verified/rejected).
 export const listSubGoalVerifications = (goalId: string, subGoalId: string) =>

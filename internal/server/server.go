@@ -638,7 +638,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 			if err := json.Unmarshal(raw, &p); err != nil || p.Title == "" || p.AssigneeID == "" {
 				return nil, &link.RPCError{Code: link.CodeInvalidParams, Message: "title and assignee_id are required"}
 			}
-			sg, err := s.goalSvc.CreateSubGoal(ctx, id.GoalID, p.Title, p.Description, p.AssigneeID, p.VerifierID, "agent", id.AgentID)
+			sg, err := s.goalSvc.CreateSubGoal(ctx, id.GoalID, p.Title, p.Description, p.AssigneeID, p.VerifierID, p.DependsOn, "agent", id.AgentID)
 			if err != nil {
 				return nil, &link.RPCError{Code: link.CodeInternal, Message: err.Error()}
 			}
