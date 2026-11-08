@@ -232,8 +232,10 @@ func (s *RSIService) Retry(ctx context.Context, sessionID string) error {
 		}
 		return err
 	}
-	if status != "failed" && status != "ready" {
-		return NewValidationError("session is not retryable (only failed/ready sessions can be re-analyzed)")
+	// waiting is retryable: covers a goal that reached a terminal state
+	// before the RSI hook existed (backfill), and re-analysis on demand.
+	if status != "failed" && status != "ready" && status != "waiting" {
+		return NewValidationError("session is not retryable (only waiting/failed/ready sessions can be re-analyzed)")
 	}
 	if _, err := s.st.DB().ExecContext(ctx,
 		`UPDATE training_session SET status='analyzing', error='', finished_at='' WHERE id=?`, sessionID); err != nil {

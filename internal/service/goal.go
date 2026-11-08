@@ -2768,6 +2768,12 @@ func (s *GoalService) MarkDelivered(ctx context.Context, goalID string, success 
 	s.bus.Publish(ctx, events.Event{Topic: event, Payload: map[string]any{
 		"goal_id": goalID, "note": note, "commits": fixCommits,
 	}})
+	// W-RSI: deliver success is a terminal path that bypasses done()/failed()
+	// — hook the training freeze here too, or a train goal that completes via
+	// deliver never analyzes (live: session stuck 'waiting' after goal done).
+	if success && s.rsi != nil {
+		s.rsi.OnGoalTerminal(context.Background(), goalID)
+	}
 	return s.Get(ctx, goalID)
 }
 
