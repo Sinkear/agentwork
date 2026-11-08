@@ -35,6 +35,8 @@ R<n> goal (execution_mode=train, assignee=squad self-iter)
 1. runtime 必须 machine 挂靠——无 machine 的 runtime 被 daemon 拒绝 spawn（`agentwork connect` 是唯一正道）。
 2. opencode v2.2.5 不认 `acp --pure`（打印 usage 即退出 → "transport closed"），探测表已修为 `opencode acp`。
 3. 域名 git_url 用 SSH；HTTPS 走 ghfast.top 代理只读可通、push 无凭证必败。
+4. **GitHub main 有 repository rule 禁直推**（deliver push 被拒）→ 已建不受保护集成分支 `agentwork-int`，domain.default_branch 已指向它；每轮 deliver 合并进 agentwork-int，人工定期 PR 到 main。
+5. train goal 经 review 批准→deliver 完成时才触发训练分析（MarkDelivered 已接 OnGoalTerminal）；若分析缺失用 `POST /rsi/sessions/{id}/retry` 兜底。
 
 ## 3. 每轮操作（人 = 编排者）
 
