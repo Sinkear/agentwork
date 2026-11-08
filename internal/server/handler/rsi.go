@@ -33,14 +33,15 @@ func (h *Handlers) listRsiSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out, err)
 }
 
-// getRsiSession returns one session with its report, findings and spans.
+// getRsiSession returns one session with its report, findings and the
+// orchestration graph (frozen at analysis time, or live-built while waiting).
 func (h *Handlers) getRsiSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if h.RSI == nil {
 		writeErr(w, http.StatusNotFound, service.ErrNotFound)
 		return
 	}
-	session, report, findings, spans, err := h.RSI.GetSession(r.Context(), id)
+	session, report, findings, graph, err := h.RSI.GetSession(r.Context(), id)
 	if err != nil {
 		writeJSON(w, nil, err)
 		return
@@ -48,15 +49,27 @@ func (h *Handlers) getRsiSession(w http.ResponseWriter, r *http.Request) {
 	if findings == nil {
 		findings = []service.RsiFinding{}
 	}
-	if spans == nil {
-		spans = []service.RsiSpan{}
-	}
 	writeJSON(w, map[string]any{
 		"session":  session,
 		"report":   report,
 		"findings": findings,
-		"spans":    spans,
+		"workflow": graph,
 	}, nil)
+}
+
+// listRsiRounds serves the insight panel's optimization-round ledger for one
+// session: every frozen analysis round with its delta vs the previous round.
+func (h *Handlers) listRsiRounds(w http.ResponseWriter, r *http.Request) {
+	if h.RSI == nil {
+		writeErr(w, http.StatusNotFound, service.ErrNotFound)
+		return
+	}
+	rounds, err := h.RSI.ListRounds(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	writeJSON(w, rounds, nil)
 }
 
 // rsiOverview returns aggregate training metrics over the last N days.
@@ -75,6 +88,36 @@ func (h *Handlers) rsiOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := h.RSI.Overview(r.Context(), days)
+	writeJSON(w, out, err)
+}
+
+// goalWorkflow returns the live orchestration graph for one goal.
+func (h *Handlers) goalWorkflow(w http.ResponseWriter, r *http.Request) {
+	if h.RSI == nil {
+		writeErr(w, http.StatusNotFound, service.ErrNotFound)
+		return
+	}
+	graph, err := h.RSI.GoalWorkflow(r.Context(), r.PathValue("goalId"))
+	writeJSON(w, graph, err)
+}
+
+// squadWorkflows returns compact workflow summaries for a squad's recent
+// goals — orchestration visibility for the squad page.
+func (h *Handlers) squadWorkflows(w http.ResponseWriter, r *http.Request) {
+	if h.RSI == nil {
+		writeJSON(w, []service.WorkflowGoalSummary{}, nil)
+		return
+	}
+	limit := 10
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 50 {
+			limit = n
+		}
+	}
+	out, err := h.RSI.SquadWorkflows(r.Context(), r.PathValue("squadId"), limit)
+	if out == nil {
+		out = []service.WorkflowGoalSummary{}
+	}
 	writeJSON(w, out, err)
 }
 

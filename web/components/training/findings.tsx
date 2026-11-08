@@ -54,13 +54,13 @@ export function TrainingFindings({ detail }: { detail: RsiDetail }) {
   };
 
   if (findings.length === 0) {
-    const inFlight = ["waiting", "collecting", "analyzing"].includes(detail.session.status);
+    const inFlight = ["waiting", "analyzing"].includes(detail.session.status);
     return (
       <SectionCard title="发现">
         <Empty icon={<EyeOff className="h-5 w-5" />}>
           {inFlight
-            ? "分析还在进行；报告生成后这里会列出命中的瓶颈。"
-            : "本次分析没有命中瓶颈规则：要么执行过程没有明显异常，要么样本太少不足以判定。"}
+            ? "分析还在进行；报告生成后这里会列出命中的结构/分派/信息流瓶颈。"
+            : "本次分析没有命中结构规则：要么编排没有明显异常，要么样本太少不足以判定。"}
         </Empty>
       </SectionCard>
     );
@@ -112,7 +112,15 @@ export function TrainingFindings({ detail }: { detail: RsiDetail }) {
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-3">
                   <span>{categoryLabel(f.category)}</span>
-                  <span title={conf.desc}>置信度 {conf.label}</span>
+                  <span className="inline-flex items-center gap-1">
+                    置信度
+                    <span
+                      className="rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-[10px] text-ink-2"
+                      title={conf.desc}
+                    >
+                      {conf.label}
+                    </span>
+                  </span>
                   <span title={evidence.join("\n")}>证据 {evidence.length} 条</span>
                   <span className="font-mono tabular-nums">score {scoreText(f.score)}</span>
                 </div>
@@ -137,9 +145,7 @@ export function TrainingFindings({ detail }: { detail: RsiDetail }) {
                       <EyeOff className="mr-1 h-3.5 w-3.5" /> 忽略
                     </Button>
                   </>
-                ) : (
-                  <FindingStatusChip status={f.status} />
-                )}
+                ) : null}
               </div>
             </header>
 

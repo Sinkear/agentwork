@@ -300,18 +300,11 @@ func toJSONString(v any) string {
 }
 func (f *eventForwarder) OnPlan(acp.Plan)                                  {}
 func (f *eventForwarder) OnAvailableCommandsUpdate([]acp.AvailableCommand) {}
-func (f *eventForwarder) OnModeUpdate(acp.SessionModeId)                   {}
-func (f *eventForwarder) OnConfigOptionUpdate([]acp.SessionConfigOption)   {}
-func (f *eventForwarder) OnUsageUpdate(used, total int, cost *acp.Cost) {
-	ev := proto.Event{
-		Type:        proto.EventUsage,
-		ContextUsed: used,
-		ContextSize: total,
-	}
-	if cost != nil {
-		ev.CostUSD = cost.Amount
-		ev.Currency = cost.Currency
-	}
-	f.push(ev)
-}
+func (f *eventForwarder) OnModeUpdate(acp.SessionModeId)                 {}
+func (f *eventForwarder) OnConfigOptionUpdate([]acp.SessionConfigOption) {}
+
+// OnUsageUpdate is a no-op since W-RSI (2026-11-08): usage spans retired —
+// the workflow analyzer reads entity tables only.
+func (f *eventForwarder) OnUsageUpdate(int, int, *acp.Cost) {}
+
 func (f *eventForwarder) OnSessionInfo(string, map[string]any)             {}

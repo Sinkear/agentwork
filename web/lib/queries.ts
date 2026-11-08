@@ -80,8 +80,11 @@ import {
   listRsiSessions,
   getRsiSession,
   getRsiOverview,
+  listRsiRounds,
   updateRsiFinding,
   retryRsiSession,
+  getGoalWorkflow,
+  listSquadWorkflows,
 } from "./api";
 import { useWSEvent } from "./ws";
 import type {
@@ -89,6 +92,7 @@ import type {
   ApplySquadOverrides,
   ApplyProjectOverrides,
   RsiDetail,
+  RsiRound,
   RsiSession,
 } from "./types";
 
@@ -125,6 +129,10 @@ export const qk = {
   rsiSessions: ["rsi", "sessions"] as const,
   rsiSession: (id: string) => ["rsi", "sessions", id] as const,
   rsiOverview: (days: number) => ["rsi", "overview", days] as const,
+  rsiRounds: (id: string) => ["rsi", "sessions", id, "rounds"] as const,
+  workflowGoal: (goalId: string) => ["workflows", "goals", goalId] as const,
+  workflowSquad: (squadId: string, limit: number) =>
+    ["workflows", "squads", squadId, limit] as const,
   templates: ["templates"] as const,
   templatesByType: (type: string) => ["templates", { type }] as const,
   template: (kind: string, id: string) => ["templates", kind, id] as const,
@@ -863,13 +871,11 @@ export function useRsiSessions() {
   return useQuery({
     queryKey: qk.rsiSessions,
     queryFn: () => listRsiSessions(),
-    // 有会话还在采集/分析时，列表每 10s 刷新一次，状态自己走完；
+    // 有会话还在等待/分析时，列表每 10s 刷新一次，状态自己走完；
     // 全部终态就停，避免常驻轮询。
     refetchInterval: (query) => {
       const rows = query.state.data as RsiSession[] | undefined;
-      const active = rows?.some(
-        (s) => s.status === "waiting" || s.status === "collecting" || s.status === "analyzing"
-      );
+      const active = rows?.some((s) => s.status === "waiting" || s.status === "analyzing");
       return active ? 10_000 : false;
     },
   });
@@ -879,18 +885,28 @@ export function useRsiDetail(id: string) {
     queryKey: qk.rsiSession(id),
     queryFn: () => getRsiSession(id),
     enabled: !!id,
-    // 终态前 5s 轮询：collecting/analyzing 是后台 job，状态会自己往前走。
+    // 终态前 5s 轮询：analyzing 是后台 job，状态会自己往前走。
     // 终态（ready/failed/skipped）停轮询，别让详情页一直打后端。
     refetchInterval: (query) => {
       const status = (query.state.data as RsiDetail | undefined)?.session?.status;
-      return status === "waiting" || status === "collecting" || status === "analyzing"
-        ? 5000
-        : false;
+      return status === "waiting" || status === "analyzing" ? 5000 : false;
     },
   });
 }
 export function useRsiOverview(days = 30) {
   return useQuery({ queryKey: qk.rsiOverview(days), queryFn: () => getRsiOverview(days) });
+}
+/**
+ * 优化轮次账本。轮次只在分析完成后追加，所以会话还在 waiting/analyzing 时
+ * 由详情页传 active=true 做轮询；终态后停掉（手动重跑会被 invalidate 重新拉取）。
+ */
+export function useRsiRounds(id: string, active = false) {
+  return useQuery({
+    queryKey: qk.rsiRounds(id),
+    queryFn: () => listRsiRounds(id),
+    enabled: !!id,
+    refetchInterval: active ? 5000 : false,
+  });
 }
 export function useUpdateRsiFinding() {
   const qc = useQueryClient();
@@ -907,5 +923,24 @@ export function useRetryRsiSession() {
   return useMutation({
     mutationFn: retryRsiSession,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["rsi"] }),
+  });
+}
+
+// ── 编排图（W-RSI v2） ──
+// live 图只读；goal 详情打开时拉一次，切回窗口时 TanStack 会自动 refetch。
+export function useGoalWorkflow(goalId: string) {
+  return useQuery({
+    queryKey: qk.workflowGoal(goalId),
+    queryFn: () => getGoalWorkflow(goalId),
+    enabled: !!goalId,
+  });
+}
+
+// squad 近期 goal 的编排摘要；列表页只需要前 10 条。
+export function useSquadWorkflows(squadId: string, limit = 10) {
+  return useQuery({
+    queryKey: qk.workflowSquad(squadId, limit),
+    queryFn: () => listSquadWorkflows(squadId, limit),
+    enabled: !!squadId,
   });
 }

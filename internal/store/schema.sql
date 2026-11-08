@@ -196,7 +196,7 @@ CREATE TABLE IF NOT EXISTS goal (
     connection_id    TEXT NOT NULL DEFAULT '',     -- repo connection that ingested this goal ('' = legacy repo-level binding)
     execution_attempt INTEGER NOT NULL DEFAULT 0,  -- v2 (决策 6-9): machine-retry counter, authoritative; run.attempt is just the instance ordinal
     attention        TEXT NOT NULL DEFAULT '',     -- v2 (决策 6-8): derived OwnerAttention persisted by Reconcile ('' | integration|wrapup|recovery|user_action)
-    execution_mode   TEXT NOT NULL DEFAULT 'infer', -- RSI: infer | train (train records a trace and analyzes it on terminal)
+    execution_mode   TEXT NOT NULL DEFAULT 'infer', -- RSI: infer | train (train freezes the workflow graph at terminal and analyzes it)
     content_capture  TEXT NOT NULL DEFAULT 'redacted', -- RSI: none | redacted | full
     budget_usd       REAL NOT NULL DEFAULT 2,      -- RSI: analysis budget ceiling (displayed/enforced later)
     sample_rate      REAL NOT NULL DEFAULT 1       -- RSI: 0..1 trace sampling rate
@@ -282,6 +282,7 @@ CREATE TABLE IF NOT EXISTS sub_goal (
     status            TEXT NOT NULL DEFAULT 'running', -- running|verifying|verified|rejected|cancelled|failed（pending/done 保留在枚举注释但无写入路径：CreateSubGoal 直接 running，run 完成即 verifying/verified）
     execution_attempt INTEGER NOT NULL DEFAULT 0,
     quality_iteration INTEGER NOT NULL DEFAULT 0,
+    depends_on        TEXT NOT NULL DEFAULT '[]', -- JSON array of sub_goal ids declared by the leader; '' edges are inferred at read time (workflow_edge)
     created_at        TEXT NOT NULL
 );
 
@@ -536,18 +537,21 @@ CREATE INDEX IF NOT EXISTS idx_connection_domain ON connection(domain_id);
 
 -- ── RSI (recursive self-improvement) ─────────────────────────────────────
 -- One training session per goal whose execution_mode='train'. Created with
--- the goal, filled while runs execute (trace_span), then analyzed once the
--- goal reaches a terminal state. waiting → collecting → analyzing →
--- ready|failed (sampled-out goals end as 'skipped').
+-- the goal; at goal terminal state the workflow graph is frozen into
+-- rsi_report.workflow_json and the structure analysis runs asynchronously.
+-- waiting → analyzing → ready|failed (sampled-out goals end as 'skipped').
+-- No span collection: W-RSI observes entity-level data only.
 CREATE TABLE IF NOT EXISTS training_session (
     id              TEXT PRIMARY KEY,
     goal_id         TEXT NOT NULL REFERENCES goal(id),
     content_capture TEXT NOT NULL DEFAULT 'redacted',  -- none|redacted|full
     sample_rate     REAL NOT NULL DEFAULT 1,
     budget_usd      REAL NOT NULL DEFAULT 2,
-    status          TEXT NOT NULL DEFAULT 'waiting',   -- waiting|collecting|analyzing|ready|failed|skipped
-    trace_count     INTEGER NOT NULL DEFAULT 0,
-    cost_usd        REAL NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'waiting',   -- waiting|analyzing|ready|failed|skipped
+    node_count       INTEGER NOT NULL DEFAULT 0,       -- frozen workflow summary (filled at analysis)
+    critical_path_ms INTEGER NOT NULL DEFAULT 0,
+    parallel_speedup REAL NOT NULL DEFAULT 0,
+    finding_count    INTEGER NOT NULL DEFAULT 0,
     error           TEXT NOT NULL DEFAULT '',
     started_at      TEXT NOT NULL,
     sealed_at       TEXT NOT NULL DEFAULT '',
@@ -556,36 +560,27 @@ CREATE TABLE IF NOT EXISTS training_session (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_training_session_goal ON training_session(goal_id);
 CREATE INDEX IF NOT EXISTS idx_training_session_status ON training_session(status, started_at);
 
--- trace_span is a wide observation table (Langfuse-style): one row per
--- logical operation. kind: run|llm|tool|verify|gate|human_wait.
-CREATE TABLE IF NOT EXISTS trace_span (
-    id             TEXT PRIMARY KEY,
-    session_id     TEXT NOT NULL REFERENCES training_session(id),
-    run_id         TEXT NOT NULL DEFAULT '',
-    span_id        TEXT NOT NULL,
-    parent_span_id TEXT NOT NULL DEFAULT '',
-    kind           TEXT NOT NULL,
-    name           TEXT NOT NULL DEFAULT '',
-    started_at_ms  INTEGER NOT NULL DEFAULT 0,
-    ended_at_ms    INTEGER NOT NULL DEFAULT 0,
-    duration_ms    INTEGER NOT NULL DEFAULT 0,
-    status         TEXT NOT NULL DEFAULT 'ok',   -- ok|error|cancelled
-    error_class    TEXT NOT NULL DEFAULT '',
-    retry_count    INTEGER NOT NULL DEFAULT 0,
-    tool_name      TEXT NOT NULL DEFAULT '',
-    args_hash      TEXT NOT NULL DEFAULT '',
-    tokens_in      INTEGER NOT NULL DEFAULT 0,
-    tokens_out     INTEGER NOT NULL DEFAULT 0,
-    cost_usd       REAL NOT NULL DEFAULT 0,
-    context_used   INTEGER NOT NULL DEFAULT 0,
-    context_size   INTEGER NOT NULL DEFAULT 0,
-    content_bytes  INTEGER NOT NULL DEFAULT 0,
-    attrs_json     TEXT NOT NULL DEFAULT '{}',
-    created_at     TEXT NOT NULL
+-- workflow_edge: edges of the orchestration graph, stored separately from
+-- nodes so the graph never duplicates execution state. Nodes are assembled
+-- read-time from goal/sub_goal/run/verification_result/consult_request/change.
+-- Node keys: goal | sg:<sub_goal_id> | verify:<sub_goal_id> | review:<run_id>
+-- | consult:<run_id> | chg:<change_id>. kind: created|depends_on|seq|
+-- verified_by|consult|integrated. source: explicit (declared dependency or
+-- structural by construction) | inferred (time-order heuristic) — inferred
+-- edges are dashed in the UI and only ever support L1 findings.
+CREATE TABLE IF NOT EXISTS workflow_edge (
+    id         TEXT PRIMARY KEY,
+    goal_id    TEXT NOT NULL REFERENCES goal(id),
+    from_node  TEXT NOT NULL,          -- node key: goal | run:<id> | sg:<id> | verify:<id> | change:<id>
+    to_node    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'inferred',  -- explicit|inferred
+    confidence TEXT NOT NULL DEFAULT 'L1',
+    created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_trace_span_session ON trace_span(session_id, started_at_ms);
-CREATE INDEX IF NOT EXISTS idx_trace_span_run ON trace_span(run_id, started_at_ms);
-CREATE INDEX IF NOT EXISTS idx_trace_span_span ON trace_span(span_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_edge_goal ON workflow_edge(goal_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_edge_from ON workflow_edge(from_node);
+CREATE INDEX IF NOT EXISTS idx_workflow_edge_to ON workflow_edge(to_node);
 
 -- rsi_report: exactly one analysis output per session. metrics_json and
 -- baseline_json are objects the API decodes before returning.
@@ -596,6 +591,7 @@ CREATE TABLE IF NOT EXISTS rsi_report (
     summary       TEXT NOT NULL DEFAULT '',
     metrics_json  TEXT NOT NULL DEFAULT '{}',
     baseline_json TEXT NOT NULL DEFAULT '{}',
+    workflow_json TEXT NOT NULL DEFAULT '{}',   -- frozen orchestration graph (nodes/edges/critical path) at analysis time
     narrative     TEXT NOT NULL DEFAULT '',
     error         TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL,
@@ -623,14 +619,29 @@ CREATE TABLE IF NOT EXISTS rsi_finding (
 CREATE INDEX IF NOT EXISTS idx_rsi_finding_report ON rsi_finding(report_id, score DESC);
 CREATE INDEX IF NOT EXISTS idx_rsi_finding_category ON rsi_finding(category, created_at);
 
--- rsi_metric_snapshot: daily aggregate for the Training overview trend.
-CREATE TABLE IF NOT EXISTS rsi_metric_snapshot (
-    day             TEXT PRIMARY KEY,
-    sessions        INTEGER NOT NULL DEFAULT 0,
-    success_rate    REAL NOT NULL DEFAULT 0,
-    cost_per_success REAL NOT NULL DEFAULT 0,
-    p95_lead_time_ms INTEGER NOT NULL DEFAULT 0,
-    human_wait_ms   INTEGER NOT NULL DEFAULT 0,
-    findings        INTEGER NOT NULL DEFAULT 0,
-    updated_at      TEXT NOT NULL
+-- rsi_round: the optimization-round ledger for the insight panel. Every
+-- analysis run appends one row — frozen metrics + baseline, the delta vs the
+-- previous round, and a frozen copy of that round's findings. The live
+-- rsi_report/rsi_finding rows always mirror the LATEST round; history lives
+-- only here. rsi_metric_snapshot (v1, never written) is retired — trend data
+-- derives from this ledger instead.
+CREATE TABLE IF NOT EXISTS rsi_round (
+    id               TEXT PRIMARY KEY,
+    session_id       TEXT NOT NULL REFERENCES training_session(id),
+    goal_id          TEXT NOT NULL,
+    round_no         INTEGER NOT NULL,               -- 1-based, per session
+    trigger          TEXT NOT NULL DEFAULT 'terminal', -- terminal | manual_retry
+    metrics_json     TEXT NOT NULL DEFAULT '{}',
+    baseline_json    TEXT NOT NULL DEFAULT '{}',
+    delta_json       TEXT NOT NULL DEFAULT '{}',     -- {key:{from,to,pct}} vs round_no-1; '{}' for round 1
+    finding_count    INTEGER NOT NULL DEFAULT 0,
+    critical_count   INTEGER NOT NULL DEFAULT 0,     -- severity=critical findings
+    top_category     TEXT NOT NULL DEFAULT '',
+    top_title        TEXT NOT NULL DEFAULT '',
+    findings_json    TEXT NOT NULL DEFAULT '[]',     -- frozen []rsi_finding copy
+    summary          TEXT NOT NULL DEFAULT '',
+    narrative        TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_rsi_round_session ON rsi_round(session_id, round_no);
+CREATE INDEX IF NOT EXISTS idx_rsi_round_goal ON rsi_round(goal_id, created_at);

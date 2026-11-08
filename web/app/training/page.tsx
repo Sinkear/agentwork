@@ -17,17 +17,18 @@ import {
 import { useRsiOverview, useRsiSessions } from "@/lib/queries";
 import type { RsiSession, RsiSessionStatus } from "@/lib/types";
 import { relTime } from "@/lib/utils";
+import { TrainingTrend } from "@/components/training/trend-strip";
 import {
   DASH,
   categoryLabel,
   fmtInt,
   fmtMs,
   fmtRatio,
-  fmtUsd,
+  fmtSpeedup,
 } from "@/components/training/format";
 
 // 状态筛选把中间态折成「进行中」：用户关心的是“还没好 / 好了 / 失败”，
-// 而不是 waiting/collecting/analyzing 三段实现细节（详情页会显示精确状态）。
+// 而不是 waiting/analyzing 两段实现细节（详情页会显示精确状态）。
 type StatusFilter = "all" | "active" | "ready" | "failed" | "skipped";
 type RangeFilter = "all" | "7" | "30";
 
@@ -45,13 +46,13 @@ const RANGE_OPTIONS: { value: RangeFilter; label: string }[] = [
   { value: "all", label: "全部" },
 ];
 
-const ACTIVE_STATUSES: RsiSessionStatus[] = ["waiting", "collecting", "analyzing"];
+const ACTIVE_STATUSES: RsiSessionStatus[] = ["waiting", "analyzing"];
 
 // 列宽：任务名自适应，其余定宽；窄屏下只保留任务名 + 一行摘要。
 const ROW_GRID =
-  "grid gap-1.5 px-4 py-3 transition-colors hover:bg-surface-2/40 md:grid-cols-[minmax(0,1fr)_96px_88px_64px_72px_56px_minmax(0,150px)] md:items-center md:gap-3";
+  "grid gap-1.5 px-4 py-3 transition-colors hover:bg-surface-2/40 md:grid-cols-[minmax(0,1fr)_92px_82px_56px_80px_68px_56px_minmax(0,150px)] md:items-center md:gap-3";
 const HEAD_GRID =
-  "hidden md:grid md:grid-cols-[minmax(0,1fr)_96px_88px_64px_72px_56px_minmax(0,150px)] border-b border-line px-4 py-2 font-mono text-[10px] uppercase tracking-[0.12em] text-ink-3 md:gap-3";
+  "hidden md:grid md:grid-cols-[minmax(0,1fr)_92px_82px_56px_80px_68px_56px_minmax(0,150px)] border-b border-line px-4 py-2 font-mono text-[10px] uppercase tracking-[0.12em] text-ink-3 md:gap-3";
 
 function fullTime(iso: string): string {
   if (!iso) return DASH;
@@ -83,8 +84,9 @@ function TrainingRow({ session }: { session: RsiSession }) {
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink-3 md:hidden">
             <Badge status={session.status} />
             <span>{time}</span>
-            <span>{fmtInt(session.trace_count)} spans</span>
-            <span>{fmtUsd(session.cost_usd)}</span>
+            <span>{fmtInt(session.node_count)} 节点</span>
+            <span>关键路径 {fmtMs(session.critical_path_ms)}</span>
+            <span>{fmtSpeedup(session.parallel_speedup)}</span>
             <span>{fmtInt(session.finding_count)} 发现</span>
             {session.top_category && <span>{categoryLabel(session.top_category)}</span>}
           </div>
@@ -99,11 +101,15 @@ function TrainingRow({ session }: { session: RsiSession }) {
         </span>
 
         <span className="hidden text-right font-mono text-xs tabular-nums text-ink-2 md:block">
-          {fmtInt(session.trace_count)}
+          {fmtInt(session.node_count)}
         </span>
 
         <span className="hidden text-right font-mono text-xs tabular-nums text-ink-2 md:block">
-          {fmtUsd(session.cost_usd)}
+          {fmtMs(session.critical_path_ms)}
+        </span>
+
+        <span className="hidden text-right font-mono text-xs tabular-nums text-ink-2 md:block">
+          {fmtSpeedup(session.parallel_speedup)}
         </span>
 
         <span className="hidden text-right font-mono text-xs tabular-nums text-ink-2 md:block">
@@ -157,19 +163,17 @@ export default function TrainingPage() {
   }, [sessions, statusFilter, range]);
 
   const rangeLabel = range === "7" ? "近 7 天" : range === "30" ? "近 30 天" : "全部时间";
-  // overview 在没有任何会话时各项都是 0；显示「0% / $0.00」会比「—」更像真实值。
+  // overview 在没有任何会话时各项都是 0；显示「0% / 0.00×」会比「—」更像真实值。
   const hasSessions = (overview?.sessions ?? 0) > 0;
   const successRate = hasSessions ? overview?.success_rate ?? null : null;
-  const costPerSuccess =
-    hasSessions && (overview?.cost_per_success ?? 0) > 0
-      ? overview?.cost_per_success ?? null
-      : null;
+  const avgSpeedup = hasSessions ? overview?.avg_parallel_speedup ?? null : null;
+  const avgRework = hasSessions ? overview?.avg_rework_ratio ?? null : null;
 
   return (
     <PageBody>
       <PageHeader
         title="训练分析"
-        desc="训练模式会话的执行分析：先看瓶颈归因，再下钻到 span 瀑布。推理模式只记录基础指标，不产生 trace。"
+        desc="训练模式会话的编排分析：冻结 DAG、关键路径与结构瓶颈。推理模式只记录基础指标，不产生训练分析。"
         action={
           <Link
             href="/goals/new"
@@ -205,18 +209,44 @@ export default function TrainingPage() {
             hint: "目标完成 / 全部会话（不含跳过）",
           },
           {
-            label: "每次成功成本",
-            value: overviewLoading ? DASH : fmtUsd(costPerSuccess),
-            hint: "token 成本 / 成功会话",
+            label: "平均并行加速",
+            value: overviewLoading ? DASH : fmtSpeedup(avgSpeedup),
+            tone: avgSpeedup !== null && avgSpeedup >= 1.5 ? "ok" : avgSpeedup !== null && avgSpeedup < 1.05 ? "warn" : "default",
+            hint: "总工作量 / 关键路径；1× = 完全串行",
           },
           {
-            label: "P95 交付耗时",
-            value: overviewLoading ? DASH : fmtMs(hasSessions ? overview?.p95_lead_time_ms ?? null : null),
-            // 后端 human_wait_ms 目前是全量统计、不受 days 过滤，标注清楚避免误读。
-            hint: `会话开始→结束 · 人工等待（全量）${fmtMs(overview?.human_wait_ms ?? null)} · 发现 ${fmtInt(overview?.findings ?? null)} 条`,
+            label: "平均返工率",
+            value: overviewLoading ? DASH : fmtRatio(avgRework),
+            tone: avgRework !== null && avgRework >= 0.3 ? "warn" : "default",
+            hint: "验证 rejected / 总验证轮次",
           },
         ]}
       />
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-line bg-surface-2/25 px-3.5 py-2 text-[11px] text-ink-3">
+        <span>
+          人工等待{" "}
+          <span className="font-mono text-ink-2">{fmtMs(overview?.human_wait_ms ?? null)}</span>
+        </span>
+        <span>
+          验证开销{" "}
+          <span className="font-mono text-ink-2">
+            {fmtRatio(overview?.avg_verify_overhead_ratio ?? null)}
+          </span>
+        </span>
+        <span>
+          结构发现{" "}
+          <span className="font-mono text-ink-2">{fmtInt(overview?.findings ?? null)}</span>
+        </span>
+        <span>
+          P95 交付耗时{" "}
+          <span className="font-mono text-ink-2">
+            {fmtMs(hasSessions ? overview?.p95_lead_time_ms ?? null : null)}
+          </span>
+        </span>
+      </div>
+
+      <TrainingTrend trend={overview?.trend} loading={overviewLoading} />
 
       <SectionCard
         title="会话"
@@ -262,8 +292,9 @@ export default function TrainingPage() {
               <span>任务</span>
               <span>开始</span>
               <span>状态</span>
-              <span className="text-right">Span</span>
-              <span className="text-right">成本</span>
+              <span className="text-right">节点</span>
+              <span className="text-right">关键路径</span>
+              <span className="text-right">加速</span>
               <span className="text-right">发现</span>
               <span>主瓶颈</span>
             </div>

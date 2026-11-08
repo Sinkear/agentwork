@@ -97,24 +97,20 @@ export function totalTokens(metrics: Record<string, unknown> | null | undefined)
   return (tin ?? 0) + (tout ?? 0);
 }
 
-// ── 七类瓶颈 / 严重度 / 置信度 ──
+// ── 十类编排瓶颈 / 严重度 / 置信度 / 节点类型 ──
 // category 是后端 rsi_analyze.go 的规则 id；未知值原样显示，
-// 避免后端新增一类时页面显示空白。旧短名同时保留兼容。
+// 避免后端新增一类时页面显示空白。
 export const CATEGORY_LABELS: Record<string, string> = {
-  tool_slow: "工具慢",
-  llm_slow: "LLM 慢",
-  retries: "失败重试",
-  context_pressure: "上下文压力",
-  duplicate_calls: "重复调用",
-  serial_dependency: "串行依赖",
+  serial_chain: "串行链",
+  split_candidate: "可拆分节点",
+  lost_parallelism: "并行度损失",
+  merge_candidate: "可合并节点",
+  wrong_assignee: "分派失衡",
+  ping_pong: "来回返工",
+  brief_quality: "任务描述质量",
+  consult_repeat: "重复咨询",
+  retry_amplification: "重试放大",
   human_wait: "人工等待",
-  // 兼容更早的短枚举
-  tool: "工具",
-  llm: "LLM",
-  retry: "重试",
-  context: "上下文",
-  duplicate: "重复调用",
-  serial: "串行",
 };
 
 export function categoryLabel(c: string): string {
@@ -147,8 +143,147 @@ export function confidenceMeta(c: string) {
   return CONFIDENCE_META[c] ?? { label: c || "—", desc: "未知置信度" };
 }
 
-export const SPAN_STATUS_LABEL: Record<string, string> = {
-  ok: "正常",
-  error: "错误",
-  cancelled: "已取消",
+export function fmtSpeedup(v: number | null): string {
+  if (v === null) return DASH;
+  // 并行加速比低于 1 说明关键路径比总工作量还长（数据异常）；原样显示，别修饰。
+  return `${v.toFixed(2)}×`;
+}
+
+export const NODE_KIND_META: Record<
+  string,
+  { label: string; desc: string; badge: string; ring: string; bar: string }
+> = {
+  goal: {
+    label: "目标",
+    desc: "编排根节点",
+    badge: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+    ring: "border-emerald-500/40",
+    bar: "bg-emerald-400",
+  },
+  agent: {
+    label: "执行",
+    desc: "子任务的一次执行（可含多轮 run）",
+    badge: "border-blue-500/30 bg-blue-500/10 text-blue-300",
+    ring: "border-blue-500/40",
+    bar: "bg-blue-400",
+  },
+  verify: {
+    label: "验证",
+    desc: "质量验证轮次；rejected 表示有返工",
+    badge: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+    ring: "border-amber-500/40",
+    bar: "bg-amber-400",
+  },
+  review: {
+    label: "审查",
+    desc: "人工/自动审批",
+    badge: "border-purple-500/30 bg-purple-500/10 text-purple-300",
+    ring: "border-purple-500/40",
+    bar: "bg-purple-400",
+  },
+  consult: {
+    label: "咨询",
+    desc: "运行中向其他 agent 发起的咨询",
+    badge: "border-sky-500/30 bg-sky-500/10 text-sky-300",
+    ring: "border-sky-500/40",
+    bar: "bg-sky-400",
+  },
+  integrate: {
+    label: "集成",
+    desc: "变更集的集成节点",
+    badge: "border-rose-500/30 bg-rose-500/10 text-rose-300",
+    ring: "border-rose-500/40",
+    bar: "bg-rose-400",
+  },
+};
+
+export function nodeKindMeta(kind: string) {
+  return (
+    NODE_KIND_META[kind] ?? {
+      label: kind || "节点",
+      desc: "未知节点类型",
+      badge: "border-line bg-surface-2 text-ink-3",
+      ring: "border-line",
+      bar: "bg-ink-3",
+    }
+  );
+}
+
+export const EDGE_KIND_LABEL: Record<string, string> = {
+  created: "创建",
+  depends_on: "依赖",
+  seq: "时序（推断）",
+  verified_by: "验证",
+  consult: "咨询",
+  integrated: "集成",
+};
+// ── 优化轮次 delta（W-RSI v3 insight panel） ──
+// delta 的 pct 是相对变化率（(to-from)/from），不是百分点；from=0 时后端省略。
+export const DELTA_METRIC_KEYS = [
+  "parallel_speedup",
+  "critical_path_ms",
+  "serialization_loss_ms",
+  "verify_overhead_ratio",
+  "rework_ratio",
+  "consult_count",
+  "human_wait_ms",
+] as const;
+
+export const DELTA_LABELS: Record<string, string> = {
+  parallel_speedup: "并行加速",
+  critical_path_ms: "关键路径",
+  serialization_loss_ms: "串行损失",
+  verify_overhead_ratio: "验证开销",
+  rework_ratio: "返工率",
+  consult_count: "咨询次数",
+  human_wait_ms: "人工等待",
+};
+
+// 越低越好的指标；parallel_speedup 越高越好，其余全部是成本/损耗类。
+const LOWER_IS_BETTER = new Set([
+  "critical_path_ms",
+  "serialization_loss_ms",
+  "verify_overhead_ratio",
+  "rework_ratio",
+  "consult_count",
+  "human_wait_ms",
+]);
+
+export type DeltaTone = "improved" | "worsened" | "same";
+
+/**
+ * 方向语义：按“改善/恶化”判断，而不是数值涨跌。
+ * 相对阈值 0.05% 用来吸收浮点噪声，避免 1.0001→1.0 被标成改善。
+ */
+export function deltaTone(key: string, from: number, to: number): DeltaTone {
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return "same";
+  const rel = from === 0 ? Math.abs(to - from) : Math.abs((to - from) / from);
+  if (rel < 0.0005) return "same";
+  const up = to > from;
+  const improved = key === "parallel_speedup" ? up : LOWER_IS_BETTER.has(key) ? !up : up;
+  return improved ? "improved" : "worsened";
+}
+
+export function fmtDeltaValue(key: string, v: number): string {
+  if (!Number.isFinite(v)) return DASH;
+  if (key === "parallel_speedup") return fmtSpeedup(v);
+  if (key === "consult_count") return fmtInt(v);
+  if (key.endsWith("_ms")) return fmtMs(v);
+  if (key.endsWith("_ratio")) return fmtRatio(v);
+  return fmtInt(v);
+}
+
+/** 相对变化率 → 带符号百分比；pct 缺省返回空串（只显示 from→to）。 */
+export function fmtDeltaPct(pct: number | null | undefined): string {
+  const p = asNum(pct);
+  if (p === null) return "";
+  if (Math.abs(p) < 0.0005) return "0%";
+  const sign = p > 0 ? "+" : "−";
+  const abs = Math.abs(p) * 100;
+  return `${sign}${abs >= 10 ? abs.toFixed(0) : abs.toFixed(1)}%`;
+}
+
+export const ROUND_TRIGGER_LABEL: Record<string, string> = {
+  terminal: "终态分析",
+  manual_retry: "手动复测",
 };

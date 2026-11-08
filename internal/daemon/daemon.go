@@ -2248,13 +2248,8 @@ func (d *Daemon) persistEvent(ctx context.Context, runID string, ev proto.Event)
 		}
 		// The buffer key separates use from result so they do not collide:
 		// CallID+":use" for tool_use, CallID+":result" for tool_result.
-		if d.rsi != nil {
-			if ev.Type == proto.EventToolResult {
-				d.rsi.RecordToolEnd(ctx, runID, ev.CallID, ev.Tool, ev.Output, ev.Status)
-			} else {
-				d.rsi.RecordToolStart(ctx, runID, ev.CallID, ev.Tool, ev.Input, ev.Status)
-			}
-		}
+		// (W-RSI 2026-11-08: no span capture here — the orchestration graph
+		// is assembled read-time from entity tables, see service/workflow.go.)
 		bufKey := ev.CallID
 		if bufKey != "" {
 			if ev.Type == proto.EventToolResult {
@@ -2295,11 +2290,6 @@ func (d *Daemon) persistEvent(ctx context.Context, runID string, ev proto.Event)
 		tc, _ := json.Marshal(ev)
 		d.mu.Unlock()
 		d.updateChatMessageToolCalls(ctx, row.id, string(tc))
-		return proto.Event{}
-	case proto.EventUsage:
-		if d.rsi != nil {
-			d.rsi.RecordUsage(ctx, runID, ev.ContextUsed, ev.ContextSize, ev.CostUSD)
-		}
 		return proto.Event{}
 	default:
 		d.insertChatMessage(ctx, runID, "assistant", ev.Text, "[]")

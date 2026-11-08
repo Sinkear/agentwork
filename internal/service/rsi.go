@@ -2,15 +2,12 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -19,61 +16,33 @@ import (
 	"github.com/eushing/agentwork/internal/store"
 )
 
-// RsiSession is one training session: the observation window that starts
-// when a goal (execution_mode=train) is created and closes when the goal
-// reaches a terminal state. It is the unit the Training tab lists.
-//
-// RSI deliberately NEVER changes the executing agent's behavior in this
-// version. It records structured spans, computes deterministic metrics, and
-// emits reviewable findings — the human (or a later gated loop) decides what
-// to adopt. This keeps the "training" loop inside the harness layer instead
-// of touching model weights or verifier/scoring logic.
+// W-RSI (2026-11-08): the training loop observes the ORCHESTRATION LAYER,
+// not the agent internals. Inference-mode goals are never touched. A
+// train-mode goal gets a training session; when the goal reaches a terminal
+// state the session is sealed, the workflow graph is frozen read-time from
+// the entity tables (workflow.go), the frozen copy is stored in
+// rsi_report.workflow_json, and a deterministic structure analysis emits
+// reviewable findings. RSI never changes executing behavior by itself — the
+// human decides what to adopt.
 type RsiSession struct {
-	ID             string  `json:"id"`
-	GoalID         string  `json:"goal_id"`
-	GoalTitle      string  `json:"goal_title"`
-	DomainID       string  `json:"domain_id"`
-	Status         string  `json:"status"` // waiting|collecting|analyzing|ready|failed|skipped
-	ContentCapture string  `json:"content_capture"`
-	SampleRate     float64 `json:"sample_rate"`
-	BudgetUSD      float64 `json:"budget_usd"`
-	TraceCount     int     `json:"trace_count"`
-	CostUSD        float64 `json:"cost_usd"`
-	FindingCount   int     `json:"finding_count"`
-	TopCategory    string  `json:"top_category"`
-	TopTitle       string  `json:"top_title"`
-	Error          string  `json:"error"`
-	StartedAt      string  `json:"started_at"`
-	SealedAt       string  `json:"sealed_at"`
-	FinishedAt     string  `json:"finished_at"`
-}
-
-// RsiSpan is one row of the wide trace table. kind:
-// run|llm|tool|verify|gate|human_wait.
-type RsiSpan struct {
-	ID          string         `json:"id"`
-	SessionID   string         `json:"session_id"`
-	RunID       string         `json:"run_id"`
-	SpanID      string         `json:"span_id"`
-	ParentID    string         `json:"parent_span_id"`
-	Kind        string         `json:"kind"`
-	Name        string         `json:"name"`
-	StartedAt   int64          `json:"started_at_ms"`
-	EndedAt     int64          `json:"ended_at_ms"`
-	DurationMS  int64          `json:"duration_ms"`
-	Status      string         `json:"status"`
-	ErrorClass  string         `json:"error_class"`
-	RetryCount  int            `json:"retry_count"`
-	ToolName    string         `json:"tool_name"`
-	ArgsHash    string         `json:"args_hash"`
-	TokensIn    int            `json:"tokens_in"`
-	TokensOut   int            `json:"tokens_out"`
-	CostUSD     float64        `json:"cost_usd"`
-	ContextUsed int            `json:"context_used"`
-	ContextSize int            `json:"context_size"`
-	ContentSize int            `json:"content_bytes"`
-	Attrs       map[string]any `json:"attrs"`
-	CreatedAt   string         `json:"created_at"`
+	ID              string  `json:"id"`
+	GoalID          string  `json:"goal_id"`
+	GoalTitle       string  `json:"goal_title"`
+	DomainID        string  `json:"domain_id"`
+	Status          string  `json:"status"` // waiting|analyzing|ready|failed|skipped
+	ContentCapture  string  `json:"content_capture"`
+	SampleRate      float64 `json:"sample_rate"`
+	BudgetUSD       float64 `json:"budget_usd"`
+	NodeCount       int     `json:"node_count"`
+	CriticalPathMS  int64   `json:"critical_path_ms"`
+	ParallelSpeedup float64 `json:"parallel_speedup"`
+	FindingCount    int     `json:"finding_count"`
+	TopCategory     string  `json:"top_category"`
+	TopTitle        string  `json:"top_title"`
+	Error           string  `json:"error"`
+	StartedAt       string  `json:"started_at"`
+	SealedAt        string  `json:"sealed_at"`
+	FinishedAt      string  `json:"finished_at"`
 }
 
 // RsiReport is the deterministic analysis output for one session.
@@ -108,23 +77,63 @@ type RsiFinding struct {
 
 // RsiOverview is the aggregate strip above the Training list.
 type RsiOverview struct {
-	Sessions       int     `json:"sessions"`
-	SuccessRate    float64 `json:"success_rate"`
-	CostPerSuccess float64 `json:"cost_per_success"`
-	P95LeadTimeMS  int64   `json:"p95_lead_time_ms"`
-	HumanWaitMS    int64   `json:"human_wait_ms"`
-	Findings       int     `json:"findings"`
+	Sessions           int             `json:"sessions"`
+	SuccessRate        float64         `json:"success_rate"`
+	P95LeadTimeMS      int64           `json:"p95_lead_time_ms"`
+	HumanWaitMS        int64           `json:"human_wait_ms"`
+	AvgParallelSpeedup float64         `json:"avg_parallel_speedup"`
+	AvgVerifyOverhead  float64         `json:"avg_verify_overhead_ratio"`
+	AvgReworkRatio     float64         `json:"avg_rework_ratio"`
+	Findings           int             `json:"findings"`
+	Trend              []RsiTrendPoint `json:"trend"`
 }
 
-// RSIService owns training-session bookkeeping, the live span sink, and the
-// deterministic analyzer. One instance is shared by the daemon (sink) and
-// the HTTP handler (read APIs).
+// RsiTrendPoint is one insight-panel data point: a finished optimization
+// round, oldest first. Charts read this — no separate snapshot table.
+type RsiTrendPoint struct {
+	RoundID            string  `json:"round_id"`
+	SessionID          string  `json:"session_id"`
+	GoalID             string  `json:"goal_id"`
+	GoalTitle          string  `json:"goal_title"`
+	RoundNo            int     `json:"round_no"`
+	CreatedAt          string  `json:"created_at"`
+	ParallelSpeedup    float64 `json:"parallel_speedup"`
+	CriticalPathMS     int64   `json:"critical_path_ms"`
+	ReworkRatio        float64 `json:"rework_ratio"`
+	VerifyOverhead     float64 `json:"verify_overhead_ratio"`
+	SerializationLossMS int64  `json:"serialization_loss_ms"`
+	FindingCount       int     `json:"finding_count"`
+}
+
+// RsiRound is one frozen optimization round in the ledger (rsi_round).
+// Metrics/baseline/findings are copies taken at round time; delta compares
+// this round against the previous one (empty for round 1).
+type RsiRound struct {
+	ID             string       `json:"id"`
+	SessionID      string       `json:"session_id"`
+	GoalID         string       `json:"goal_id"`
+	RoundNo        int          `json:"round_no"`
+	Trigger        string       `json:"trigger"` // terminal | manual_retry
+	Metrics        map[string]any `json:"metrics"`
+	Baseline       map[string]any `json:"baseline"`
+	Delta          map[string]any `json:"delta"`
+	FindingCount   int          `json:"finding_count"`
+	CriticalCount  int          `json:"critical_count"`
+	TopCategory    string       `json:"top_category"`
+	TopTitle       string       `json:"top_title"`
+	Findings       []RsiFinding `json:"findings"`
+	Summary        string       `json:"summary"`
+	Narrative      string       `json:"narrative"`
+	CreatedAt      string       `json:"created_at"`
+}
+
+// RSIService owns training-session bookkeeping and the deterministic
+// workflow analyzer. One instance is shared by the daemon (terminal hook)
+// and the HTTP handler (read APIs). There is no live collection path: the
+// entity tables are already the record.
 type RSIService struct {
 	st  *store.Store
 	bus *events.Bus
-
-	mu    sync.Mutex
-	cache map[string]string // runID → sessionID
 
 	// analyzeMu serializes analyses: analysis is fast (SQL + arithmetic) and
 	// a single lock keeps a retry from racing a terminal trigger.
@@ -132,12 +141,12 @@ type RSIService struct {
 }
 
 func NewRSIService(st *store.Store, bus *events.Bus) *RSIService {
-	return &RSIService{st: st, bus: bus, cache: make(map[string]string)}
+	return &RSIService{st: st, bus: bus}
 }
 
-// EnsureSession creates the training session for a train-mode goal if it does
-// not exist. Sampling happens ONCE here: a sampled-out goal gets status
-// 'skipped' and records no spans.
+// EnsureSession creates the training session for a train-mode goal if it
+// does not exist. Sampling happens ONCE here: a sampled-out goal gets status
+// 'skipped' and is never analyzed.
 func (s *RSIService) EnsureSession(ctx context.Context, g *Goal) error {
 	if g == nil || g.ExecutionMode != "train" {
 		return nil
@@ -165,187 +174,32 @@ func (s *RSIService) EnsureSession(ctx context.Context, g *Goal) error {
 	return nil
 }
 
-// sessionForRun resolves the collecting training session for a run. Empty
-// session (and nil error) means the run is not observed: inference goal, a
-// sampled-out session, or the session already sealed.
-func (s *RSIService) sessionForRun(ctx context.Context, runID string) string {
-	if runID == "" {
-		return ""
-	}
-	s.mu.Lock()
-	if id, ok := s.cache[runID]; ok {
-		s.mu.Unlock()
-		return id
-	}
-	s.mu.Unlock()
-	var id string
-	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT ts.id FROM training_session ts JOIN run r ON r.goal_id=ts.goal_id
-		 WHERE r.id=? AND ts.status IN ('waiting','collecting')
-		 ORDER BY ts.started_at DESC LIMIT 1`, runID).Scan(&id)
-	if err != nil {
-		return ""
-	}
-	s.mu.Lock()
-	s.cache[runID] = id
-	s.mu.Unlock()
-	// First observed event moves the session from waiting to collecting.
-	_, _ = s.st.DB().ExecContext(ctx,
-		`UPDATE training_session SET status='collecting' WHERE id=? AND status='waiting'`, id)
-	return id
-}
-
-func (s *RSIService) forgetRun(runID string) {
-	s.mu.Lock()
-	delete(s.cache, runID)
-	s.mu.Unlock()
-}
-
-// RecordToolStart upserts the tool span for (run, call). ACP emits several
-// tool_use updates per call; only the first stamps started_at, later ones
-// refresh the size/attrs.
-func (s *RSIService) RecordToolStart(ctx context.Context, runID, callID, tool, input, status string) {
-	sid := s.sessionForRun(ctx, runID)
-	if sid == "" {
-		return
-	}
-	if callID == "" {
-		callID = newID()
-	}
-	spanID := runID + ":" + callID + ":tool"
-	hash := shortHash(input)
-	attrs := s.attrsFor(ctx, sid, input)
-	ab, _ := json.Marshal(attrs)
-	nowMS := time.Now().UnixMilli()
-	res, err := s.st.DB().ExecContext(ctx,
-		`INSERT OR IGNORE INTO trace_span
-		 (id,session_id,run_id,span_id,parent_span_id,kind,name,started_at_ms,ended_at_ms,duration_ms,status,tool_name,args_hash,content_bytes,attrs_json,created_at)
-		 VALUES (?,?,?,?,?, 'tool', ?, ?, 0, 0, 'running', ?, ?, ?, ?, ?)`,
-		spanID, sid, runID, spanID, runID+":run", tool, nowMS, tool, hash, len(input), string(ab), now())
-	if err != nil {
-		logging.Infof("rsi: record tool start %s: %v", runID, err)
-		return
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		_, _ = s.st.DB().ExecContext(ctx, `UPDATE training_session SET trace_count=trace_count+1 WHERE id=?`, sid)
-		return
-	}
-	_, _ = s.st.DB().ExecContext(ctx,
-		`UPDATE trace_span SET tool_name=?, args_hash=?, content_bytes=?, attrs_json=? WHERE id=?`,
-		tool, hash, len(input), string(ab), spanID)
-}
-
-// RecordToolEnd closes the tool span (created lazily if the start was lost).
-func (s *RSIService) RecordToolEnd(ctx context.Context, runID, callID, tool, output, status string) {
-	sid := s.sessionForRun(ctx, runID)
-	if sid == "" {
-		return
-	}
-	if callID == "" {
-		callID = newID()
-	}
-	spanID := runID + ":" + callID + ":tool"
-	if tool == "" {
-		tool = "tool"
-	}
-	st := "ok"
-	if status == "failed" || status == "error" {
-		st = "error"
-	}
-	nowMS := time.Now().UnixMilli()
-	attrs := s.attrsFor(ctx, sid, output)
-	ab, _ := json.Marshal(attrs)
-	res, err := s.st.DB().ExecContext(ctx,
-		`INSERT OR IGNORE INTO trace_span
-		 (id,session_id,run_id,span_id,parent_span_id,kind,name,started_at_ms,ended_at_ms,duration_ms,status,tool_name,args_hash,content_bytes,attrs_json,created_at)
-		 VALUES (?,?,?,?,?, 'tool', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
-		spanID, sid, runID, spanID, runID+":run", tool, nowMS, nowMS, st, tool, shortHash(output), len(output), string(ab), now())
-	if err != nil {
-		logging.Infof("rsi: record tool end %s: %v", runID, err)
-		return
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		_, _ = s.st.DB().ExecContext(ctx, `UPDATE training_session SET trace_count=trace_count+1 WHERE id=?`, sid)
-		return
-	}
-	_, _ = s.st.DB().ExecContext(ctx,
-		`UPDATE trace_span SET ended_at_ms=?, duration_ms=MAX(0,?-started_at_ms), status=?, content_bytes=MAX(content_bytes,?), attrs_json=? WHERE id=?`,
-		nowMS, nowMS, st, len(output), string(ab), spanID)
-}
-
-// RecordUsage aggregates ACP usage_update reports into one llm span per run.
-// The protocol reports context used/size and cost, not per-call token counts;
-// tokens_in/out stay 0 until the runtime provides them (never fabricated).
-func (s *RSIService) RecordUsage(ctx context.Context, runID string, used, total int, cost float64) {
-	sid := s.sessionForRun(ctx, runID)
-	if sid == "" {
-		return
-	}
-	spanID := runID + ":usage"
-	res, err := s.st.DB().ExecContext(ctx,
-		`INSERT OR IGNORE INTO trace_span
-		 (id,session_id,run_id,span_id,parent_span_id,kind,name,started_at_ms,ended_at_ms,duration_ms,status,cost_usd,context_used,context_size,attrs_json,created_at)
-		 VALUES (?,?,?,?,?, 'llm', 'usage', ?, 0, 0, 'ok', ?, ?, ?, '{}', ?)`,
-		spanID, sid, runID, spanID, runID+":run", time.Now().UnixMilli(), cost, used, total, now())
-	if err != nil {
-		logging.Infof("rsi: record usage %s: %v", runID, err)
-		return
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		_, _ = s.st.DB().ExecContext(ctx, `UPDATE training_session SET trace_count=trace_count+1 WHERE id=?`, sid)
-		return
-	}
-	_, _ = s.st.DB().ExecContext(ctx,
-		`UPDATE trace_span SET cost_usd=cost_usd+?, context_used=MAX(context_used,?), context_size=MAX(context_size,?) WHERE id=?`,
-		cost, used, total, spanID)
-}
-
-// attrsFor applies the goal's content-capture policy. Default (redacted)
-// keeps measurements and a short hash, never the raw text.
-func (s *RSIService) attrsFor(ctx context.Context, sessionID, content string) map[string]any {
-	capture := "redacted"
-	_ = s.st.DB().QueryRowContext(ctx,
-		`SELECT content_capture FROM training_session WHERE id=?`, sessionID).Scan(&capture)
-	a := map[string]any{"bytes": len(content), "hash": shortHash(content)}
-	if capture == "full" {
-		if len(content) > 8192 {
-			content = content[:8192]
-		}
-		a["preview"] = content
-	}
-	return a
-}
-
-func shortHash(s string) string {
-	if s == "" {
-		return ""
-	}
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:8])
-}
-
 // OnGoalTerminal seals the session and launches the analyzer in the
 // background. Called AFTER the reconcile transaction commits, so the
 // analysis always sees the goal's terminal status.
 func (s *RSIService) OnGoalTerminal(ctx context.Context, goalID string) {
-	var sid string
+	var sid, status string
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT id FROM training_session WHERE goal_id=? ORDER BY started_at DESC LIMIT 1`, goalID).Scan(&sid)
+		`SELECT id,status FROM training_session WHERE goal_id=? ORDER BY started_at DESC LIMIT 1`, goalID).
+		Scan(&sid, &status)
 	if errors.Is(err, sql.ErrNoRows) {
-		return
+		return // inference goal or pre-RSI goal: nothing to analyze
 	}
 	if err != nil {
 		logging.Infof("rsi: terminal lookup %s: %v", goalID, err)
 		return
 	}
+	if status == "skipped" {
+		return
+	}
 	res, err := s.st.DB().ExecContext(ctx,
-		`UPDATE training_session SET status='analyzing', sealed_at=? WHERE id=? AND status IN ('waiting','collecting')`, now(), sid)
+		`UPDATE training_session SET status='analyzing', sealed_at=? WHERE id=? AND status IN ('waiting','analyzing')`, now(), sid)
 	if err != nil {
 		logging.Infof("rsi: seal session %s: %v", sid, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return // already analyzing/ready/failed/skipped
+		return // already analyzing/ready/failed
 	}
 	go s.runAnalysis(sid)
 }
@@ -356,6 +210,8 @@ func (s *RSIService) runAnalysis(sessionID string) {
 			logging.Errorf("rsi: analysis panic for %s: %v", sessionID, r)
 		}
 	}()
+	s.analyzeMu.Lock()
+	defer s.analyzeMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if err := s.Analyze(ctx, sessionID); err != nil {
@@ -368,17 +224,38 @@ func (s *RSIService) runAnalysis(sessionID string) {
 
 // Retry re-runs a failed (or completed) analysis.
 func (s *RSIService) Retry(ctx context.Context, sessionID string) error {
-	res, err := s.st.DB().ExecContext(ctx,
-		`UPDATE training_session SET status='analyzing', error='', finished_at='' WHERE id=? AND status IN ('failed','ready')`,
-		sessionID)
-	if err != nil {
+	var status string
+	if err := s.st.DB().QueryRowContext(ctx,
+		`SELECT status FROM training_session WHERE id=?`, sessionID).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if status != "failed" && status != "ready" {
 		return NewValidationError("session is not retryable (only failed/ready sessions can be re-analyzed)")
+	}
+	if _, err := s.st.DB().ExecContext(ctx,
+		`UPDATE training_session SET status='analyzing', error='', finished_at='' WHERE id=?`, sessionID); err != nil {
+		return err
 	}
 	go s.runAnalysis(sessionID)
 	return nil
+}
+
+const sessionColumns = `ts.id,ts.goal_id,g.title,COALESCE(g.domain_id,''),ts.status,ts.content_capture,ts.sample_rate,ts.budget_usd,
+	COALESCE(ts.node_count,0),COALESCE(ts.critical_path_ms,0),COALESCE(ts.parallel_speedup,0),
+	ts.error,ts.started_at,ts.sealed_at,ts.finished_at,
+	(SELECT COUNT(*) FROM rsi_finding f JOIN rsi_report rp ON f.report_id=rp.id WHERE rp.session_id=ts.id)`
+
+func scanSession(sc func(...any) error) (*RsiSession, error) {
+	var x RsiSession
+	if err := sc(&x.ID, &x.GoalID, &x.GoalTitle, &x.DomainID, &x.Status, &x.ContentCapture, &x.SampleRate, &x.BudgetUSD,
+		&x.NodeCount, &x.CriticalPathMS, &x.ParallelSpeedup,
+		&x.Error, &x.StartedAt, &x.SealedAt, &x.FinishedAt, &x.FindingCount); err != nil {
+		return nil, err
+	}
+	return &x, nil
 }
 
 // ListSessions returns the Training list, newest first.
@@ -387,10 +264,7 @@ func (s *RSIService) ListSessions(ctx context.Context, limit int) ([]RsiSession,
 		limit = 100
 	}
 	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT ts.id,ts.goal_id,g.title,COALESCE(g.domain_id,''),ts.status,ts.content_capture,ts.sample_rate,ts.budget_usd,
-		        ts.trace_count,ts.cost_usd,ts.error,ts.started_at,ts.sealed_at,ts.finished_at,
-		        (SELECT COUNT(*) FROM rsi_finding f JOIN rsi_report rp ON f.report_id=rp.id WHERE rp.session_id=ts.id)
-		 FROM training_session ts JOIN goal g ON g.id=ts.goal_id
+		`SELECT `+sessionColumns+` FROM training_session ts JOIN goal g ON g.id=ts.goal_id
 		 ORDER BY ts.started_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -398,12 +272,11 @@ func (s *RSIService) ListSessions(ctx context.Context, limit int) ([]RsiSession,
 	defer rows.Close()
 	out := []RsiSession{}
 	for rows.Next() {
-		var x RsiSession
-		if err := rows.Scan(&x.ID, &x.GoalID, &x.GoalTitle, &x.DomainID, &x.Status, &x.ContentCapture, &x.SampleRate, &x.BudgetUSD,
-			&x.TraceCount, &x.CostUSD, &x.Error, &x.StartedAt, &x.SealedAt, &x.FinishedAt, &x.FindingCount); err != nil {
+		x, err := scanSession(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, x)
+		out = append(out, *x)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -417,16 +290,16 @@ func (s *RSIService) ListSessions(ctx context.Context, limit int) ([]RsiSession,
 	return out, nil
 }
 
-// GetSession returns one session with its report, findings, and spans.
-func (s *RSIService) GetSession(ctx context.Context, id string) (*RsiSession, *RsiReport, []RsiFinding, []RsiSpan, error) {
-	var x RsiSession
-	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT ts.id,ts.goal_id,g.title,COALESCE(g.domain_id,''),ts.status,ts.content_capture,ts.sample_rate,ts.budget_usd,
-		        ts.trace_count,ts.cost_usd,ts.error,ts.started_at,ts.sealed_at,ts.finished_at,
-		        (SELECT COUNT(*) FROM rsi_finding f JOIN rsi_report rp ON f.report_id=rp.id WHERE rp.session_id=ts.id)
-		 FROM training_session ts JOIN goal g ON g.id=ts.goal_id WHERE ts.id=?`, id).
-		Scan(&x.ID, &x.GoalID, &x.GoalTitle, &x.DomainID, &x.Status, &x.ContentCapture, &x.SampleRate, &x.BudgetUSD,
-			&x.TraceCount, &x.CostUSD, &x.Error, &x.StartedAt, &x.SealedAt, &x.FinishedAt, &x.FindingCount)
+// GetSession returns one session with its report, findings, and the
+// orchestration graph. The graph is the frozen analysis-time copy when a
+// report exists, otherwise a live build (so a waiting session already shows
+// the DAG forming).
+func (s *RSIService) GetSession(ctx context.Context, id string) (*RsiSession, *RsiReport, []RsiFinding, *WorkflowGraph, error) {
+	x, err := scanSession(func(dst ...any) error {
+		return s.st.DB().QueryRowContext(ctx,
+			`SELECT `+sessionColumns+` FROM training_session ts JOIN goal g ON g.id=ts.goal_id WHERE ts.id=?`, id).
+			Scan(dst...)
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, nil, nil, ErrNotFound
 	}
@@ -434,17 +307,19 @@ func (s *RSIService) GetSession(ctx context.Context, id string) (*RsiSession, *R
 		return nil, nil, nil, nil, err
 	}
 	var report *RsiReport
+	var frozen *WorkflowGraph
 	{
 		var r RsiReport
-		var metrics, baseline string
+		var metrics, baseline, wf string
 		err := s.st.DB().QueryRowContext(ctx,
-			`SELECT id,session_id,status,summary,metrics_json,baseline_json,narrative,error,created_at,finished_at
+			`SELECT id,session_id,status,summary,metrics_json,baseline_json,workflow_json,narrative,error,created_at,finished_at
 			 FROM rsi_report WHERE session_id=?`, id).
-			Scan(&r.ID, &r.SessionID, &r.Status, &r.Summary, &metrics, &baseline, &r.Narrative, &r.Error, &r.CreatedAt, &r.FinishedAt)
+			Scan(&r.ID, &r.SessionID, &r.Status, &r.Summary, &metrics, &baseline, &wf, &r.Narrative, &r.Error, &r.CreatedAt, &r.FinishedAt)
 		if err == nil {
 			r.Metrics = decodeMap(metrics)
 			r.Baseline = decodeMap(baseline)
 			report = &r
+			frozen = decodeWorkflow(wf)
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return nil, nil, nil, nil, err
 		}
@@ -471,35 +346,79 @@ func (s *RSIService) GetSession(ctx context.Context, id string) (*RsiSession, *R
 			return nil, nil, nil, nil, err
 		}
 	}
-	spans, err := s.spansFor(ctx, id)
-	if err != nil {
-		return nil, nil, nil, nil, err
+	graph := frozen
+	if graph == nil && x.Status != "skipped" {
+		graph, err = s.BuildGoalWorkflow(ctx, x.GoalID)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
 	}
-	return &x, report, findings, spans, nil
+	return x, report, findings, graph, nil
 }
 
-func (s *RSIService) spansFor(ctx context.Context, sessionID string) ([]RsiSpan, error) {
+func decodeWorkflow(s string) *WorkflowGraph {
+	if s == "" || s == "{}" {
+		return nil
+	}
+	var g WorkflowGraph
+	if err := json.Unmarshal([]byte(s), &g); err != nil {
+		return nil
+	}
+	return &g
+}
+
+// GoalWorkflow builds the live orchestration graph for a goal (read API for
+// the goal detail view; no training session required).
+func (s *RSIService) GoalWorkflow(ctx context.Context, goalID string) (*WorkflowGraph, error) {
+	graph, err := s.BuildGoalWorkflow(ctx, goalID)
+	if err != nil {
+		// Unknown goal id → 404, not a 500 with a raw driver error.
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return graph, nil
+}
+
+// SquadWorkflows returns compact workflow summaries for the most recent
+// goals assigned to a squad — the "orchestration visibility" the squad page
+// never had.
+func (s *RSIService) SquadWorkflows(ctx context.Context, squadID string, limit int) ([]WorkflowGoalSummary, error) {
+	if squadID == "" {
+		return nil, NewValidationError("squad id is required")
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
 	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT id,session_id,run_id,span_id,parent_span_id,kind,name,started_at_ms,ended_at_ms,duration_ms,status,error_class,
-		        retry_count,tool_name,args_hash,tokens_in,tokens_out,cost_usd,context_used,context_size,content_bytes,attrs_json,created_at
-		 FROM trace_span WHERE session_id=? ORDER BY started_at_ms ASC, kind ASC`, sessionID)
+		`SELECT id FROM goal WHERE assignee_type='squad' AND assignee_id=?
+		 ORDER BY created_at DESC LIMIT ?`, squadID, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []RsiSpan{}
+	ids := []string{}
 	for rows.Next() {
-		var x RsiSpan
-		var attrs string
-		if err := rows.Scan(&x.ID, &x.SessionID, &x.RunID, &x.SpanID, &x.ParentID, &x.Kind, &x.Name, &x.StartedAt, &x.EndedAt, &x.DurationMS,
-			&x.Status, &x.ErrorClass, &x.RetryCount, &x.ToolName, &x.ArgsHash, &x.TokensIn, &x.TokensOut, &x.CostUSD,
-			&x.ContextUsed, &x.ContextSize, &x.ContentSize, &attrs, &x.CreatedAt); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		x.Attrs = decodeMap(attrs)
-		out = append(out, x)
+		ids = append(ids, id)
 	}
-	return out, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := []WorkflowGoalSummary{}
+	for _, id := range ids {
+		g, err := s.BuildGoalWorkflow(ctx, id)
+		if err != nil {
+			continue // a torn-down goal must not break the squad page
+		}
+		out = append(out, WorkflowGoalSummaryFromGraph(g))
+	}
+	return out, nil
 }
 
 // UpdateFinding sets a finding's triage status (confirmed/dismissed/open).
@@ -527,10 +446,9 @@ func (s *RSIService) Overview(ctx context.Context, days int) (RsiOverview, error
 		args = append(args, time.Now().AddDate(0, 0, -days).UTC().Format(time.RFC3339Nano))
 	}
 	var success, total int
-	var cost float64
 	var leadTimes []int64
 	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT g.status,ts.cost_usd,ts.started_at,ts.finished_at,ts.status
+		`SELECT g.status,ts.started_at,ts.finished_at,ts.status
 		 FROM training_session ts JOIN goal g ON g.id=ts.goal_id`+where, args...)
 	if err != nil {
 		return out, err
@@ -538,20 +456,18 @@ func (s *RSIService) Overview(ctx context.Context, days int) (RsiOverview, error
 	defer rows.Close()
 	for rows.Next() {
 		var gs, ss, start, finish string
-		var c float64
-		if err := rows.Scan(&gs, &c, &start, &finish, &ss); err != nil {
+		if err := rows.Scan(&gs, &start, &finish, &ss); err != nil {
 			return out, err
 		}
 		if ss == "skipped" {
 			continue
 		}
 		total++
-		cost += c
 		if gs == "done" {
 			success++
 		}
-		if t, ok := parseMS(start); ok && finish != "" {
-			if e, ok2 := parseMS(finish); ok2 && e > t {
+		if t, ok := parseTimeMS(start); ok && finish != "" {
+			if e, ok2 := parseTimeMS(finish); ok2 && e > t {
 				leadTimes = append(leadTimes, e-t)
 			}
 		}
@@ -563,15 +479,148 @@ func (s *RSIService) Overview(ctx context.Context, days int) (RsiOverview, error
 	if total > 0 {
 		out.SuccessRate = float64(success) / float64(total)
 	}
-	if success > 0 {
-		out.CostPerSuccess = cost / float64(success)
-	}
 	out.P95LeadTimeMS = percentile95(leadTimes)
+
+	// Human wait: gate review seconds (all goals, not only train sessions).
+	hwArgs := []any{}
+	hwWhere := ""
+	if days > 0 {
+		hwWhere = " WHERE decided_at >= ?"
+		hwArgs = append(hwArgs, args[len(args)-1])
+	}
 	_ = s.st.DB().QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(review_duration),0)*1000 FROM gate_decision`).Scan(&out.HumanWaitMS)
+		`SELECT COALESCE(SUM(review_duration),0)*1000 FROM gate_decision`+hwWhere, hwArgs...).Scan(&out.HumanWaitMS)
+
+	// Workflow averages over ready reports in the window.
+	mrows, err := s.st.DB().QueryContext(ctx,
+		`SELECT rp.metrics_json FROM rsi_report rp JOIN training_session ts ON ts.id=rp.session_id
+		 WHERE rp.status='ready'`+where, args...)
+	if err == nil {
+		var nSpeed, nOver, nRework int
+		var sumSpeed, sumOver, sumRework float64
+		for mrows.Next() {
+			var mj string
+			if err := mrows.Scan(&mj); err != nil {
+				continue
+			}
+			m := decodeMap(mj)
+			if v, ok := num(m["parallel_speedup"]); ok {
+				sumSpeed += v
+				nSpeed++
+			}
+			if v, ok := num(m["verify_overhead_ratio"]); ok {
+				sumOver += v
+				nOver++
+			}
+			if v, ok := num(m["rework_ratio"]); ok {
+				sumRework += v
+				nRework++
+			}
+		}
+		mrows.Close()
+		if nSpeed > 0 {
+			out.AvgParallelSpeedup = sumSpeed / float64(nSpeed)
+		}
+		if nOver > 0 {
+			out.AvgVerifyOverhead = sumOver / float64(nOver)
+		}
+		if nRework > 0 {
+			out.AvgReworkRatio = sumRework / float64(nRework)
+		}
+	}
+
 	_ = s.st.DB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM rsi_finding f JOIN rsi_report rp ON f.report_id=rp.id JOIN training_session ts ON ts.id=rp.session_id`+strings.Replace(where, "ts.started_at", "ts.started_at", 1)).Scan(&out.Findings)
+		`SELECT COUNT(*) FROM rsi_finding f JOIN rsi_report rp ON f.report_id=rp.id JOIN training_session ts ON ts.id=rp.session_id`+where, args...).Scan(&out.Findings)
+
+	// Insight-panel trend: every finished optimization round, oldest first.
+	// Rounds — not sessions — are the unit of improvement, so a re-analysis
+	// after applying a fix lands as its own point.
+	out.Trend = []RsiTrendPoint{}
+	tq := `SELECT r.id,r.session_id,r.goal_id,COALESCE(g.title,''),r.round_no,r.created_at,r.metrics_json,r.finding_count
+	       FROM rsi_round r LEFT JOIN goal g ON g.id=r.goal_id`
+	var targs []any
+	if days > 0 {
+		tq += ` WHERE r.created_at >= ?`
+		targs = append(targs, args[len(args)-1])
+	}
+	tq += ` ORDER BY r.created_at ASC`
+	if trows, err := s.st.DB().QueryContext(ctx, tq, targs...); err == nil {
+		for trows.Next() {
+			var p RsiTrendPoint
+			var mj string
+			if err := trows.Scan(&p.RoundID, &p.SessionID, &p.GoalID, &p.GoalTitle, &p.RoundNo, &p.CreatedAt, &mj, &p.FindingCount); err != nil {
+				continue
+			}
+			m := decodeMap(mj)
+			if v, ok := num(m["parallel_speedup"]); ok {
+				p.ParallelSpeedup = v
+			}
+			if v, ok := m["critical_path_ms"].(float64); ok {
+				p.CriticalPathMS = int64(v)
+			} else if v, ok := m["critical_path_ms"].(int64); ok {
+				p.CriticalPathMS = v
+			}
+			if v, ok := num(m["rework_ratio"]); ok {
+				p.ReworkRatio = v
+			}
+			if v, ok := num(m["verify_overhead_ratio"]); ok {
+				p.VerifyOverhead = v
+			}
+			if v, ok := num(m["serialization_loss_ms"]); ok {
+				p.SerializationLossMS = int64(v)
+			}
+			out.Trend = append(out.Trend, p)
+		}
+		trows.Close()
+	}
 	return out, nil
+}
+
+// roundColumns mirrors the SELECT list in ListRounds.
+const roundColumns = `id,session_id,goal_id,round_no,trigger,metrics_json,baseline_json,delta_json,
+ finding_count,critical_count,top_category,top_title,findings_json,summary,narrative,created_at`
+
+// ListRounds returns the full optimization-round ledger for a session,
+// oldest first — the insight panel's timeline.
+func (s *RSIService) ListRounds(ctx context.Context, sessionID string) ([]RsiRound, error) {
+	if sessionID == "" {
+		return nil, NewValidationError("session id is required")
+	}
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT `+roundColumns+` FROM rsi_round WHERE session_id=? ORDER BY round_no ASC`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RsiRound{}
+	for rows.Next() {
+		var r RsiRound
+		var mj, bj, dj, fj string
+		if err := rows.Scan(&r.ID, &r.SessionID, &r.GoalID, &r.RoundNo, &r.Trigger,
+			&mj, &bj, &dj, &r.FindingCount, &r.CriticalCount, &r.TopCategory, &r.TopTitle,
+			&fj, &r.Summary, &r.Narrative, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		r.Metrics = decodeMap(mj)
+		r.Baseline = decodeMap(bj)
+		r.Delta = decodeMap(dj)
+		r.Findings = []RsiFinding{}
+		_ = json.Unmarshal([]byte(fj), &r.Findings)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func num(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case int64:
+		return float64(x), true
+	case int:
+		return float64(x), true
+	}
+	return 0, false
 }
 
 func decodeMap(s string) map[string]any {

@@ -84,7 +84,6 @@ const (
 	EventToolResult EventType = "tool_result" // a tool call finished
 	EventLog        EventType = "log"
 	EventError      EventType = "error"
-	EventUsage      EventType = "usage" // context/cost usage update
 )
 
 // Event is one streamed item during a turn.
@@ -98,11 +97,6 @@ type Event struct {
 	// Status is the tool call status for tool_use/tool_result ("pending",
 	// "in_progress", "completed", "failed").
 	Status string `json:"status,omitempty"`
-	// Usage fields, set on EventUsage.
-	ContextUsed int     `json:"context_used,omitempty"`
-	ContextSize int     `json:"context_size,omitempty"`
-	CostUSD     float64 `json:"cost_usd,omitempty"`
-	Currency    string  `json:"currency,omitempty"`
 }
 
 // Result is the terminal outcome, delivered exactly once on the Run's Result

@@ -7,674 +7,597 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"time"
+	"strings"
 
 	"github.com/eushing/agentwork/internal/events"
-	"github.com/eushing/agentwork/internal/logging"
 )
 
-// analyzeRun is one execution segment considered by the analyzer.
-type analyzeRun struct {
-	ID         string
-	AgentID    string
-	Role       string
-	Status     string
-	Attempt    int
-	StartedMS  int64
-	FinishedMS int64
-	Summary    string
-}
+// Structure analysis (W-RSI). Input: the assembled WorkflowGraph + entity
+// tables. Output: one rsi_report (summary/metrics/baseline/frozen workflow)
+// + zero or more rsi_findings, one per fired rule. All rules are
+// deterministic thresholds over the metrics — no LLM in the loop, nothing
+// executes by itself. Scope (user decision 2026-11-08): T1 structure +
+// T2 dispatch + T3 info-flow only; node-internal strategy and platform
+// parameters are out of optimization scope (observed at most); the meta
+// layer is never auto-changed.
+//
+// Nine rule families (docs/research/rsi-summary.md §4.3):
+//   structure:  serial_chain, lost_parallelism, split_candidate, merge_candidate
+//   dispatch:   wrong_assignee (lane imbalance)
+//   info-flow:  ping_pong (consult loops), brief_quality (rework magnet),
+//               consult_repeat (mid-execution clarification)
+//   node-level: retry_amplification, human_wait (entity-level, not spans)
+const (
+	ruleSerialChainThreshold = 4    // ≥4-node chain on the critical path
+	ruleLostParallelGain     = 2.0  // achievable speedup ≥2×
+	ruleSplitCount           = 2    // ≥2 heavy nodes on the critical path
+	ruleSplitShare           = 0.45 // heavy node ≥45% of critical path
+	ruleMergeWall            = 3    // ≥3 leaf nodes ending within the window
+	ruleMergeSpread          = 0.60 // their end spread ≤60% of the max node duration
+	ruleLaneImbalance        = 2.0  // busiest lane ≥2× lane average
+	rulePingPongPairs        = 3    // ≥3 consults between the same pair
+	ruleReworkRatio          = 0.5  // ≥50% verification rounds rejected
+	ruleConsultRepeat        = 3    // ≥3 mid-execution consults
+	ruleRetryAmplification   = 2.0  // attempts ≥2× node count
+	ruleHumanWaitShare       = 0.30 // gate wait ≥30% of wall clock
+)
 
-type spanRec struct {
-	ID       string
-	Kind     string
-	Name     string
-	Tool     string
-	ArgsHash string
-	StartMS  int64
-	EndMS    int64
-	Duration int64
-	Status   string
-	Cost     float64
-	Used     int
-	Size     int
-}
-
-// Analyze computes the deterministic report and findings for one session,
-// rewrites the derived run/verify/gate spans, and marks the session ready.
-// It is idempotent: a retry replaces the previous report.
+// Analyze is idempotent: it deletes the previous report+findings for the
+// session and rebuilds them, so Retry always converges.
 func (s *RSIService) Analyze(ctx context.Context, sessionID string) error {
-	s.analyzeMu.Lock()
-	defer s.analyzeMu.Unlock()
-
-	var goalID, status, startedAt string
-	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT goal_id,status,started_at FROM training_session WHERE id=?`, sessionID).
-		Scan(&goalID, &status, &startedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
+	var goalID string
+	if err := s.st.DB().QueryRowContext(ctx,
+		`SELECT goal_id FROM training_session WHERE id=?`, sessionID).Scan(&goalID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
 	}
+
+	graph, err := s.BuildGoalWorkflow(ctx, goalID)
 	if err != nil {
-		return err
+		return fmt.Errorf("build workflow: %w", err)
 	}
-	var goalTitle, goalStatus, goalCreated string
-	err = s.st.DB().QueryRowContext(ctx,
-		`SELECT title,status,created_at FROM goal WHERE id=?`, goalID).
-		Scan(&goalTitle, &goalStatus, &goalCreated)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("goal %s vanished", goalID)
-	}
-	if err != nil {
-		return err
-	}
+	graph.Frozen = true
+	metrics := graph.Metrics
+	baseline := s.baseline(ctx, sessionID)
 
-	// Load runs (worker runs only — processor runs are compile/intake tasks,
-	// not the goal's execution).
-	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT id,COALESCE(agent_id,''),COALESCE(role,''),status,attempt,
-		        COALESCE(started_at,''),COALESCE(finished_at,''),COALESCE(result_summary,'')
-		 FROM run WHERE goal_id=? AND goal_id<>'' AND COALESCE(run_kind,'worker')='worker'
-		 ORDER BY created_at ASC`, goalID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	var runs []analyzeRun
-	for rows.Next() {
-		var r analyzeRun
-		var st, fin string
-		if err := rows.Scan(&r.ID, &r.AgentID, &r.Role, &r.Status, &r.Attempt, &st, &fin, &r.Summary); err != nil {
-			return err
-		}
-		r.StartedMS, _ = parseMS(st)
-		r.FinishedMS, _ = parseMS(fin)
-		runs = append(runs, r)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	existing, err := s.spansFor(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	var toolSpans []spanRec
-	for _, sp := range existing {
-		if sp.Kind == "tool" || sp.Kind == "llm" {
-			toolSpans = append(toolSpans, spanRec{ID: sp.ID, Kind: sp.Kind, Name: sp.Name, Tool: sp.ToolName,
-				ArgsHash: sp.ArgsHash, StartMS: sp.StartedAt, EndMS: sp.EndedAt, Duration: sp.DurationMS,
-				Status: sp.Status, Cost: sp.CostUSD, Used: sp.ContextUsed, Size: sp.ContextSize})
-		}
-	}
-
-	// Human checkpoint decisions (waiting time is its own span).
-	type gateRec struct {
-		Rule, Decision, Reason, DecidedBy, At string
-		DurationS                             int64
-	}
-	var gates []gateRec
-	grows, err := s.st.DB().QueryContext(ctx,
-		`SELECT COALESCE(gate_rule,''),COALESCE(decision,''),COALESCE(reason,''),COALESCE(decided_by,''),COALESCE(decided_at,''),COALESCE(review_duration,0)
-		 FROM gate_decision WHERE goal_id=? ORDER BY decided_at ASC`, goalID)
-	if err != nil {
-		return err
-	}
-	for grows.Next() {
-		var g gateRec
-		if err := grows.Scan(&g.Rule, &g.Decision, &g.Reason, &g.DecidedBy, &g.At, &g.DurationS); err != nil {
-			grows.Close()
-			return err
-		}
-		gates = append(gates, g)
-	}
-	grows.Close()
-
-	// Verification results are labels, not costs.
-	type verifyRec struct {
-		RunID, Status, Summary, At string
-	}
-	var verifies []verifyRec
-	vrows, err := s.st.DB().QueryContext(ctx,
-		`SELECT COALESCE(verifier_run_id,''),COALESCE(status,''),COALESCE(summary,''),COALESCE(created_at,'')
-		 FROM verification_result WHERE goal_id=? ORDER BY created_at ASC`, goalID)
-	if err != nil {
-		return err
-	}
-	for vrows.Next() {
-		var v verifyRec
-		if err := vrows.Scan(&v.RunID, &v.Status, &v.Summary, &v.At); err != nil {
-			vrows.Close()
-			return err
-		}
-		verifies = append(verifies, v)
-	}
-	vrows.Close()
-
-	// ── Derived spans (idempotent rewrite) ──
-	if _, err := s.st.DB().ExecContext(ctx,
-		`DELETE FROM trace_span WHERE session_id=? AND kind IN ('run','verify','gate','human_wait')`, sessionID); err != nil {
-		return err
-	}
-	for _, r := range runs {
-		st := "ok"
-		switch r.Status {
-		case "failed":
-			st = "error"
-		case "cancelled":
-			st = "cancelled"
-		case "running", "queued":
-			st = "running"
-		}
-		start := r.StartedMS
-		if start == 0 {
-			start = r.FinishedMS
-		}
-		attrs := map[string]any{"agent_id": r.AgentID, "role": r.Role, "attempt": r.Attempt}
-		if r.Summary != "" && len(r.Summary) <= 500 {
-			attrs["summary"] = r.Summary
-		}
-		s.insertDerivedSpan(ctx, sessionID, r.ID, r.ID+":run", "", "run", firstNonEmpty(r.Role, "run"), start, r.FinishedMS, st, "", maxInt(0, r.Attempt-1), attrs)
-	}
-	for _, g := range gates {
-		if g.At == "" {
-			continue
-		}
-		at, ok := parseMS(g.At)
-		if !ok {
-			continue
-		}
-		start := at - g.DurationS*1000
-		if start < 0 {
-			start = at
-		}
-		s.insertDerivedSpan(ctx, sessionID, "", "gate:"+g.Rule+":"+g.At, "", "gate", g.Rule, start, at, g.Decision, "", 0,
-			map[string]any{"decision": g.Decision, "reason": g.Reason, "decided_by": g.DecidedBy})
-		s.insertDerivedSpan(ctx, sessionID, "", "wait:"+g.Rule+":"+g.At, "gate:"+g.Rule+":"+g.At, "human_wait", g.Rule, start, at, "ok", "", 0,
-			map[string]any{"duration_s": g.DurationS, "decision": g.Decision})
-	}
-	for _, v := range verifies {
-		at, _ := parseMS(v.At)
-		st := "ok"
-		if v.Status == "rejected" {
-			st = "error"
-		}
-		s.insertDerivedSpan(ctx, sessionID, v.RunID, firstNonEmpty(v.RunID+":verify", "verify:"+v.At), "", "verify", v.Status, at, at, st, "", 0,
-			map[string]any{"summary": v.Summary})
-	}
-
-	// ── Metrics ──
-	startMS, _ := parseMS(startedAt)
-	if startMS == 0 {
-		startMS, _ = parseMS(goalCreated)
-	}
-	endMS := int64(0)
-	for _, r := range runs {
-		if r.StartedMS > 0 && (startMS == 0 || r.StartedMS < startMS) {
-			startMS = r.StartedMS
-		}
-		if r.FinishedMS > endMS {
-			endMS = r.FinishedMS
-		}
-	}
-	for _, g := range gates {
-		if at, ok := parseMS(g.At); ok && at > endMS {
-			endMS = at
-		}
-	}
-	for _, v := range verifies {
-		if at, ok := parseMS(v.At); ok && at > endMS {
-			endMS = at
-		}
-	}
-	if endMS == 0 {
-		endMS = time.Now().UnixMilli()
-	}
-	if endMS < startMS {
-		endMS = startMS
-	}
-	wallMS := endMS - startMS
-	if wallMS <= 0 {
-		wallMS = 1
-	}
-
-	var intervals [][2]int64
-	var sumRunMS, failedMS int64
-	var failedRuns, retryRuns, retryCount int
-	for _, r := range runs {
-		if r.StartedMS > 0 && r.FinishedMS > r.StartedMS {
-			intervals = append(intervals, [2]int64{r.StartedMS, r.FinishedMS})
-			sumRunMS += r.FinishedMS - r.StartedMS
-		}
-		if r.Status == "failed" {
-			failedRuns++
-			if r.FinishedMS > r.StartedMS {
-				failedMS += r.FinishedMS - r.StartedMS
-			}
-		}
-		if r.Attempt > 1 {
-			retryRuns++
-			retryCount += r.Attempt - 1
-		}
-	}
-	activeMS := unionMS(intervals)
-	if activeMS == 0 {
-		activeMS = wallMS
-	}
-
-	var toolMS, cost float64
-	var toolCalls int
-	contextPeak := 0.0
-	var tokensIn, tokensOut int
-	dupExtraCalls := 0
-	var dupExtraMS int64
-	groups := map[string][]spanRec{}
-	for _, sp := range toolSpans {
-		if sp.Kind == "tool" {
-			toolMS += float64(sp.Duration)
-			toolCalls++
-			if sp.Tool != "" && sp.ArgsHash != "" {
-				key := sp.Tool + "|" + sp.ArgsHash
-				groups[key] = append(groups[key], sp)
-			}
-		}
-		cost += sp.Cost
-		tokensIn += 0
-		tokensOut += 0
-		if sp.Size > 0 {
-			r := float64(sp.Used) / float64(sp.Size)
-			if r > contextPeak {
-				contextPeak = r
-			}
-		}
-	}
-	var dupNames []string
-	for key, list := range groups {
-		if len(list) > 1 {
-			dupExtraCalls += len(list) - 1
-			for _, sp := range list[1:] {
-				dupExtraMS += sp.Duration
-			}
-			if len(dupNames) < 3 {
-				dupNames = append(dupNames, fmt.Sprintf("%s ×%d", firstNonEmpty(list[0].Tool, key), len(list)))
-			}
-		}
-	}
-	humanMS := int64(0)
-	for _, g := range gates {
-		humanMS += g.DurationS * 1000
-	}
-	// Human waiting can overlap a run (a gate decided while other runs are
-	// still active); subtract it from active time so the three shares do not
-	// double-count the same wall-clock second.
-	llmMS := activeMS - int64(toolMS) - humanMS
-	if llmMS < 0 {
-		llmMS = 0
-	}
-	shares := func(v float64) float64 {
-		if wallMS <= 0 {
-			return 0
-		}
-		r := v / float64(wallMS)
-		if r > 1 {
-			r = 1
-		}
-		return r
-	}
-	toolShare := shares(toolMS)
-	llmShare := shares(float64(llmMS))
-	humanShare := shares(float64(humanMS))
-	serialShare := 0.0
-	if sumRunMS > 0 {
-		serialShare = float64(activeMS) / float64(sumRunMS)
-	}
-	dupShare := 0.0
-	if toolCalls > 0 {
-		dupShare = float64(dupExtraCalls) / float64(toolCalls)
-	}
-	retryAmplification := 0.0
-	if wallMS > 0 {
-		retryAmplification = float64(failedMS) / float64(wallMS)
-	}
-	leadTimeMS := int64(0)
-	if goalCreatedMS, ok := parseMS(goalCreated); ok && endMS > goalCreatedMS {
-		leadTimeMS = endMS - goalCreatedMS
-	}
-
-	metrics := map[string]any{
-		"wall_ms": wallMS, "active_ms": activeMS, "lead_time_ms": leadTimeMS,
-		"run_count": len(runs), "step_count": toolCalls,
-		"tool_ms": int64(toolMS), "tool_share": round3(toolShare),
-		"llm_ms": llmMS, "llm_share": round3(llmShare),
-		"human_wait_ms": humanMS, "human_share": round3(humanShare),
-		"serial_share": round3(serialShare),
-		"run_sum_ms":   sumRunMS,
-		"retry_runs":   retryRuns, "retry_count": retryCount,
-		"failed_runs": failedRuns, "retry_amplification": round3(retryAmplification),
-		"duplicate_calls": dupExtraCalls, "duplicate_share": round3(dupShare),
-		"context_peak_ratio": round3(contextPeak),
-		"tokens_in":          tokensIn, "tokens_out": tokensOut,
-		"cost_usd":        round3(cost),
-		"usage_available": contextPeak > 0,
-		"tool_calls":      toolCalls,
-	}
-	baseline := s.baseline(ctx, sessionID, metrics)
-
-	// ── Findings ──
-	gateDesc := ""
-	if len(gates) > 0 {
-		gateDesc = fmt.Sprintf("（%d 次人工审批）", len(gates))
-	}
-	findings := buildFindings(metrics, dupNames, gateDesc)
+	findings := s.structureFindings(ctx, goalID, graph)
+	findings = append(findings, s.dispatchFindings(ctx, goalID, graph)...)
+	findings = append(findings, s.infoFlowFindings(ctx, goalID, graph)...)
+	findings = append(findings, s.nodeFindings(ctx, goalID, graph, metrics, baseline)...)
+	sort.SliceStable(findings, func(i, j int) bool { return findings[i].Score > findings[j].Score })
 	for i := range findings {
-		findings[i].Confidence = s.confidenceFor(ctx, sessionID, findings[i].Category)
+		findings[i].ID = newID()
+		findings[i].Status = "open"
+		findings[i].CreatedAt = now()
 	}
-	summary := buildSummary(goalTitle, metrics, findings)
 
-	// ── Persist report + findings atomically ──
+	summary := summarize(graph, findings)
+	narr := narrative(graph, findings, baseline)
+
 	tx, err := s.st.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM rsi_finding WHERE report_id IN (SELECT id FROM rsi_report WHERE session_id=?)`, sessionID); err != nil {
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM rsi_finding WHERE report_id IN (SELECT id FROM rsi_report WHERE session_id=?)`, sessionID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM rsi_report WHERE session_id=?`, sessionID); err != nil {
 		return err
 	}
-	mb, _ := json.Marshal(metrics)
-	bb, _ := json.Marshal(baseline)
 	reportID := newID()
+	wfJSON, _ := json.Marshal(graph)
+	mj, _ := json.Marshal(metrics)
+	bj, _ := json.Marshal(baseline)
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO rsi_report (id,session_id,status,summary,metrics_json,baseline_json,narrative,error,created_at,finished_at)
-		 VALUES (?,?,'ready',?,?,?,'','',?,?)`,
-		reportID, sessionID, summary, string(mb), string(bb), now(), now()); err != nil {
+		`INSERT INTO rsi_report (id,session_id,status,summary,metrics_json,baseline_json,workflow_json,narrative,created_at,finished_at)
+		 VALUES (?,?, 'ready', ?,?,?,?,?,?,?)`,
+		reportID, sessionID, summary, string(mj), string(bj), string(wfJSON), narr, now(), now()); err != nil {
 		return err
 	}
-	for _, f := range findings {
-		eb, _ := json.Marshal(f.Evidence)
+	for i := range findings {
+		findings[i].ReportID = reportID
+		ev, _ := json.Marshal(findings[i].Evidence)
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO rsi_finding (id,report_id,category,severity,confidence,title,explanation,suggestion,evidence_json,score,status,created_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,'open',?)`,
-			newID(), reportID, f.Category, f.Severity, f.Confidence, f.Title, f.Explanation, f.Suggestion, string(eb), f.Score, now()); err != nil {
+			 VALUES (?,?,?,?,?,?,?,?,?,?, 'open', ?)`,
+			findings[i].ID, reportID, findings[i].Category, findings[i].Severity, findings[i].Confidence,
+			findings[i].Title, findings[i].Explanation, findings[i].Suggestion, string(ev), findings[i].Score, findings[i].CreatedAt); err != nil {
 			return err
 		}
 	}
+	var cpMS int64
+	if v, ok := metrics["critical_path_ms"].(int64); ok {
+		cpMS = v
+	}
+	speedup, _ := metrics["parallel_speedup"].(float64)
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE training_session SET status='ready', error='', finished_at=?,
-		   trace_count=(SELECT COUNT(*) FROM trace_span WHERE session_id=?),
-		   cost_usd=(SELECT COALESCE(SUM(cost_usd),0) FROM trace_span WHERE session_id=?)
-		 WHERE id=?`, now(), sessionID, sessionID, sessionID); err != nil {
+		`UPDATE training_session SET status='ready', finished_at=?, error='',
+		 node_count=?, critical_path_ms=?, parallel_speedup=?, finding_count=? WHERE id=?`,
+		now(), len(graph.Nodes), cpMS, speedup, len(findings), sessionID); err != nil {
+		return err
+	}
+
+	// Insight-panel ledger: append one optimization round per analysis run.
+	// Round 1 fires at goal terminal; later rounds come from manual re-runs
+	// after fixes were applied — the delta column is the result display.
+	var prevNo int
+	var prevMetrics string
+	_ = tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(round_no),0) FROM rsi_round WHERE session_id=?`, sessionID).Scan(&prevNo)
+	roundNo := prevNo + 1
+	trigger := "manual_retry"
+	if prevNo == 0 {
+		trigger = "terminal"
+	} else {
+		_ = tx.QueryRowContext(ctx,
+			`SELECT metrics_json FROM rsi_round WHERE session_id=? AND round_no=?`, sessionID, prevNo).Scan(&prevMetrics)
+	}
+	criticalCount := 0
+	for _, f := range findings {
+		if f.Severity == "critical" {
+			criticalCount++
+		}
+	}
+	topCat, topTitle := "", ""
+	if len(findings) > 0 {
+		topCat, topTitle = findings[0].Category, findings[0].Title
+	}
+	fj, _ := json.Marshal(findings)
+	dj, _ := json.Marshal(computeRoundDelta(decodeMap(prevMetrics), metrics))
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO rsi_round (id,session_id,goal_id,round_no,trigger,metrics_json,baseline_json,delta_json,
+		  finding_count,critical_count,top_category,top_title,findings_json,summary,narrative,created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		newID(), sessionID, goalID, roundNo, trigger, string(mj), string(bj), string(dj),
+		len(findings), criticalCount, topCat, topTitle, string(fj), summary, narr, now()); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if s.bus != nil {
-		s.bus.Publish(ctx, events.Event{Topic: "rsi:ready", Payload: map[string]any{
-			"session_id": sessionID, "goal_id": goalID, "findings": len(findings),
-		}})
-	}
-	s.forgetRun("")
+	s.bus.Publish(ctx, events.Event{Topic: "rsi:ready", Payload: map[string]any{
+		"session_id": sessionID, "goal_id": goalID, "findings": len(findings), "round_no": roundNo,
+	}})
 	return nil
 }
 
-// baseline compares this session against the median of the last 20 ready
-// sessions. With fewer than 5 priors the deltas are omitted (they would be
-// noise, not evidence).
-func (s *RSIService) baseline(ctx context.Context, sessionID string, cur map[string]any) map[string]any {
+// computeRoundDelta compares the insight-panel headline metrics between two
+// consecutive rounds: {key: {from, to, pct}} for every key present in both.
+// pct is omitted when from == 0 (a 0→x jump has no meaningful percentage).
+func computeRoundDelta(prev, cur map[string]any) map[string]any {
 	out := map[string]any{}
-	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT rp.metrics_json FROM rsi_report rp JOIN training_session ts ON ts.id=rp.session_id
-		 WHERE ts.id<>? AND rp.status='ready' ORDER BY rp.created_at DESC LIMIT 20`, sessionID)
-	if err != nil {
+	if len(prev) == 0 {
 		return out
+	}
+	for _, k := range []string{"parallel_speedup", "critical_path_ms", "serialization_loss_ms",
+		"verify_overhead_ratio", "rework_ratio", "consult_count", "human_wait_ms"} {
+		pf, ok1 := num(prev[k])
+		cf, ok2 := num(cur[k])
+		if !ok1 || !ok2 {
+			continue
+		}
+		d := map[string]any{"from": pf, "to": cf}
+		if pf != 0 {
+			d["pct"] = (cf - pf) / pf
+		}
+		out[k] = d
+	}
+	return out
+}
+
+// ── helpers over metrics ────────────────────────────────────────────────
+
+func mi(m map[string]any, k string) int64 {
+	if v, ok := m[k].(int64); ok {
+		return v
+	}
+	return 0
+}
+func mf(m map[string]any, k string) float64 {
+	if v, ok := m[k].(float64); ok {
+		return v
+	}
+	return 0
+}
+
+// agentNodes returns the agent (sub-goal) nodes.
+func agentNodes(g *WorkflowGraph) []WorkflowNode {
+	out := []WorkflowNode{}
+	for _, n := range g.Nodes {
+		if n.Kind == "agent" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// ── T1 structure rules ──────────────────────────────────────────────────
+
+func (s *RSIService) structureFindings(ctx context.Context, goalID string, g *WorkflowGraph) []RsiFinding {
+	out := []RsiFinding{}
+	m := g.Metrics
+	cp := mi(m, "critical_path_ms")
+	work := mi(m, "work_sum_ms")
+	speedup := mf(m, "parallel_speedup")
+
+	// serial_chain: a long forced chain — was this parallelism necessary?
+	if depth := len(g.Critical); depth >= ruleSerialChainThreshold {
+		out = append(out, RsiFinding{
+			Category: "serial_chain", Severity: "warn", Confidence: "L1",
+			Title:      fmt.Sprintf("关键路径为 %d 节点串行链", depth),
+			Explanation: fmt.Sprintf("关键路径时长 %s（占墙钟 %.0f%%），整图 work/critical = %.2f×。若链上存在人为引入的依赖（本应并行），这是最大的提速杠杆。",
+				humanMS(cp), pct(cp, mi(m, "wall_ms")), speedup),
+			Suggestion: "逐边检查链上的 depends_on/seq：拆掉仅因「先做完再做」习惯而引入的依赖，把无数据依赖的节点改为并行派发。",
+			Evidence:   []string{fmt.Sprintf("critical_path=%s", strings.Join(g.Critical, " → "))},
+			Score:      float64(depth) * 10,
+		})
+	}
+
+	// split_candidate: heavy nodes dominate the path.
+	heavy := []WorkflowNode{}
+	for _, k := range g.Critical {
+		for _, n := range g.Nodes {
+			if n.Key == k && n.Kind == "agent" && cp > 0 && float64(n.DurationMS)/float64(cp) >= ruleSplitShare {
+				heavy = append(heavy, n)
+			}
+		}
+	}
+	if len(heavy) >= ruleSplitCount {
+		names := make([]string, 0, len(heavy))
+		ev := make([]string, 0, len(heavy))
+		for _, n := range heavy {
+			names = append(names, n.Label)
+			ev = append(ev, fmt.Sprintf("%s: %s（占关键路径 %.0f%%）", n.Label, humanMS(n.DurationMS), 100*float64(n.DurationMS)/float64(cp)))
+		}
+		out = append(out, RsiFinding{
+			Category: "split_candidate", Severity: "warn", Confidence: "L1",
+			Title:      fmt.Sprintf("%d 个重型节点占据关键路径，可拆分并行", len(heavy)),
+			Explanation: fmt.Sprintf("节点 [%s] 各自占关键路径 ≥%d%%。若其内部是「多个独立子项顺序处理」，拆成并行子节点可把该段时长从求和降为取最大。",
+				strings.Join(names, "、"), int(ruleSplitShare*100)),
+			Suggestion: "把这些节点的产出物按数据依赖拆分：每份独立子项开一个 sub_goal（声明 depends_on 只指向真正的前置），由同一 squad 并行认领。",
+			Evidence:   ev,
+			Score:      float64(len(heavy)) * 25,
+		})
+	}
+
+	// lost_parallelism: achievable speedup is large but unrealized.
+	if cp > 0 && work > 0 {
+		gain := float64(work) / float64(cp)
+		if gain >= ruleLostParallelGain && speedup < gain*0.7 {
+			out = append(out, RsiFinding{
+				Category: "lost_parallelism", Severity: "info", Confidence: "L1",
+				Title:      fmt.Sprintf("理论并行收益 %.1f×，实际仅 %.1f×", gain, speedup),
+				Explanation: fmt.Sprintf("总工作量 %s，墙钟 %s。大部分时间节点在排队而非工作 —— 收益差距来自串行化（依赖声明过强或派发过晚）。",
+					humanMS(work), humanMS(mi(m, "wall_ms"))),
+				Suggestion: "对照 seq 边（虚线）复核：时间先后 ≠ 数据依赖。把不共享读写对象的相邻节点改为可并行。",
+				Evidence:   []string{fmt.Sprintf("work_sum_ms=%d wall_ms=%d critical_path_ms=%d", work, mi(m, "wall_ms"), cp)},
+				Score:      gain * 15,
+			})
+		}
+	}
+
+	// merge_candidate: several small siblings finish together — merge overhead.
+	leaves := endingLeaves(g)
+	if len(leaves) >= ruleMergeWall {
+		sort.Slice(leaves, func(i, j int) bool { return leaves[i].EndedAtMS < leaves[j].EndedAtMS })
+		spread := leaves[len(leaves)-1].EndedAtMS - leaves[0].EndedAtMS
+		var maxDur int64
+		for _, n := range leaves {
+			if n.DurationMS > maxDur {
+				maxDur = n.DurationMS
+			}
+		}
+		if maxDur > 0 && float64(spread)/float64(maxDur) <= ruleMergeSpread {
+			out = append(out, RsiFinding{
+				Category: "merge_candidate", Severity: "info", Confidence: "L1",
+				Title:      fmt.Sprintf("%d 个末梢节点几乎同时结束，合并可省派发开销", len(leaves)),
+				Explanation: fmt.Sprintf("节点 [%s] 在 %s 窗口内先后结束，且单个节点都很小（max %s）。每个 sub_goal 都有固定的认领/验证/集成开销。",
+					shortNames(leaves), humanMS(spread), humanMS(maxDur)),
+				Suggestion: "若这些节点由同一执行者完成且共享上下文，合并为一个 sub_goal 的多产出物；仅当需要不同执行者并行时才保留拆分。",
+				Evidence:   []string{fmt.Sprintf("leaves=%d end_spread_ms=%d", len(leaves), spread)},
+				Score:      float64(len(leaves)) * 8,
+			})
+		}
+	}
+	return out
+}
+
+// ── T2 dispatch rules ───────────────────────────────────────────────────
+
+func (s *RSIService) dispatchFindings(ctx context.Context, goalID string, g *WorkflowGraph) []RsiFinding {
+	out := []RsiFinding{}
+	m := g.Metrics
+	if imb := mf(m, "lane_imbalance"); imb >= ruleLaneImbalance && mi(m, "lane_count") >= 2 {
+		out = append(out, RsiFinding{
+			Category: "wrong_assignee", Severity: "warn", Confidence: "L1",
+			Title:      fmt.Sprintf("负载不均：最忙通道是均值的 %.1f 倍", imb),
+			Explanation: fmt.Sprintf("%d 条执行通道（%s）。最忙通道决定墙钟下限 —— 关键路径大概率压在同一个执行者身上。",
+				mi(m, "lane_count"), laneDump(m)),
+			Suggestion: "把最忙通道上可独立的 sub_goal 重新分派给空闲成员（squad 页编排图可直观看通道分布）；或在派发时按 in-flight 数选人。",
+			Evidence:   []string{fmt.Sprintf("lane_imbalance=%.2f lanes=%d", imb, mi(m, "lane_count"))},
+			Score:      imb * 20,
+		})
+	}
+	return out
+}
+
+// ── T3 info-flow rules ──────────────────────────────────────────────────
+
+func (s *RSIService) infoFlowFindings(ctx context.Context, goalID string, g *WorkflowGraph) []RsiFinding {
+	out := []RsiFinding{}
+
+	// ping_pong: consult_request pairs repeating within one goal.
+	type pair struct {
+		req, tgt string
+		n        int
+	}
+	pairs := map[string]*pair{}
+	order := []string{}
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT requester_agent_id,target_agent_id FROM consult_request WHERE goal_id=?`, goalID)
+	if err == nil {
+		for rows.Next() {
+			var req, tgt string
+			if err := rows.Scan(&req, &tgt); err != nil {
+				continue
+			}
+			k := req + "→" + tgt
+			p, ok := pairs[k]
+			if !ok {
+				p = &pair{req: req, tgt: tgt}
+				pairs[k] = p
+				order = append(order, k)
+			}
+			p.n++
+		}
+		rows.Close()
+	}
+	for _, k := range order {
+		p := pairs[k]
+		if p.n >= rulePingPongPairs {
+			out = append(out, RsiFinding{
+				Category: "ping_pong", Severity: "warn", Confidence: "L1",
+				Title:      fmt.Sprintf("咨询乒乓：同一对 agent 往来 %d 次", p.n),
+				Explanation: fmt.Sprintf("%s → %s 往返 %d 次。每次往返都是一整轮 run（排队+执行+等待），信息本可一次给全。",
+					p.req, p.tgt, p.n),
+				Suggestion: "把第一次咨询的问题清单化（一次性列出全部待确认项）；或在派发时把该 target 的上下文直接写进 sub_goal 描述，省掉来回。",
+				Evidence:   []string{fmt.Sprintf("pair=%s count=%d", k, p.n)},
+				Score:      float64(p.n) * 15,
+			})
+		}
+	}
+
+	// brief_quality: verification keeps rejecting — the brief is the magnet.
+	rework := mf(g.Metrics, "rework_ratio")
+	var reworked []string
+	for _, n := range g.Nodes {
+		if n.Kind == "verify" && n.Reworks > 0 && n.Attempt >= 2 {
+			if r := sgLabel(g, n.SubGoalID); r != "" {
+				reworked = append(reworked, fmt.Sprintf("%s（%d 轮 %d 拒）", r, n.Attempt, n.Reworks))
+			}
+		}
+	}
+	if rework >= ruleReworkRatio && len(reworked) > 0 {
+		out = append(out, RsiFinding{
+			Category: "brief_quality", Severity: "warn", Confidence: "L1",
+			Title:      fmt.Sprintf("返工率 %.0f%%：任务简报疑似信息不足", rework*100),
+			Explanation: fmt.Sprintf("验证轮次中 %.0f%% 被拒：%s。反复被拒通常不是执行问题，而是 brief 缺少验收标准或关键上下文。",
+				rework*100, strings.Join(reworked, "；")),
+			Suggestion: "在 sub_goal 描述里补：验收标准（verifier 按什么判 pass）、输入产出物路径、已知约束；必要时先 consult 再派发（前移而不是事后返工）。",
+			Evidence:   reworked,
+			Score:      rework * 40,
+		})
+	}
+
+	// consult_repeat / consult front-loading: consults requested BY a
+	// sub-goal run — clarification happening mid-execution.
+	late := 0
+	crows, err := s.st.DB().QueryContext(ctx,
+		`SELECT COUNT(*) FROM consult_request cr JOIN run r ON r.id=cr.requester_run_id
+		 WHERE cr.goal_id=? AND r.sub_goal_id!=''`, goalID)
+	if err == nil {
+		_ = crows.Scan(&late)
+		crows.Close()
+	}
+	if late >= ruleConsultRepeat {
+		out = append(out, RsiFinding{
+			Category: "consult_repeat", Severity: "info", Confidence: "L1",
+			Title:      fmt.Sprintf("%d 次咨询发生在执行中途", late),
+			Explanation: "执行者边干边问，说明派发时上下文没给全。中途咨询把该节点的墙钟拉长为「执行+等待回复」。",
+			Suggestion: "把这些咨询问题前移到 sub_goal 创建前（先 consult 再拆任务），或在描述中链接参考产出物。",
+			Evidence:   []string{fmt.Sprintf("mid_execution_consults=%d", late)},
+			Score:      float64(late) * 10,
+		})
+	}
+	return out
+}
+
+// ── node-level (entity-derived) rules ───────────────────────────────────
+
+func (s *RSIService) nodeFindings(ctx context.Context, goalID string, g *WorkflowGraph, metrics, baseline map[string]any) []RsiFinding {
+	out := []RsiFinding{}
+
+	// retry_amplification: attempts far above node count.
+	var attempts int
+	for _, n := range agentNodes(g) {
+		attempts += n.Attempt
+	}
+	nodes := len(agentNodes(g))
+	if nodes > 0 && float64(attempts)/float64(nodes) >= ruleRetryAmplification {
+		conf := "L1"
+		if b := numOr(baseline["retry_amplification"]); b > 0 && float64(attempts)/float64(nodes) > b {
+			conf = "L2"
+		}
+		out = append(out, RsiFinding{
+			Category: "retry_amplification", Severity: "warn", Confidence: conf,
+			Title:      fmt.Sprintf("重试放大：平均每节点 %.1f 次 run", float64(attempts)/float64(nodes)),
+			Explanation: fmt.Sprintf("%d 个子任务共 %d 次执行。重试通常意味着失败模式重复（环境/凭据/简报），重试本身不修复原因。", nodes, attempts),
+			Suggestion: "查看失败 sub_goal 的 cancel_reason/错误：若是可自愈类（依赖缺失、锁竞争），把前置检查加进 brief；若是权限类，改为派发前校验。",
+			Evidence:   []string{fmt.Sprintf("runs=%d nodes=%d", attempts, nodes)},
+			Score:      float64(attempts) * 10,
+		})
+	}
+
+	// human_wait: gate review seconds vs wall clock.
+	var humanMSv int64
+	_ = s.st.DB().QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(review_duration),0)*1000 FROM gate_decision WHERE goal_id=?`, goalID).Scan(&humanMSv)
+	if wall := mi(metrics, "wall_ms"); wall > 0 && float64(humanMSv)/float64(wall) >= ruleHumanWaitShare {
+		out = append(out, RsiFinding{
+			Category: "human_wait", Severity: "info", Confidence: "L1",
+			Title:      fmt.Sprintf("人工等待占墙钟 %.0f%%", 100*float64(humanMSv)/float64(wall)),
+			Explanation: fmt.Sprintf("gate 审查累计 %s，墙钟 %s。这是工作流里最大的非机器等待。", humanMS(humanMSv), humanMS(wall)),
+			Suggestion: "把高频 gate 的证据包固化成模板（结论+差异+回滚方案置顶），缩短人工判读时间；纯技术性 gate 可评估改为自动通过+事后抽查。",
+			Evidence:   []string{fmt.Sprintf("human_wait_ms=%d wall_ms=%d", humanMSv, wall)},
+			Score:      float64(humanMSv) / 1000,
+		})
+	}
+	return out
+}
+
+// ── baseline & presentation ─────────────────────────────────────────────
+
+// baseline returns the median structure metrics of the last N ready
+// sessions (excluding this one). <5 samples → empty map (no comparison
+// claims until there is history to compare against).
+func (s *RSIService) baseline(ctx context.Context, exclude string) map[string]any {
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT rp.metrics_json FROM rsi_report rp WHERE rp.status='ready' AND rp.session_id!=?
+		 ORDER BY rp.created_at DESC LIMIT 20`, exclude)
+	if err != nil {
+		return map[string]any{}
 	}
 	defer rows.Close()
-	keys := []string{"wall_ms", "tool_share", "llm_share", "human_share", "context_peak_ratio", "duplicate_share"}
-	vals := map[string][]float64{}
-	n := 0
+	samples := []map[string]any{}
 	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var mj string
+		if err := rows.Scan(&mj); err != nil {
 			continue
 		}
-		m := decodeMap(raw)
-		n++
-		for _, k := range keys {
-			if v, ok := toFloat(m[k]); ok {
-				vals[k] = append(vals[k], v)
-			}
-		}
+		samples = append(samples, decodeMap(mj))
 	}
-	out["sample_size"] = n
-	if n < 5 {
-		return out
+	if len(samples) < 5 {
+		return map[string]any{}
 	}
-	out["sample_size"] = n
+	keys := []string{"critical_path_ms", "parallel_speedup", "serialization_loss_ms", "verify_overhead_ratio", "rework_ratio", "consult_count"}
+	out := map[string]any{}
 	for _, k := range keys {
-		if len(vals[k]) == 0 {
-			continue
-		}
-		med := median(vals[k])
-		out[k+"_median"] = round3(med)
-		if cv, ok := toFloat(cur[k]); ok && med > 0 {
-			out[k+"_delta"] = round3((cv - med) / med)
-		}
-	}
-	return out
-}
-
-func (s *RSIService) confidenceFor(ctx context.Context, sessionID, category string) string {
-	var n int
-	_ = s.st.DB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM rsi_finding f JOIN rsi_report rp ON f.report_id=rp.id
-		 JOIN training_session ts ON ts.id=rp.session_id
-		 WHERE ts.id<>? AND f.category=? AND f.created_at >= ?`,
-		sessionID, category, time.Now().AddDate(0, 0, -30).UTC().Format(time.RFC3339Nano)).Scan(&n)
-	if n >= 2 {
-		return "L2"
-	}
-	return "L1"
-}
-
-func (s *RSIService) insertDerivedSpan(ctx context.Context, sessionID, runID, spanID, parent, kind, name string, start, end int64, status, errClass string, retry int, attrs map[string]any) {
-	if start == 0 {
-		start = end
-	}
-	if end < start {
-		end = start
-	}
-	ab, _ := json.Marshal(attrs)
-	_, err := s.st.DB().ExecContext(ctx,
-		`INSERT OR REPLACE INTO trace_span
-		 (id,session_id,run_id,span_id,parent_span_id,kind,name,started_at_ms,ended_at_ms,duration_ms,status,error_class,retry_count,tool_name,args_hash,tokens_in,tokens_out,cost_usd,context_used,context_size,content_bytes,attrs_json,created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, '', '', 0,0,0,0,0,0,?,?)`,
-		sessionID+"-"+spanID, sessionID, runID, spanID, parent, kind, name, start, end, end-start, status, errClass, retry, string(ab), now())
-	if err != nil {
-		loggingWarn("rsi: insert derived span %s: %v", spanID, err)
-	}
-}
-
-func buildFindings(m map[string]any, dupNames []string, gateDesc string) []RsiFinding {
-	var out []RsiFinding
-	get := func(k string) float64 { v, _ := toFloat(m[k]); return v }
-	add := func(cat, sev, title, expl, sug string, score float64, ev ...string) {
-		if score > 1 {
-			score = 1
-		}
-		score = round3(score)
-		sevNow := sev
-		if score >= 0.5 && sev == "warn" {
-			sevNow = "critical"
-		}
-		out = append(out, RsiFinding{Category: cat, Severity: sevNow, Title: title, Explanation: expl, Suggestion: sug, Score: score, Evidence: ev})
-	}
-	toolShare, llmShare, humanShare := get("tool_share"), get("llm_share"), get("human_share")
-	toolMS, llmMS := get("tool_ms"), get("llm_ms")
-	humanMS := get("human_wait_ms")
-	failedRuns, retryCount, retryAmp := get("failed_runs"), get("retry_count"), get("retry_amplification")
-	dupCalls, dupShare := get("duplicate_calls"), get("duplicate_share")
-	ctxPeak, serialShare := get("context_peak_ratio"), get("serial_share")
-	runCount := get("run_count")
-	steps := get("step_count")
-
-	if toolShare >= 0.30 && toolMS >= 1000 {
-		add("tool_slow", "warn", "工具调用占用了主要执行时间",
-			fmt.Sprintf("工具耗时 %.1fs，占墙钟 %.0f%%；共 %.0f 次调用。", toolMS/1000, toolShare*100, steps),
-			"按工具名排序定位最慢的调用；对重复的读/搜索做缓存，把可并行的工具调用并行化，或缩小返回内容。",
-			toolShare*0.6, fmtEv("tool_ms", toolMS), fmtEv("tool_share", toolShare), fmtEv("steps", steps))
-	}
-	if llmShare >= 0.45 && llmMS >= 1000 {
-		add("llm_slow", "warn", "模型思考/生成占比较高",
-			fmt.Sprintf("扣掉工具后的 run 活跃时间约 %.1fs，占墙钟 %.0f%%。", llmMS/1000, llmShare*100),
-			"检查是否把大段日志/文件读进了上下文；用更小的上下文、更明确的验收标准减少来回；必要时拆分 run。",
-			llmShare*0.4, fmtEv("llm_ms", llmMS), fmtEv("llm_share", llmShare))
-	}
-	if failedRuns >= 1 && (retryAmp >= 0.20 || retryCount >= 2) {
-		add("retries", "critical", "失败与重试放大了交付时间",
-			fmt.Sprintf("失败 run %.0f 个，重试计数 %.0f，失败耗时占墙钟 %.0f%%。", failedRuns, retryCount, retryAmp*100),
-			"先看失败 run 的错误分类：环境/权限失败重试无益，应前置检查；验收失败应补上下文，而不是原样重跑。",
-			retryAmp*0.8, fmtEv("failed_runs", failedRuns), fmtEv("retry_amplification", retryAmp))
-	}
-	if ctxPeak >= 0.70 {
-		add("context_pressure", "warn", "上下文接近上限",
-			fmt.Sprintf("上下文峰值占用 %.0f%%（used/size）。", ctxPeak*100),
-			"把长文件/日志改成按需读取或摘要；在 prompt 中明确「先检索再读全文」；考虑提高上下文预算或压缩历史。",
-			ctxPeak*0.5, fmtEv("context_peak_ratio", ctxPeak))
-	}
-	if dupCalls >= 2 && dupShare >= 0.15 {
-		ev := append([]string{fmtEv("duplicate_calls", dupCalls)}, dupNames...)
-		add("duplicate_calls", "warn", "存在重复的工具调用",
-			fmt.Sprintf("重复调用 %.0f 次，占调用总量 %.0f%%；相同工具+参数被重复执行。", dupCalls, dupShare*100),
-			"在 prompt/策略中要求先读已有结果再调用；对幂等查询加短期缓存；合并同参数的连续调用。",
-			dupShare*0.7, ev...)
-	}
-	if runCount > 1 && serialShare >= 0.70 && activeShareOf(m) >= 0.5 {
-		add("serial_dependency", "info", "多段执行基本是串行的",
-			fmt.Sprintf("%.0f 个 run 的活跃时间并集 / 总和 = %.0f%%，几乎没有并行。", runCount, serialShare*100),
-			"确认是否存在可并行的子任务（独立模块/独立验证）；用 squad 并行或合并没有依赖的步骤，减少交接次数。",
-			serialShare*0.5, fmtEv("serial_share", serialShare), fmtEv("run_count", runCount))
-	}
-	if humanShare >= 0.15 && humanMS >= 1000 {
-		add("human_wait", "info", "人工审批/介入等待占比高",
-			fmt.Sprintf("人工等待 %.1fs，占墙钟 %.0f%%%s。", humanMS/1000, humanShare*100, gateDesc),
-			"对低风险改动放宽 gate 或改为抽样审批；把审批问题一次性问清；设置审批时限与自动升级。",
-			humanShare*0.8, fmtEv("human_wait_ms", humanMS), fmtEv("human_share", humanShare))
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
-	return out
-}
-
-func buildSummary(goalTitle string, m map[string]any, findings []RsiFinding) string {
-	get := func(k string) float64 { v, _ := toFloat(m[k]); return v }
-	wall := get("wall_ms") / 1000
-	line := fmt.Sprintf("「%s」执行墙钟 %.1fs，%d 个 run、%d 次工具调用；工具占 %.0f%%、LLM 占 %.0f%%、人工等待占 %.0f%%。",
-		goalTitle, wall, int(get("run_count")), int(get("step_count")), get("tool_share")*100, get("llm_share")*100, get("human_share")*100)
-	if len(findings) == 0 {
-		return line + " 未发现超过阈值的瓶颈；样本内执行结构较均衡。"
-	}
-	top := findings[0]
-	return line + fmt.Sprintf(" 首要可优化项：%s（%s，score %.2f）。", top.Title, top.Confidence, top.Score)
-}
-
-func activeShareOf(m map[string]any) float64 {
-	a, _ := toFloat(m["active_ms"])
-	w, _ := toFloat(m["wall_ms"])
-	if w <= 0 {
-		return 0
-	}
-	return a / w
-}
-
-func fmtEv(k string, v float64) string {
-	return fmt.Sprintf("%s=%.2f", k, v)
-}
-
-func parseMS(s string) (int64, bool) {
-	if s == "" {
-		return 0, false
-	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.UnixMilli(), true
-		}
-	}
-	return 0, false
-}
-
-func unionMS(iv [][2]int64) int64 {
-	if len(iv) == 0 {
-		return 0
-	}
-	sort.Slice(iv, func(i, j int) bool { return iv[i][0] < iv[j][0] })
-	var total int64
-	curA, curB := iv[0][0], iv[0][1]
-	for _, x := range iv[1:] {
-		if x[0] <= curB {
-			if x[1] > curB {
-				curB = x[1]
+		vals := []float64{}
+		for _, smp := range samples {
+			if v, ok := num(smp[k]); ok {
+				vals = append(vals, v)
 			}
-			continue
 		}
-		total += curB - curA
-		curA, curB = x[0], x[1]
+		if len(vals)*2 > len(samples) { // majority coverage required
+			sort.Slice(vals, func(i, j int) bool { return vals[i] < vals[j] })
+			out[k] = vals[len(vals)/2]
+		}
 	}
-	total += curB - curA
-	return total
+	return out
 }
 
-func median(v []float64) float64 {
-	if len(v) == 0 {
+func summarize(g *WorkflowGraph, findings []RsiFinding) string {
+	m := g.Metrics
+	top := "无明显结构问题"
+	if len(findings) > 0 {
+		top = fmt.Sprintf("首要发现：%s", findings[0].Title)
+	}
+	return fmt.Sprintf("%d 节点 / %d 边，关键路径 %s（墙钟 %s），并行收益 %.2f×。%s",
+		len(g.Nodes), len(g.Edges), humanMS(mi(m, "critical_path_ms")), humanMS(mi(m, "wall_ms")),
+		mf(m, "parallel_speedup"), top)
+}
+
+func narrative(g *WorkflowGraph, findings []RsiFinding, baseline map[string]any) string {
+	var b strings.Builder
+	m := g.Metrics
+	fmt.Fprintf(&b, "本次训练会话把该 goal 的编排过程冻结为一张 %d 节点 / %d 边的工作流图（agent/verify/review/consult/integrate 节点，显式依赖与时间推断边）。\n\n", len(g.Nodes), len(g.Edges))
+	fmt.Fprintf(&b, "结构指标：总工作量 %s，墙钟 %s，关键路径 %s（%d 节点），并行收益 %.2f×，串行损失 %s，峰值并行宽度 %d；验证开销占比 %.0f%%，返工率 %.0f%%，咨询 %d 次，通道 %d 条（不均衡度 %.2f）。\n\n",
+		humanMS(mi(m, "work_sum_ms")), humanMS(mi(m, "wall_ms")), humanMS(mi(m, "critical_path_ms")), len(g.Critical),
+		mf(m, "parallel_speedup"), humanMS(mi(m, "serialization_loss_ms")), mi(m, "parallel_width_peak"),
+		mf(m, "verify_overhead_ratio")*100, mf(m, "rework_ratio")*100, mi(m, "consult_count"), mi(m, "lane_count"), mf(m, "lane_imbalance"))
+	if len(baseline) > 0 {
+		fmt.Fprintf(&b, "与近 20 次就绪会话的中位数基线对比：关键路径 %s → %s，并行收益 %.2f× → %.2f×。\n\n",
+			humanMS(int64(numOr(baseline["critical_path_ms"]))), humanMS(mi(m, "critical_path_ms")),
+			numOr(baseline["parallel_speedup"]), mf(m, "parallel_speedup"))
+	} else {
+		b.WriteString("尚无足够历史（<5 个就绪会话）计算基线，本报告只做单次观察。\n\n")
+	}
+	if len(findings) == 0 {
+		b.WriteString("九类结构规则均未触发：编排结构在本次样本上没有可判定的瓶颈。")
+	} else {
+		fmt.Fprintf(&b, "结构发现（按得分排序，均为只读提案，不自动执行）：\n")
+		for i, f := range findings {
+			fmt.Fprintf(&b, "%d. [%s/%s] %s — %s\n   建议：%s\n", i+1, f.Category, f.Severity, f.Title, f.Explanation, f.Suggestion)
+		}
+	}
+	return b.String()
+}
+
+// ── small formatting helpers ────────────────────────────────────────────
+
+func humanMS(ms int64) string {
+	switch {
+	case ms <= 0:
+		return "0ms"
+	case ms < 1000:
+		return fmt.Sprintf("%dms", ms)
+	case ms < 60000:
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	default:
+		return fmt.Sprintf("%.1fm", float64(ms)/60000)
+	}
+}
+func pct(part, whole int64) float64 {
+	if whole <= 0 {
 		return 0
 	}
-	cp := append([]float64(nil), v...)
-	sort.Float64s(cp)
-	n := len(cp)
-	if n%2 == 1 {
-		return cp[n/2]
+	return float64(part) / float64(whole) * 100
+}
+func numOr(v any) float64 {
+	f, _ := num(v)
+	return f
+}
+func shortNames(nodes []WorkflowNode) string {
+	names := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		names = append(names, n.Label)
 	}
-	return (cp[n/2-1] + cp[n/2]) / 2
+	return strings.Join(names, "、")
 }
-
-func round3(v float64) float64 {
-	return float64(int64(v*1000+0.5)) / 1000
-}
-
-func toFloat(v any) (float64, bool) {
-	switch x := v.(type) {
-	case float64:
-		return x, true
-	case float32:
-		return float64(x), true
-	case int:
-		return float64(x), true
-	case int64:
-		return float64(x), true
-	case json.Number:
-		f, err := x.Float64()
-		return f, err == nil
+func laneDump(m map[string]any) string {
+	lanes, ok := m["lanes"].(map[string]any)
+	if !ok {
+		return "{}"
 	}
-	return 0, false
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
+	parts := []string{}
+	for k, v := range lanes {
+		parts = append(parts, fmt.Sprintf("%s=%dms", k, int64(numOr(v))))
 	}
-	return b
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
+func sgLabel(g *WorkflowGraph, sgid string) string {
+	for _, n := range g.Nodes {
+		if n.Kind == "agent" && n.SubGoalID == sgid {
+			return n.Label
+		}
 	}
-	return b
+	return ""
 }
-
-// loggingWarn keeps the analyzer's non-fatal writes observable without
-// pulling the logging package into every branch.
-func loggingWarn(format string, args ...any) {
-	logging.Infof(format, args...)
+func endingLeaves(g *WorkflowGraph) []WorkflowNode {
+	outgoing := map[string]bool{}
+	for _, e := range g.Edges {
+		outgoing[e.From] = true
+	}
+	out := []WorkflowNode{}
+	for _, n := range g.Nodes {
+		if n.Kind == "agent" && n.EndedAtMS > 0 && !outgoing[n.Key] {
+			out = append(out, n)
+		}
+	}
+	return out
 }

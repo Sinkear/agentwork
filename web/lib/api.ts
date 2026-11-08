@@ -1,4 +1,4 @@
-import type { Runtime, Agent, Goal, Run, Comment, Squad, SquadMember, Schedule, Domain, Checks, TimelineItem, TeamImportResponse, TemplateSummary, TemplateDetail, ApplySquadOverrides, ApplySquadResult, ApplyProjectOverrides, ApplyProjectResult, TemplateFetchResult, WebhookStatus, WebhookRegisterResult, Connection, ConnectionWebhookStatus, ExecutionMode, RsiSession, RsiDetail, RsiOverview, RsiFindingStatus } from "./types";
+import type { Runtime, Agent, Goal, Run, Comment, Squad, SquadMember, Schedule, Domain, Checks, TimelineItem, TeamImportResponse, TemplateSummary, TemplateDetail, ApplySquadOverrides, ApplySquadResult, ApplyProjectOverrides, ApplyProjectResult, TemplateFetchResult, WebhookStatus, WebhookRegisterResult, Connection, ConnectionWebhookStatus, ExecutionMode, RsiSession, RsiDetail, RsiOverview, RsiRound, RsiFindingStatus, WorkflowGraph, WorkflowGoalSummary } from "./types";
 
 // 默认走同源 /backend/*（Next rewrites 转发到本机 daemon 47813）——反代出
 // 去时浏览器无需直连 daemon。本地直连场景可显式设置 NEXT_PUBLIC_API_URL。
@@ -413,6 +413,7 @@ export const listRsiSessions = (params?: { limit?: number }) => {
   return api<RsiSession[]>(`/rsi/sessions${q ? "?" + q : ""}`);
 };
 export const getRsiSession = (id: string) => api<RsiDetail>(`/rsi/sessions/${id}`);
+export const listRsiRounds = (id: string) => api<RsiRound[]>(`/rsi/sessions/${id}/rounds`);
 export const getRsiOverview = (days = 30) => api<RsiOverview>(`/rsi/overview?days=${days}`);
 export const updateRsiFinding = (id: string, status: Exclude<RsiFindingStatus, "open">) =>
   api<{ ok: true }>(`/rsi/findings/${id}`, {
@@ -421,3 +422,14 @@ export const updateRsiFinding = (id: string, status: Exclude<RsiFindingStatus, "
   });
 export const retryRsiSession = (id: string) =>
   api<{ ok: true }>(`/rsi/sessions/${id}/retry`, { method: "POST" });
+
+// ── 编排图（W-RSI v2） ──
+// goal 详情读 live 图（未冻结，随子任务/验证推进变化）；squad 详情读最近
+// goal 的摘要行。两者都是只读，PATCH 不在这里。
+export const getGoalWorkflow = (goalId: string) =>
+  api<WorkflowGraph>(`/workflows/goals/${goalId}`);
+
+export const listSquadWorkflows = (squadId: string, limit = 10) =>
+  api<WorkflowGoalSummary[]>(
+    `/workflows/squads/${squadId}?limit=${Math.max(1, Math.min(50, Math.trunc(limit)))}`
+  );

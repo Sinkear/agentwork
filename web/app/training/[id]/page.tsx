@@ -17,15 +17,16 @@ import {
 import { useRetryRsiSession, useRsiDetail } from "@/lib/queries";
 import { TrainingOverview } from "@/components/training/overview";
 import { TrainingFindings } from "@/components/training/findings";
-import { TrainingTrace } from "@/components/training/trace";
-import { categoryLabel, fmtInt, fmtTime, fmtUsd } from "@/components/training/format";
+import { WorkflowGraphView } from "@/components/training/workflow-graph";
+import { TrainingInsights } from "@/components/training/insights";
+import { categoryLabel, fmtInt, fmtMs, fmtSpeedup, fmtTime } from "@/components/training/format";
 import { cn } from "@/lib/utils";
 
-type Tab = "overview" | "findings" | "trace";
+type Tab = "overview" | "findings" | "workflow" | "insights";
 
 // 会话进行中不提供「重跑」：重跑是失败/跳过后的补救动作，
 // 分析没跑完时按钮没有意义，disabled 也能防止误触打乱状态机。
-const IN_FLIGHT = ["waiting", "collecting", "analyzing"];
+const IN_FLIGHT = ["waiting", "analyzing"];
 
 export default function TrainingDetailPage() {
   const params = useParams<{ id: string }>();
@@ -72,9 +73,9 @@ export default function TrainingDetailPage() {
     );
   }
 
-  const { session, findings, spans } = detail;
+  const { session, findings, workflow, report } = detail;
   const findingCount = findings?.length ?? 0;
-  const spanCount = spans?.length ?? 0;
+  const nodeCount = workflow?.nodes?.length ?? session.node_count ?? 0;
   const inFlight = IN_FLIGHT.includes(session.status);
 
   const onRetry = () => {
@@ -106,8 +107,9 @@ export default function TrainingDetailPage() {
         <Badge status={session.status} />
         <span>开始 {fmtTime(session.started_at)}</span>
         <span>结束 {session.finished_at ? fmtTime(session.finished_at) : "—"}</span>
-        <span>{fmtInt(session.trace_count)} spans</span>
-        <span>成本 {fmtUsd(session.cost_usd)}</span>
+        <span>{fmtInt(nodeCount)} 节点</span>
+        <span>关键路径 {fmtMs(session.critical_path_ms)}</span>
+        <span>并行加速 {fmtSpeedup(session.parallel_speedup)}</span>
         <span>发现 {fmtInt(session.finding_count)} 条</span>
         {session.top_category && (
           <span>
@@ -138,17 +140,50 @@ export default function TrainingDetailPage() {
           options={[
             { value: "overview", label: "概览" },
             { value: "findings", label: `发现${findingCount ? ` ${findingCount}` : ""}` },
-            { value: "trace", label: `Trace${spanCount ? ` ${spanCount}` : ""}` },
+            { value: "workflow", label: `编排${nodeCount ? ` ${nodeCount}` : ""}` },
+            { value: "insights", label: "洞察" },
           ]}
         />
         <span className="text-[11px] text-ink-3">
-          {inFlight ? "分析进行中，页面会自动刷新" : "确认/忽略发现会写回后端"}
+          {inFlight
+            ? "分析进行中，页面会自动刷新"
+            : tab === "insights"
+              ? "历史轮次冻结只读；确认/忽略只作用于最新轮"
+              : "确认/忽略发现会写回后端"}
         </span>
       </div>
 
       {tab === "overview" && <TrainingOverview detail={detail} />}
       {tab === "findings" && <TrainingFindings detail={detail} />}
-      {tab === "trace" && <TrainingTrace detail={detail} />}
+      {tab === "workflow" && (
+        <SectionCard
+          title="编排图"
+          count={nodeCount || undefined}
+          desc={
+            workflow?.frozen
+              ? "任务终态时冻结的只读 DAG；关键路径节点高亮，绿色连线为关键路径"
+              : "实时编排图；任务终态后冻结并用于训练分析"
+          }
+          bodyClassName="p-0"
+        >
+          {!workflow && session.status === "skipped" ? (
+            <Empty>
+              本次会话被采样跳过或运行模式为推理，没有冻结编排图。
+            </Empty>
+          ) : !workflow && session.status === "failed" ? (
+            <Empty>
+              分析失败，没有可用编排图；可点「重跑分析」重试，或查看错误信息。
+            </Empty>
+          ) : (
+            <WorkflowGraphView
+              graph={workflow}
+              metrics={report?.metrics ?? null}
+              heightClass="min-h-[240px]"
+            />
+          )}
+        </SectionCard>
+      )}
+      {tab === "insights" && <TrainingInsights detail={detail} />}
     </PageBody>
   );
 }

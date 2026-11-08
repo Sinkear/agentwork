@@ -106,9 +106,15 @@ func (h *Handlers) Mount(mux *http.ServeMux) {
 	// RSI (训练分析): sessions, findings, overview.
 	mux.HandleFunc("GET /rsi/sessions", h.listRsiSessions)
 	mux.HandleFunc("GET /rsi/sessions/{id}", h.getRsiSession)
+	mux.HandleFunc("GET /rsi/sessions/{id}/rounds", h.listRsiRounds)
 	mux.HandleFunc("GET /rsi/overview", h.rsiOverview)
 	mux.HandleFunc("PATCH /rsi/findings/{id}", h.patchRsiFinding)
 	mux.HandleFunc("POST /rsi/sessions/{id}/retry", h.retryRsiSession)
+
+	// W-RSI 编排图: live workflow graph for a goal / compact summaries for a
+	// squad's recent goals (orchestration visibility, read-only).
+	mux.HandleFunc("GET /workflows/goals/{goalId}", h.goalWorkflow)
+	mux.HandleFunc("GET /workflows/squads/{squadId}", h.squadWorkflows)
 
 	mux.HandleFunc("GET /squads", h.listSquads)
 	mux.HandleFunc("POST /squads", h.createSquad)

@@ -31,6 +31,7 @@ import { Users, Trash2 } from "lucide-react";
 import { cn, relTime } from "@/lib/utils";
 import type { SquadMember } from "@/lib/types";
 import { SquadConnections } from "@/components/squad-connections";
+import { SquadWorkflows } from "@/components/training/squad-workflows";
 
 export default function SquadDetailPage() {
   useGoalEvents();
@@ -276,6 +277,9 @@ export default function SquadDetailPage() {
 
       {/* 仓库接入：每条连接是独立 webhook（契约 3.3c / §5），同一仓库可被多个 squad 接入 */}
       <SquadConnections squadId={id} />
+
+      {/* 编排：近期任务的冻结/实时 DAG 摘要（W-RSI v2） */}
+      <SquadWorkflows squadId={id} />
 
       {/* Add member dialog */}
       {showAdd && (
