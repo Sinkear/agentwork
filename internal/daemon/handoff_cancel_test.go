@@ -19,6 +19,8 @@ import (
 // targets only runs of agents that are no longer the owner; a re-assign to
 // the same agent must NOT cut its own live run.
 func TestHandoffCancelsOldOwnerRun(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -116,6 +118,8 @@ func TestHandoffCancelsOldOwnerRun(t *testing.T) {
 // TestHandoffToHumanCancelsAllRuns: handing the goal back to a human means no
 // agent may keep running on it — every running run is cut.
 func TestHandoffToHumanCancelsAllRuns(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -178,6 +182,8 @@ func TestHandoffToHumanCancelsAllRuns(t *testing.T) {
 // still-running run — a cancelled goal must not keep an agent burning
 // compute. The stop reuses the runCancels registry with reason "stopped".
 func TestCancelStopsRunningRun(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -239,6 +245,8 @@ func TestCancelStopsRunningRun(t *testing.T) {
 // TestStopRunRejectsForeignRun: StopRun refuses a run that does not belong
 // to the given goal.
 func TestStopRunRejectsForeignRun(t *testing.T) {
+	t.Parallel()
+
 	st, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -260,6 +268,8 @@ func TestStopRunRejectsForeignRun(t *testing.T) {
 // stamps the run cancelled with cancel_reason=handoff (决策 6-6) — a handoff cut is an
 // ownership transition, the reason carries the semantics.
 func TestHandoffWindowStampMarksHandedOff(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -334,6 +344,8 @@ func TestHandoffWindowStampMarksHandedOff(t *testing.T) {
 // MarkSession AFTER the `status != "running"` guard, so a handoff-cut run's
 // session was dropped and the next run started with no memory.
 func TestIngestRunFinishedRecordsSessionOnHandoffCutRun(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -449,6 +461,8 @@ func TestIngestRunFinishedRecordsSessionOnHandoffCutRun(t *testing.T) {
 // read could pick up the wrong session. MarkSession must run AFTER the token
 // gate so only the current run's report writes the pointer.
 func TestIngestRunFinishedStaleTokenDoesNotOverwriteSession(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -522,6 +536,8 @@ func TestIngestRunFinishedStaleTokenDoesNotOverwriteSession(t *testing.T) {
 // older completed run, priorSessionFor must pick the completed one; when only
 // cancelled runs exist, it returns "" (fresh start, preferable to poison).
 func TestPriorSessionSkipsCancelledRunSession(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	st, err := store.Open(":memory:")
 	if err != nil {
