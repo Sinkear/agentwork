@@ -25,11 +25,11 @@ func TestDeleteAgentCancelsItsSubGoals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sgRunning, err := gs.CreateSubGoal(ctx, g.ID, "work", "do it", worker, verifier, "agent", owner)
+	sgRunning, err := gs.CreateSubGoal(ctx, g.ID, "work", "do it", worker, verifier, nil, "agent", owner)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
-	sgDone, err := gs.CreateSubGoal(ctx, g.ID, "finished", "already verified", worker, "", "agent", owner)
+	sgDone, err := gs.CreateSubGoal(ctx, g.ID, "finished", "already verified", worker, "", nil, "agent", owner)
 	if err != nil {
 		t.Fatalf("create second sub-goal: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestDeleteAgentCancelsItsSubGoals(t *testing.T) {
 	}
 
 	// Deleting the VERIFIER likewise stops a sub-goal awaiting its verdict.
-	sg3, err := gs.CreateSubGoal(ctx, g.ID, "pending verdict", "x", owner, verifier, "agent", owner)
+	sg3, err := gs.CreateSubGoal(ctx, g.ID, "pending verdict", "x", owner, verifier, nil, "agent", owner)
 	if err != nil {
 		t.Fatalf("create verifier sub-goal: %v", err)
 	}

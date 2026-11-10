@@ -61,6 +61,8 @@ type Handlers struct {
 	// Connection is the first-class squad ↔ repo binding: each row owns its
 	// own webhook path + secret (contract: 仓库连接).
 	Connection *service.ConnectionService
+	// RSI is the training-session / trace-analysis service (训练分析).
+	RSI *service.RSIService
 }
 
 func (h *Handlers) Mount(mux *http.ServeMux) {
@@ -100,6 +102,19 @@ func (h *Handlers) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /goals/{id}/changes", h.listGoalChanges)
 	mux.HandleFunc("GET /goals/{id}/comments", h.listComments)
 	mux.HandleFunc("POST /goals/{id}/comments", h.createComment)
+
+	// RSI (训练分析): sessions, findings, overview.
+	mux.HandleFunc("GET /rsi/sessions", h.listRsiSessions)
+	mux.HandleFunc("GET /rsi/sessions/{id}", h.getRsiSession)
+	mux.HandleFunc("GET /rsi/sessions/{id}/rounds", h.listRsiRounds)
+	mux.HandleFunc("GET /rsi/overview", h.rsiOverview)
+	mux.HandleFunc("PATCH /rsi/findings/{id}", h.patchRsiFinding)
+	mux.HandleFunc("POST /rsi/sessions/{id}/retry", h.retryRsiSession)
+
+	// W-RSI 编排图: live workflow graph for a goal / compact summaries for a
+	// squad's recent goals (orchestration visibility, read-only).
+	mux.HandleFunc("GET /workflows/goals/{goalId}", h.goalWorkflow)
+	mux.HandleFunc("GET /workflows/squads/{squadId}", h.squadWorkflows)
 
 	mux.HandleFunc("GET /squads", h.listSquads)
 	mux.HandleFunc("POST /squads", h.createSquad)
@@ -1423,12 +1438,13 @@ func (h *Handlers) createSubGoal(w http.ResponseWriter, r *http.Request) {
 		Description string `json:"description"`
 		AssigneeID  string `json:"assignee_id"`
 		VerifierID  string `json:"verifier_id"`
+		DependsOn   []string `json:"depends_on"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	// HTTP = the human's surface (决策 6-1: human can split work).
-	out, err := h.Goal.CreateSubGoal(r.Context(), r.PathValue("id"), body.Title, body.Description, body.AssigneeID, body.VerifierID, "human", "")
+	out, err := h.Goal.CreateSubGoal(r.Context(), r.PathValue("id"), body.Title, body.Description, body.AssigneeID, body.VerifierID, body.DependsOn, "human", "")
 	writeJSON(w, out, err)
 }

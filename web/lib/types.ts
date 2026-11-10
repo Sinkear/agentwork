@@ -74,6 +74,11 @@ export type GoalStatus =
   | "failed"
   | "cancelled";
 
+// 运行模式（goal 级开关，RSI 训练分析的入口）：
+//   infer = 只记录 run 级基础指标，不建分析会话（老 goal 缺省即此值）
+//   train = 记录结构 trace，goal 终态后自动产出分析报告
+export type ExecutionMode = "infer" | "train";
+
 export interface Goal {
   id: string;
   title: string;
@@ -92,6 +97,10 @@ export interface Goal {
   current_agent_id: string; // latest running/queued run's agent ('' = none)
   attention: string; // v2 OwnerAttention：'' | integration | wrapup | recovery | user_action
   review_phase: string; // 审查窗口派生阶段：'' | awaiting_review | reviewing | awaiting_approval（决策 6-19 延伸）
+  execution_mode?: ExecutionMode; // 缺省/旧数据视为 infer（后端 DDL 默认 infer）
+  content_capture?: string; // none|redacted|full（train 模式）
+  budget_usd?: number; // 分析预算（train 模式默认 2）
+  sample_rate?: number; // 采样率 0..1（train 模式默认 1）
 }
 
 export interface GateRule {
@@ -281,6 +290,7 @@ export interface SubGoal {
   status: string; // running | verifying | verified | rejected | cancelled | failed
   execution_attempt: number;
   quality_iteration: number;
+  depends_on?: string[]; // 前置子任务 id 列表——全部 verified 后才释放执行
   created_at: string;
 }
 
@@ -598,4 +608,201 @@ export interface TimelineItem {
   decision?: string;             // decision: approve|reject|redirect
   reason?: string;               // decision: the human's words
   review_duration_s?: number;    // decision: seconds spent in review
+}
+
+// ══════════════════════════════════════════════════════════════
+// RSI 训练分析（docs/research/rsi-summary.md §5.2 / §5.5）
+//
+// 契约要点：`metrics` / `baseline` / `attrs` 是对象、`evidence` 是字符串数组，
+// 后端直接序列化 Go 结构体（不是 JSON 字符串）。这里仍按“对象或 unknown”
+// 读取，页面渲染前统一做容错——后端字段演进时旧前端不能白屏。
+// ══════════════════════════════════════════════════════════════
+
+// 会话状态机（后端 schema.sql）：waiting（会话已建，等 goal 进终态）→
+// analyzing（冻结编排图、跑结构规则）→ ready；failed / skipped 是终态。
+// UI 对未知值原样显示，不崩、不误判。
+export type RsiSessionStatus = "waiting" | "analyzing" | "ready" | "failed" | "skipped";
+export type RsiContentCapture = "none" | "redacted" | "full";
+
+export interface RsiSession {
+  id: string;
+  goal_id: string;
+  goal_title: string; // 列表 join goal 标题（后端已拼好，前端不再二次请求）
+  domain_id: string;
+  status: RsiSessionStatus;
+  content_capture: RsiContentCapture;
+  sample_rate: number; // 0..1
+  budget_usd: number;
+  node_count: number; // 冻结编排图里的节点数（不是 span 数）
+  critical_path_ms: number;
+  parallel_speedup: number; // work_sum / critical_path，>=1；1 表示完全串行
+  finding_count: number;
+  top_category: string; // '' = 未归因到具体瓶颈
+  top_title: string;
+  error: string;
+  started_at: string;
+  sealed_at: string;
+  finished_at: string; // '' = 尚未结束
+}
+
+// 严重度是后端的 info|warn|critical（rsi_analyze.go：score >= 0.5 的 warn 升为 critical）。
+export type RsiSeverity = "critical" | "warn" | "info";
+// 三级置信度（§4.3）：L1 单次观察 / L2 单 run 统计 / L3 跨 run 基线。
+export type RsiConfidence = "L1" | "L2" | "L3";
+export type RsiFindingStatus = "open" | "confirmed" | "dismissed";
+
+export interface RsiFinding {
+  id: string;
+  report_id: string;
+  // serial_chain|split_candidate|lost_parallelism|merge_candidate|wrong_assignee|
+  // ping_pong|brief_quality|consult_repeat|retry_amplification|human_wait
+  category: string;
+  severity: RsiSeverity;
+  confidence: RsiConfidence;
+  title: string;
+  explanation: string; // 判据：命中规则 + 具体数值
+  suggestion: string;
+  // 后端 evidence_json 是 []string：节点 key / 链路 或 "metric=value" 测量串。
+  evidence: string[];
+  score: number; // 排序权重，越大越值得先看
+  status: RsiFindingStatus;
+  created_at?: string;
+}
+
+export interface RsiReport {
+  id: string;
+  session_id?: string;
+  status: string; // ready|failed
+  summary: string;
+  metrics: Record<string, unknown>;
+  baseline: Record<string, unknown>;
+  narrative: string; // 可选 LLM 归因（P1），当前为空
+  created_at: string;
+  finished_at: string;
+  error: string;
+}
+
+// ── 优化轮次账本（W-RSI v3 insight panel） ──
+// 每次分析（终态触发或手动重跑）都会在 rsi_round 追加一轮，冻结当轮
+// metrics/baseline/findings，并记录与上一轮的 delta。详情页的
+// rsi_report/rsi_finding 仍是最新一轮，轮次历史只读。
+export type RsiRoundTrigger = "terminal" | "manual_retry";
+
+export interface RsiDeltaEntry {
+  from?: number;
+  to?: number;
+  /** 相对上一轮的变化率（不是百分点）；from=0 时后端省略。 */
+  pct?: number;
+}
+
+export type RsiRoundDelta = Record<string, RsiDeltaEntry>;
+
+export interface RsiRound {
+  id: string;
+  session_id: string;
+  goal_id: string;
+  round_no: number;
+  trigger: RsiRoundTrigger;
+  metrics: Record<string, unknown>;
+  baseline: Record<string, unknown>;
+  delta: RsiRoundDelta;
+  finding_count: number;
+  critical_count: number;
+  top_category: string;
+  top_title: string;
+  findings: RsiFinding[]; // 当轮冻结副本（只读）
+  summary: string;
+  narrative: string;
+  created_at: string;
+}
+
+// GET /rsi/overview 的 trend：每条是 finished round，时间升序。
+export interface RsiTrendPoint {
+  round_id: string;
+  session_id: string;
+  goal_id: string;
+  goal_title: string;
+  round_no: number;
+  created_at: string;
+  parallel_speedup: number;
+  critical_path_ms: number;
+  rework_ratio: number;
+  verify_overhead_ratio: number;
+  serialization_loss_ms: number;
+  finding_count: number;
+}
+
+// ── 编排图（goal 终态时冻结；训练详情读冻结版，goal 详情读 live 版） ──
+export type WorkflowNodeKind = "goal" | "agent" | "verify" | "review" | "consult" | "integrate";
+export type WorkflowEdgeKind =
+  | "created"
+  | "depends_on"
+  | "seq"
+  | "verified_by"
+  | "consult"
+  | "integrated";
+
+export interface WorkflowNode {
+  key: string;
+  kind: WorkflowNodeKind;
+  label: string;
+  assignee_id: string;
+  sub_goal_id: string;
+  run_id: string;
+  status: string;
+  attempt: number;
+  reworks: number;
+  duration_ms: number;
+  started_at_ms: number;
+  ended_at_ms: number;
+  critical_share: number; // 0..1，占关键路径的时长比例
+}
+
+export interface WorkflowEdge {
+  from: string;
+  to: string;
+  kind: WorkflowEdgeKind;
+  source: "explicit" | "inferred";
+}
+
+export interface WorkflowGraph {
+  goal_id: string;
+  generated_at: string;
+  frozen: boolean;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  critical_path: string[]; // 有序节点 key
+  metrics: Record<string, unknown>;
+}
+
+export interface WorkflowGoalSummary {
+  goal_id: string;
+  goal_title: string;
+  status: string;
+  node_count: number;
+  edge_count: number;
+  critical_path_ms: number;
+  parallel_speedup: number;
+  rework_ratio: number;
+}
+
+export interface RsiDetail {
+  session: RsiSession;
+  report: RsiReport | null; // 会话还在 waiting/analyzing 时为 null
+  findings: RsiFinding[];
+  workflow: WorkflowGraph | null; // 分析失败/跳过时可能为 null
+}
+
+// GET /rsi/overview?days=30 —— 列表页顶部概览条。
+export interface RsiOverview {
+  sessions: number;
+  success_rate: number; // 0..1
+  p95_lead_time_ms: number;
+  human_wait_ms: number;
+  avg_parallel_speedup: number;
+  avg_verify_overhead_ratio: number;
+  avg_rework_ratio: number;
+  findings: number;
+  /** 旧后端可能没有该字段；页面必须容忍 undefined/空数组。 */
+  trend?: RsiTrendPoint[];
 }

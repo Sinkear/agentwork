@@ -55,7 +55,9 @@ var builtinProbeTable = []probeEntry{
 	{
 		Name:             "opencode",
 		ProbeCmd:         "opencode --version",
-		ACPSpawn:         []string{"opencode", "acp", "--pure"},
+		// v2.2.5 rejects the unknown --pure flag (prints usage, exits → ACP
+		// "transport closed"). Plain `opencode acp` is the correct spawn.
+		ACPSpawn:         []string{"opencode", "acp"},
 		SkillsDir:        "~/.config/opencode/skills",
 		ProjectSkillsDir: ".opencode/skill",
 		ProfileFiles:     []string{"AGENTS.md"},

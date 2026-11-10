@@ -147,6 +147,7 @@ type Daemon struct {
 	teamImportSvc *service.TeamImportService // team-import processor run lifecycle
 	domainSvc     *service.DomainService     // intake: domain CRUD (NL-driven)
 	skillSvc      *service.SkillService      // intake: skill CRUD (NL-driven)
+	rsi           *service.RSIService        // trace collection + training analysis (optional)
 
 	mu          sync.Mutex
 	workers     map[string]*agentWorker // agentID → per-agent scheduler
@@ -369,6 +370,10 @@ func New(st *store.Store, bus *events.Bus, addr string, protoReg *proto.Registry
 	})
 	return d
 }
+
+// SetRSI wires trace collection + training-session analysis. Optional: when
+// unset, training goals run exactly like inference goals.
+func (d *Daemon) SetRSI(s *service.RSIService) { d.rsi = s }
 
 // SetTeamImportService wires the team-import processor-run lifecycle (called
 // after construction to avoid touching the already-long New signature).
@@ -2243,6 +2248,8 @@ func (d *Daemon) persistEvent(ctx context.Context, runID string, ev proto.Event)
 		}
 		// The buffer key separates use from result so they do not collide:
 		// CallID+":use" for tool_use, CallID+":result" for tool_result.
+		// (W-RSI 2026-11-08: no span capture here — the orchestration graph
+		// is assembled read-time from entity tables, see service/workflow.go.)
 		bufKey := ev.CallID
 		if bufKey != "" {
 			if ev.Type == proto.EventToolResult {

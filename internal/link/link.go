@@ -38,9 +38,9 @@ const (
 	// TRANSPORT relay — ACP frames pass through unparsed, the session
 	// lifecycle (new/list/load/prompt/events/permission) is the protocol's
 	// own business.
-	MethodChatOpen  = "chat.open"  // daemon → machine (request): spawn the agent CLI + ACP connection
-	MethodChatFrame = "chat.frame" // daemon → machine (request): one ACP frame to the CLI's stdin
-	MethodChatClose = "chat.close" // daemon → machine (notification): kill the chat process
+	MethodChatOpen   = "chat.open"   // daemon → machine (request): spawn the agent CLI + ACP connection
+	MethodChatFrame  = "chat.frame"  // daemon → machine (request): one ACP frame to the CLI's stdin
+	MethodChatClose  = "chat.close"  // daemon → machine (notification): kill the chat process
 	MethodChatClosed = "chat.closed" // machine → daemon (notification): the CLI exited
 
 	// machine → daemon (Phase 2)
@@ -50,24 +50,24 @@ const (
 
 	// agent → daemon (/rpc, one-shot; every method carries the per-run
 	// token in params)
-	MethodGoalComment  = "goal.comment"
-	MethodGoalComments = "goal.comments"
-	MethodGoalList     = "goal.list"
-	MethodGoalAssign   = "goal.assign" // agent handoff — actor resolved from the run token (the HTTP surface carries no agent identity)
-	MethodAgentList    = "agent.list"
-	MethodSquadList    = "squad.list"
-	MethodSubGoalList  = "subgoal.list"
-	MethodSubGoalCreate = "subgoal.create"
-	MethodSubGoalCancel = "subgoal.cancel"
-	MethodSubGoalRetry  = "subgoal.retry"
-	MethodSubGoalVerify = "subgoal.verify"
-	MethodSubGoalGet    = "subgoal.get"
-	MethodSubGoalVerifications = "subgoal.verifications"
-	MethodChangeList    = "change.list"
+	MethodGoalComment           = "goal.comment"
+	MethodGoalComments          = "goal.comments"
+	MethodGoalList              = "goal.list"
+	MethodGoalAssign            = "goal.assign" // agent handoff — actor resolved from the run token (the HTTP surface carries no agent identity)
+	MethodAgentList             = "agent.list"
+	MethodSquadList             = "squad.list"
+	MethodSubGoalList           = "subgoal.list"
+	MethodSubGoalCreate         = "subgoal.create"
+	MethodSubGoalCancel         = "subgoal.cancel"
+	MethodSubGoalRetry          = "subgoal.retry"
+	MethodSubGoalVerify         = "subgoal.verify"
+	MethodSubGoalGet            = "subgoal.get"
+	MethodSubGoalVerifications  = "subgoal.verifications"
+	MethodChangeList            = "change.list"
 	MethodChangeIntegrateBegin  = "change.integrate_begin"
 	MethodChangeIntegrateFinish = "change.integrate_finish"
-	MethodGoalWait     = "goal.wait"
-	MethodGoalStats    = "goal.stats"
+	MethodGoalWait              = "goal.wait"
+	MethodGoalStats             = "goal.stats"
 
 	// daemon → machine (Phase 4)
 	MethodConfigPush = "config.push" // request, ack
@@ -75,11 +75,11 @@ const (
 
 // Error codes — the standard JSON-RPC set plus link-specific codes.
 const (
-	CodeParseError   = -32700
-	CodeInvalidReq   = -32600
-	CodeMethodNotFnd = -32601
+	CodeParseError    = -32700
+	CodeInvalidReq    = -32600
+	CodeMethodNotFnd  = -32601
 	CodeInvalidParams = -32602
-	CodeInternal     = -32603
+	CodeInternal      = -32603
 	// CodeAuthDenied: the register was rejected (bad/missing token).
 	CodeAuthDenied = -32001
 	// CodeForbidden: the caller is authenticated as the WRONG party — a
@@ -100,16 +100,16 @@ func (e *RPCError) Error() string { return e.Message }
 // daemon turns these into runtime rows (Phase 2); until then they are
 // displayed in the machines list.
 type ProbeCLI struct {
-	Name         string   `json:"name"`                   // claude | opencode | openagent
-	Version      string   `json:"version"`                // from the probe command
-	ACPSpawn     []string `json:"acp_spawn"`              // how to start it as an ACP stdio server
-	SkillsDir    string   `json:"skills_dir,omitempty"`   // where its GLOBAL skills live (~/.claude/skills)
+	Name      string   `json:"name"`                 // claude | opencode | openagent
+	Version   string   `json:"version"`              // from the probe command
+	ACPSpawn  []string `json:"acp_spawn"`            // how to start it as an ACP stdio server
+	SkillsDir string   `json:"skills_dir,omitempty"` // where its GLOBAL skills live (~/.claude/skills)
 	// ProjectSkillsDir is the relative directory inside a run workdir where
 	// this CLI loads PROJECT-level skills (.claude/skills, .opencode/skill,
 	// .agents/skills) — the executor stages the agent's skills there, and
 	// the commit excludes every probed dir. '' = the executor's fallback.
 	ProjectSkillsDir string   `json:"project_skills_dir,omitempty"`
-	ProfileFiles []string `json:"profile_files,omitempty"` // CLAUDE.md / AGENTS.md / SOUL.md …
+	ProfileFiles     []string `json:"profile_files,omitempty"` // CLAUDE.md / AGENTS.md / SOUL.md …
 }
 
 // RegisterParams is the machine.register request payload.
@@ -190,10 +190,11 @@ type GoalListParams struct {
 // SubGoalCreateParams splits work off the run's goal.
 type SubGoalCreateParams struct {
 	RPCToken
-	Title       string `json:"title"`
-	Description string `json:"description,omitempty"`
-	AssigneeID  string `json:"assignee_id"`
-	VerifierID  string `json:"verifier_id,omitempty"`
+	Title       string   `json:"title"`
+	Description string   `json:"description,omitempty"`
+	AssigneeID  string   `json:"assignee_id"`
+	VerifierID  string   `json:"verifier_id,omitempty"`
+	DependsOn   []string `json:"depends_on"` // workflow edges: only start after ALL of these verified
 }
 
 // SubGoalVerifyParams issues the verifier's verdict.
@@ -273,30 +274,30 @@ type RunDispatchParams struct {
 	Role      string `json:"role"` // owner|subgoal|consult|review|verify
 	SubGoalID string `json:"sub_goal_id,omitempty"`
 	Attempt   int    `json:"attempt"`
-	Token     string `json:"token"` // per-run credential → AGENTWORK_TOKEN env
+	Token     string `json:"token"`  // per-run credential → AGENTWORK_TOKEN env
 	Prompt    string `json:"prompt"` // fixed block + wake line, fully assembled
 
 	// Processor runs (goal-less, platform-internal): the machine works in
 	// its proc dir (compile-on-repo gets a detached worktree of
 	// origin/<default>; scratch/intake a plain directory) and uploads the
 	// artifact files with run.finished.
-	Proc         bool     `json:"proc,omitempty"`
+	Proc          bool     `json:"proc,omitempty"`
 	ArtifactFiles []string `json:"artifact_files,omitempty"`
 
 	// Worktree spec: scratch domains derive the local directory layout;
 	// git (repo) domains carry the clone config — the machine clones the
 	// bare repo, checks out the goal branch, commits, and pushes the
 	// branch to the remote as agentwork/<branch> (中转, Phase 3).
-	Scratch     bool   `json:"scratch"`
-	DomainName  string `json:"domain_name,omitempty"`
-	DomainID    string `json:"domain_id,omitempty"`
-	GitURL      string `json:"git_url,omitempty"`
+	Scratch        bool   `json:"scratch"`
+	DomainName     string `json:"domain_name,omitempty"`
+	DomainID       string `json:"domain_id,omitempty"`
+	GitURL         string `json:"git_url,omitempty"`
 	GitCredentials string `json:"git_credentials,omitempty"`
-	DefaultBranch string `json:"default_branch,omitempty"`
-	GitIdentity string `json:"git_identity,omitempty"` // "name <email>" for commits
+	DefaultBranch  string `json:"default_branch,omitempty"`
+	GitIdentity    string `json:"git_identity,omitempty"` // "name <email>" for commits
 
 	// Runtime spawn config (from the machine-owned runtime row).
-	ACPSpawn []string          `json:"acp_spawn"`          // argv of the ACP stdio server
+	ACPSpawn []string `json:"acp_spawn"` // argv of the ACP stdio server
 	// ProjectSkillsDir: the run's CLI's project-level skills directory
 	// (from the machine's probe report) — the executor stages the agent's
 	// skills there. '' = not probed; the executor falls back to its own
@@ -314,9 +315,9 @@ type RunDispatchParams struct {
 	// when its computed workdir matches PriorWorkDir (agent CLI sessions
 	// are keyed by cwd — a mismatched pointer can never resolve); a
 	// mismatch drops the resume and says so in the prompt.
-	PriorSessionID string `json:"prior_session_id,omitempty"`
-	PriorWorkDir   string `json:"prior_workdir,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`      // runtime env + agent env (merged daemon-side)
+	PriorSessionID string            `json:"prior_session_id,omitempty"`
+	PriorWorkDir   string            `json:"prior_workdir,omitempty"`
+	Env            map[string]string `json:"env,omitempty"` // runtime env + agent env (merged daemon-side)
 	// McpServers are the agent's configured EXTRA MCP servers — the
 	// agent's own tools (browser, database, an external ACP agent via an
 	// MCP bridge, ...). The daemon loads them from agent.mcp_servers and
@@ -409,8 +410,8 @@ type RunPollParams struct{}
 // daemon re-serves it until run.claimed acknowledges delivery — the
 // executor dedupes on an in-flight run id) plus any queued cancels.
 type RunPollResult struct {
-	Run      *RunDispatchParams `json:"run,omitempty"`
-	Cancels  []RunCancelParams  `json:"cancels,omitempty"`
+	Run     *RunDispatchParams `json:"run,omitempty"`
+	Cancels []RunCancelParams  `json:"cancels,omitempty"`
 }
 
 // RunClaimedParams is the run.claimed ack (machine → daemon): the machine
@@ -484,9 +485,9 @@ type ConfigPushResult struct {
 // RunFinishedParams is the run.finished request (machine → daemon): the
 // execution reached a terminal state — the daemon runs Finish + reconcile.
 type RunFinishedParams struct {
-	RunID    string `json:"run_id"`
-	Status   string `json:"status"` // completed|failed|cancelled
-	Summary  string `json:"summary,omitempty"`
+	RunID   string `json:"run_id"`
+	Status  string `json:"status"` // completed|failed|cancelled
+	Summary string `json:"summary,omitempty"`
 	// Token echoes the dispatch's per-run token — the daemon swallows a
 	// report whose token doesn't match the run's CURRENT claim (a stashed
 	// report from an exec killed before a daemon restart must not cancel

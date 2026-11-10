@@ -245,6 +245,7 @@ func (f *eventForwarder) OnToolCall(tc acp.ToolCallUpdate) {
 		CallID: tc.ToolCallID,
 		Input:  toJSONString(tc.RawInput),
 		Output: extractOutput(tc.RawOutput),
+		Status: tc.Status,
 	}
 	if tc.Status == "completed" || tc.Status == "failed" {
 		ev.Type = proto.EventToolResult
@@ -299,7 +300,11 @@ func toJSONString(v any) string {
 }
 func (f *eventForwarder) OnPlan(acp.Plan)                                  {}
 func (f *eventForwarder) OnAvailableCommandsUpdate([]acp.AvailableCommand) {}
-func (f *eventForwarder) OnModeUpdate(acp.SessionModeId)                   {}
-func (f *eventForwarder) OnConfigOptionUpdate([]acp.SessionConfigOption)   {}
-func (f *eventForwarder) OnUsageUpdate(int, int, *acp.Cost)                {}
+func (f *eventForwarder) OnModeUpdate(acp.SessionModeId)                 {}
+func (f *eventForwarder) OnConfigOptionUpdate([]acp.SessionConfigOption) {}
+
+// OnUsageUpdate is a no-op since W-RSI (2026-11-08): usage spans retired —
+// the workflow analyzer reads entity tables only.
+func (f *eventForwarder) OnUsageUpdate(int, int, *acp.Cost) {}
+
 func (f *eventForwarder) OnSessionInfo(string, map[string]any)             {}

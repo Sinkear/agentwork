@@ -46,7 +46,7 @@ func TestReconcilePendingTerminalReplays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestReconcilePendingTerminalSkipsUnstartedCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "sub", b, "", nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}

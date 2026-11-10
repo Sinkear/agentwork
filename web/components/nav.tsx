@@ -18,6 +18,7 @@ import {
   Settings,
   MessagesSquare,
   LayoutDashboard,
+  BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +39,8 @@ export const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     items: [
       { href: "/", label: "总览", icon: LayoutDashboard },
       { href: "/goals", label: "任务", icon: Target },
+      // 训练分析与任务平级：它是“回看任务怎么跑”的入口，不做二级菜单。
+      { href: "/training", label: "训练分析", icon: BarChart3 },
       { href: "/chat", label: "对话", icon: MessageSquare },
       { href: "/goals/new", label: "新建任务", icon: Plus, newTask: true },
       { href: "/schedules", label: "定时任务", icon: Clock },

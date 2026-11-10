@@ -94,6 +94,9 @@ type Event struct {
 	CallID string    `json:"call_id,omitempty"`
 	Input  string    `json:"input,omitempty"`
 	Output string    `json:"output,omitempty"`
+	// Status is the tool call status for tool_use/tool_result ("pending",
+	// "in_progress", "completed", "failed").
+	Status string `json:"status,omitempty"`
 }
 
 // Result is the terminal outcome, delivered exactly once on the Run's Result

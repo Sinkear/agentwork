@@ -132,6 +132,8 @@ func main() {
 	domainSvc.SetRunService(runSvc)
 
 	skillSvc := service.NewSkillService(st)
+	rsiSvc := service.NewRSIService(st, bus)
+	goalSvc.SetRSI(rsiSvc)
 	teamImportSvc := service.NewTeamImportService(st, bus)
 	teamImportSvc.SetDependencies(runSvc, goalSvc, domainSvc, agentSvc, skillSvc, squadSvc)
 
@@ -170,6 +172,7 @@ func main() {
 
 	d := daemon.New(st, bus, *addr, protoReg, goalSvc, runSvc, commentSvc, agentSvc, squadSvc, schedSvc, imConn, qs, intakeSvc)
 	d.SetTeamImportService(teamImportSvc)
+	d.SetRSI(rsiSvc)
 	d.SetDomainService(domainSvc)
 	d.SetSkillService(skillSvc)
 	// Templates need the daemon's git probe (the create-domain gate) and the
@@ -196,6 +199,7 @@ func main() {
 	}()
 
 	srv := server.New(st, bus, d, goalSvc, runSvc, commentSvc, squadSvc, schedSvc, domainSvc, imConn, teamImportSvc, skillSvc, intakeSvc)
+	srv.SetRSI(rsiSvc)
 	srv.SetTemplates(templateSvc, templateApplySvc)
 	if err := srv.ListenAndServe(ctx, *addr); err != nil && !errors.Is(err, context.Canceled) {
 		logging.Fatalf("server: %v", err)

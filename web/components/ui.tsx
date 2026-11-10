@@ -49,6 +49,12 @@ const STATUS_COLORS: Record<string, string> = {
   queued: "bg-zinc-500/10 text-ink-3 dot-zinc",
   running: "bg-green-500/10 text-green-300 dot-green",
   completed: "bg-emerald-500/10 text-emerald-300 dot-emerald",
+  // RSI 训练分析会话状态（§5.2 状态机）：与 goal 状态共用一套色槽位，
+  // 列表/详情页直接复用 Badge，不再单独维护一份颜色表。
+  waiting: "bg-zinc-500/10 text-ink-3 dot-zinc",
+  analyzing: "bg-blue-500/10 text-blue-300 dot-blue",
+  ready: "bg-emerald-500/10 text-emerald-300 dot-emerald",
+  skipped: "bg-zinc-500/10 text-ink-3 dot-zinc",
 };
 
 // 状态的中文显示名：UI 里不再直接暴露 backlog/active 这类枚举值。
@@ -62,6 +68,10 @@ export const STATUS_LABEL: Record<string, string> = {
   completed: "已完成",
   queued: "排队中",
   running: "执行中",
+  waiting: "等待执行",
+  analyzing: "分析中",
+  ready: "已分析",
+  skipped: "已跳过",
   online: "在线",
   offline: "离线",
   paused: "已暂停",

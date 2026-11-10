@@ -1,4 +1,4 @@
-import type { Runtime, Agent, Goal, Run, Comment, Squad, SquadMember, Schedule, Domain, Checks, TimelineItem, TeamImportResponse, TemplateSummary, TemplateDetail, ApplySquadOverrides, ApplySquadResult, ApplyProjectOverrides, ApplyProjectResult, TemplateFetchResult, WebhookStatus, WebhookRegisterResult, Connection, ConnectionWebhookStatus } from "./types";
+import type { Runtime, Agent, Goal, Run, Comment, Squad, SquadMember, Schedule, Domain, Checks, TimelineItem, TeamImportResponse, TemplateSummary, TemplateDetail, ApplySquadOverrides, ApplySquadResult, ApplyProjectOverrides, ApplyProjectResult, TemplateFetchResult, WebhookStatus, WebhookRegisterResult, Connection, ConnectionWebhookStatus, ExecutionMode, RsiSession, RsiDetail, RsiOverview, RsiRound, RsiFindingStatus, WorkflowGraph, WorkflowGoalSummary } from "./types";
 
 // 默认走同源 /backend/*（Next rewrites 转发到本机 daemon 47813）——反代出
 // 去时浏览器无需直连 daemon。本地直连场景可显式设置 NEXT_PUBLIC_API_URL。
@@ -94,7 +94,9 @@ export const listPinnedAgents = () => api<string[]>("/agents/pinned");
 // ── Goal ──
 export const listGoals = () => api<Goal[]>("/goals");
 export const getGoal = (id: string) => api<Goal>(`/goals/${id}`);
-export const createGoal = (body: {
+// CreateGoalBody 同时是「新建任务」表单的提交契约：execution_mode 决定
+// 该 goal 是否进入训练分析；三个高级项只在 train 时透传（后端按默认值补齐）。
+export interface CreateGoalBody {
   title: string;
   description?: string;
   parent_id?: string;
@@ -105,7 +107,13 @@ export const createGoal = (body: {
   handoff_note?: string;
   created_by_type?: string;
   created_by_id?: string;
-}) => api<Goal>("/goals", { method: "POST", body: JSON.stringify(body) });
+  execution_mode?: ExecutionMode;
+  content_capture?: "none" | "redacted" | "full";
+  budget_usd?: number;
+  sample_rate?: number; // 0..1（不是百分数）
+}
+export const createGoal = (body: CreateGoalBody) =>
+  api<Goal>("/goals", { method: "POST", body: JSON.stringify(body) });
 export const deleteGoal = (id: string) =>
   api<void>(`/goals/${id}`, { method: "DELETE" });
 export const assignGoal = (
@@ -131,7 +139,7 @@ export const continueGoal = (id: string) =>
 export const listSubGoals = (goalId: string) => api<import("./types").SubGoal[]>(`/goals/${goalId}/sub-goals`);
 export const createSubGoal = (
   goalId: string,
-  body: { title: string; description?: string; assignee_id: string; verifier_id?: string }
+  body: { title: string; description?: string; assignee_id: string; verifier_id?: string; depends_on?: string[] }
 ) => api<import("./types").SubGoal>(`/goals/${goalId}/sub-goals`, { method: "POST", body: JSON.stringify(body) });
 // A sub-goal's verification rounds (v2: the audit trail behind verified/rejected).
 export const listSubGoalVerifications = (goalId: string, subGoalId: string) =>
@@ -394,3 +402,34 @@ export const applySquadTemplate = (id: string, body: ApplySquadOverrides) =>
 export const applyProjectTemplate = (id: string, body: ApplyProjectOverrides) =>
   api<ApplyProjectResult>(`/templates/projects/${id}/apply`, { method: "POST", body: JSON.stringify(body) });
 
+// ── RSI 训练分析（docs/research/rsi-summary.md §5.5） ──
+// 列表是裸数组；详情是一个聚合对象；overview 只吃 days。PATCH/POST 返回 {ok:true}，
+// 调用方只需要“成功与否”，后续数据靠 invalidate 重新拉。
+// 后端目前只认 limit（1..200，默认 50），状态/时间筛选在前端做。
+export const listRsiSessions = (params?: { limit?: number }) => {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set("limit", String(params.limit));
+  const q = qs.toString();
+  return api<RsiSession[]>(`/rsi/sessions${q ? "?" + q : ""}`);
+};
+export const getRsiSession = (id: string) => api<RsiDetail>(`/rsi/sessions/${id}`);
+export const listRsiRounds = (id: string) => api<RsiRound[]>(`/rsi/sessions/${id}/rounds`);
+export const getRsiOverview = (days = 30) => api<RsiOverview>(`/rsi/overview?days=${days}`);
+export const updateRsiFinding = (id: string, status: Exclude<RsiFindingStatus, "open">) =>
+  api<{ ok: true }>(`/rsi/findings/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+export const retryRsiSession = (id: string) =>
+  api<{ ok: true }>(`/rsi/sessions/${id}/retry`, { method: "POST" });
+
+// ── 编排图（W-RSI v2） ──
+// goal 详情读 live 图（未冻结，随子任务/验证推进变化）；squad 详情读最近
+// goal 的摘要行。两者都是只读，PATCH 不在这里。
+export const getGoalWorkflow = (goalId: string) =>
+  api<WorkflowGraph>(`/workflows/goals/${goalId}`);
+
+export const listSquadWorkflows = (squadId: string, limit = 10) =>
+  api<WorkflowGoalSummary[]>(
+    `/workflows/squads/${squadId}?limit=${Math.max(1, Math.min(50, Math.trunc(limit)))}`
+  );

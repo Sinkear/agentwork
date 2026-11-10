@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -26,6 +27,7 @@ type SubGoal struct {
 	Description      string `json:"description"`
 	AssigneeID       string `json:"assignee_id"`
 	VerifierID       string `json:"verifier_id"` // '' = machine (domain verify commands)
+	DependsOn        []string `json:"depends_on"` // first run waits until ALL are verified (W-RSI gating)
 	Status           string `json:"status"`      // running|verifying|verified|rejected|cancelled|failed（pending/done 无写入路径，见 schema.sql）
 	ExecutionAttempt int    `json:"execution_attempt"`
 	QualityIteration int    `json:"quality_iteration"`
@@ -46,7 +48,7 @@ const maxActiveSubGoals = 20
 // run enqueued. The goal's owner/status are untouched. Only the goal's owner
 // (agent run), a squad leader, or a human may create (checked by the caller —
 // the MCP tool's requireOwnerOf; the service trusts the caller identity).
-func (s *GoalService) CreateSubGoal(ctx context.Context, goalID, title, description, assigneeID, verifierID, createdByType, createdByID string) (*SubGoal, error) {
+func (s *GoalService) CreateSubGoal(ctx context.Context, goalID, title, description, assigneeID, verifierID string, dependsOn []string, createdByType, createdByID string) (*SubGoal, error) {
 	if title == "" {
 		return nil, NewFieldRequiredError("title")
 	}
@@ -108,6 +110,35 @@ func (s *GoalService) CreateSubGoal(ctx context.Context, goalID, title, descript
 			return nil, err
 		}
 	}
+	// Depends-on gating (W-RSI 2026-11-08): normalize declared dependencies.
+	// A dep must exist, belong to the same goal, and not be terminal-failed;
+	// the graph stays acyclic by construction (deps predate the new node).
+	deps := make([]string, 0, len(dependsOn))
+	seenDeps := map[string]bool{}
+	for _, d := range dependsOn {
+		d = strings.TrimSpace(d)
+		if d == "" || seenDeps[d] {
+			continue
+		}
+		seenDeps[d] = true
+		deps = append(deps, d)
+	}
+	for _, d := range deps {
+		var depGoal, depStatus string
+		err := s.st.DB().QueryRowContext(ctx, `SELECT goal_id,status FROM sub_goal WHERE id=?`, d).Scan(&depGoal, &depStatus)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, NewValidationError(fmt.Sprintf("depends_on: sub-goal %q not found", d))
+		}
+		if err != nil {
+			return nil, fmt.Errorf("check dependency %s: %w", d, err)
+		}
+		if depGoal != goalID {
+			return nil, NewValidationError("depends_on: sub-goal " + d + " belongs to another goal")
+		}
+		if depStatus == "failed" || depStatus == "cancelled" {
+			return nil, NewValidationError("depends_on: sub-goal " + d + " is " + depStatus + " — it can never release this work item")
+		}
+	}
 	ts := now()
 	sg := SubGoal{
 		ID:          newID(),
@@ -116,6 +147,7 @@ func (s *GoalService) CreateSubGoal(ctx context.Context, goalID, title, descript
 		Description: description,
 		AssigneeID:  assigneeID,
 		VerifierID:  verifierID,
+		DependsOn:   deps,
 		Status:      "running",
 		CreatedAt:   ts,
 	}
@@ -132,9 +164,9 @@ func (s *GoalService) CreateSubGoal(ctx context.Context, goalID, title, descript
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO sub_goal (id,goal_id,title,description,assignee_id,verifier_id,status,execution_attempt,quality_iteration,created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		sg.ID, sg.GoalID, sg.Title, sg.Description, sg.AssigneeID, sg.VerifierID, sg.Status, sg.ExecutionAttempt, sg.QualityIteration, sg.CreatedAt); err != nil {
+		`INSERT INTO sub_goal (id,goal_id,title,description,assignee_id,verifier_id,status,execution_attempt,quality_iteration,created_at,depends_on)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		sg.ID, sg.GoalID, sg.Title, sg.Description, sg.AssigneeID, sg.VerifierID, sg.Status, sg.ExecutionAttempt, sg.QualityIteration, sg.CreatedAt, encodeDeps(deps)); err != nil {
 		return nil, fmt.Errorf("insert sub_goal: %w", err)
 	}
 	// P2-1 (决策 6-15⑩): the dispatch comment is born WITH the sub-goal and
@@ -176,14 +208,32 @@ func (s *GoalService) CreateSubGoal(ctx context.Context, goalID, title, descript
 		dispatchID, sg.GoalID, createdByType, createdByID, dispatchContent, ts); err != nil {
 		return nil, fmt.Errorf("insert dispatch comment: %w", err)
 	}
-	_, runEv, err := s.runSvc.enqueueSubGoalRunTx(ctx, tx, sg.ID, dispatchID)
-	if err != nil {
-		return nil, fmt.Errorf("enqueue sub-goal run: %w", err)
+	// Depends-on gating: the first run is born only when every declared
+	// dependency is already verified. Otherwise the sub-goal waits (no run
+	// row ⇒ nothing claimable) and wakeDependentsTx releases it in the
+	// transaction that verifies the last unmet dep.
+	depsReady := true
+	if len(deps) > 0 {
+		var verifiedCount int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sub_goal WHERE goal_id=? AND status='verified' AND id IN (`+depsPlaceholders(len(deps))+`)`,
+			append([]any{goalID}, depsArgs(deps)...)...).Scan(&verifiedCount); err != nil {
+			return nil, fmt.Errorf("check dependencies: %w", err)
+		}
+		depsReady = verifiedCount == len(deps)
+	}
+	var runEv *events.Event
+	if depsReady {
+		_, ev, err := s.runSvc.enqueueSubGoalRunTx(ctx, tx, sg.ID, dispatchID)
+		if err != nil {
+			return nil, fmt.Errorf("enqueue sub-goal run: %w", err)
+		}
+		runEv = ev
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	logging.Infof("sub-goal: created %q (goal %s) → assignee=%s verifier=%s", sg.Title, sg.GoalID, sg.AssigneeID, sg.VerifierID)
+	logging.Infof("sub-goal: created %q (goal %s) → assignee=%s verifier=%s deps=%d gated=%v", sg.Title, sg.GoalID, sg.AssigneeID, sg.VerifierID, len(deps), !depsReady)
 	s.bus.Publish(ctx, events.Event{Topic: "sub_goal.created", Payload: map[string]any{
 		"goal_id": goalID, "sub_goal_id": sg.ID,
 	}})
@@ -196,23 +246,25 @@ func (s *GoalService) CreateSubGoal(ctx context.Context, goalID, title, descript
 // GetSubGoal loads one sub-goal row.
 func (s *GoalService) GetSubGoal(ctx context.Context, id string) (*SubGoal, error) {
 	var sg SubGoal
+	var depsRaw string
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT id,goal_id,title,description,assignee_id,verifier_id,status,execution_attempt,quality_iteration,created_at
+		`SELECT id,goal_id,title,description,assignee_id,verifier_id,status,execution_attempt,quality_iteration,created_at,COALESCE(depends_on,'[]')
 		 FROM sub_goal WHERE id=?`, id).
-		Scan(&sg.ID, &sg.GoalID, &sg.Title, &sg.Description, &sg.AssigneeID, &sg.VerifierID, &sg.Status, &sg.ExecutionAttempt, &sg.QualityIteration, &sg.CreatedAt)
+		Scan(&sg.ID, &sg.GoalID, &sg.Title, &sg.Description, &sg.AssigneeID, &sg.VerifierID, &sg.Status, &sg.ExecutionAttempt, &sg.QualityIteration, &sg.CreatedAt, &depsRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	sg.DependsOn = decodeDeps(depsRaw)
 	return &sg, nil
 }
 
 // ListSubGoals lists a goal's sub-goals (oldest first).
 func (s *GoalService) ListSubGoals(ctx context.Context, goalID string) ([]SubGoal, error) {
 	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT id,goal_id,title,description,assignee_id,verifier_id,status,execution_attempt,quality_iteration,created_at
+		`SELECT id,goal_id,title,description,assignee_id,verifier_id,status,execution_attempt,quality_iteration,created_at,COALESCE(depends_on,'[]')
 		 FROM sub_goal WHERE goal_id=? ORDER BY created_at`, goalID)
 	if err != nil {
 		return nil, err
@@ -221,9 +273,11 @@ func (s *GoalService) ListSubGoals(ctx context.Context, goalID string) ([]SubGoa
 	out := []SubGoal{}
 	for rows.Next() {
 		var sg SubGoal
-		if err := rows.Scan(&sg.ID, &sg.GoalID, &sg.Title, &sg.Description, &sg.AssigneeID, &sg.VerifierID, &sg.Status, &sg.ExecutionAttempt, &sg.QualityIteration, &sg.CreatedAt); err != nil {
+		var depsRaw string
+		if err := rows.Scan(&sg.ID, &sg.GoalID, &sg.Title, &sg.Description, &sg.AssigneeID, &sg.VerifierID, &sg.Status, &sg.ExecutionAttempt, &sg.QualityIteration, &sg.CreatedAt, &depsRaw); err != nil {
 			return nil, err
 		}
+		sg.DependsOn = decodeDeps(depsRaw)
 		out = append(out, sg)
 	}
 	return out, rows.Err()
@@ -325,6 +379,13 @@ func (s *GoalService) reconcileSubGoalRunOnce(ctx context.Context, rc goalRunCon
 				"goal_id": sg.GoalID, "change_id": changeID, "sub_goal_id": sg.ID,
 			}})
 		}
+		// Depends-on gating: release gated siblings whose deps are now ALL
+		// verified (their first runs are born in THIS transaction, P0-3).
+		wakeEvs, err := s.wakeDependentsTx(ctx, tx, sg.GoalID, sg.ID)
+		if err != nil {
+			return err
+		}
+		evs = append(evs, wakeEvs...)
 	case "failed", "cancelled":
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE sub_goal SET execution_attempt=execution_attempt+1 WHERE id=? AND status IN ('running','done')`,
@@ -515,6 +576,12 @@ func (s *GoalService) VerifySubGoal(ctx context.Context, runID, verdict, summary
 				"goal_id": sg.GoalID, "change_id": changeID, "sub_goal_id": sg.ID,
 			}})
 		}
+		// Depends-on gating: release gated siblings (first runs born here).
+		wakeEvs, err := s.wakeDependentsTx(ctx, tx, sg.GoalID, sg.ID)
+		if err != nil {
+			return err
+		}
+		evs = append(evs, wakeEvs...)
 	} else {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE sub_goal SET status='running', quality_iteration=quality_iteration+1 WHERE id=? AND status='verifying'`,
@@ -907,4 +974,107 @@ func (s *GoalService) WaitChildren(ctx context.Context, goalID string) ([]SubGoa
 		case <-time.After(5 * time.Second):
 		}
 	}
+}
+
+// wakeDependentsTx releases dependency-gated sub-goals after a verified
+// transition (W-RSI depends_on gating, 2026-11-08): a gated sub-goal is
+// created WITHOUT its first run; the first run is enqueued here in the SAME
+// transaction that verified the last unmet dependency (P0-3 — the run cannot
+// be lost to a crash). Returns run events for post-commit publish.
+func (s *GoalService) wakeDependentsTx(ctx context.Context, tx *sql.Tx, goalID, justVerified string) ([]events.Event, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, COALESCE(depends_on,'[]') FROM sub_goal
+		 WHERE goal_id=? AND status='running'
+		   AND NOT EXISTS (SELECT 1 FROM run WHERE run.sub_goal_id=sub_goal.id AND run.role='subgoal')`,
+		goalID)
+	if err != nil {
+		return nil, fmt.Errorf("scan gated sub-goals: %w", err)
+	}
+	type gatedSG struct {
+		id   string
+		deps []string
+	}
+	var pending []gatedSG
+	for rows.Next() {
+		var g gatedSG
+		var raw string
+		if err := rows.Scan(&g.id, &raw); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		g.deps = decodeDeps(raw)
+		pending = append(pending, g)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var evs []events.Event
+	for _, g := range pending {
+		if len(g.deps) == 0 {
+			continue // never created without a run — ungated
+		}
+		ready := true
+		for _, d := range g.deps {
+			var n int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sub_goal WHERE id=? AND status='verified'`, d).Scan(&n); err != nil {
+				return nil, fmt.Errorf("check dep %s of %s: %w", d, g.id, err)
+			}
+			if n == 0 {
+				ready = false
+				break
+			}
+		}
+		if !ready {
+			continue
+		}
+		_, runEv, err := s.runSvc.enqueueSubGoalRunTx(ctx, tx, g.id, "")
+		if err != nil {
+			return nil, fmt.Errorf("wake gated sub-goal %s: %w", g.id, err)
+		}
+		logging.Infof("sub-goal: released %s — all depends_on verified (trigger %s)", g.id, justVerified)
+		evs = append(evs, events.Event{Topic: "sub_goal.released", Payload: map[string]any{
+			"goal_id": goalID, "sub_goal_id": g.id, "trigger_sub_goal_id": justVerified,
+		}})
+		if runEv != nil {
+			evs = append(evs, *runEv)
+		}
+	}
+	return evs, nil
+}
+
+// decodeDeps parses a sub_goal.depends_on JSON array (bad JSON → nil).
+func decodeDeps(raw string) []string {
+	var out []string
+	if raw == "" {
+		return nil
+	}
+	_ = json.Unmarshal([]byte(raw), &out)
+	return out
+}
+
+// encodeDeps serializes a dependency list to the JSON column form.
+func encodeDeps(deps []string) string {
+	if len(deps) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(deps)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// depsPlaceholders renders "?,?,?" for an IN clause.
+func depsPlaceholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// depsArgs lifts []string to []any for database/sql.
+func depsArgs(deps []string) []any {
+	out := make([]any, len(deps))
+	for i, d := range deps {
+		out[i] = d
+	}
+	return out
 }

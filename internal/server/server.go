@@ -51,6 +51,8 @@ type Server struct {
 	// nil = the endpoints report "not configured").
 	templates     *service.TemplateService
 	templateApply *service.TemplateApplyService
+	// rsi: training sessions / trace analysis (optional — nil disables it).
+	rsiSvc *service.RSIService
 }
 
 func New(st *store.Store, bus *events.Bus, d *daemon.Daemon, goalSvc *service.GoalService, runSvc *service.RunService, commentSvc *service.CommentService, squadSvc *service.SquadService, schedSvc *service.ScheduleService, domainSvc *service.DomainService, imConn *notify.Connector, teamImportSvc *service.TeamImportService, skillSvc *service.SkillService, intakeSvc *notify.IntakeService) *Server {
@@ -59,6 +61,10 @@ func New(st *store.Store, bus *events.Bus, d *daemon.Daemon, goalSvc *service.Go
 
 // SetTemplates wires the template library + apply service (kept out of New's
 // already-long parameter list — the setter matches the daemon wiring style).
+// SetRSI wires the training-session / trace-analysis service (kept out of
+// New's parameter list, like SetTemplates).
+func (s *Server) SetRSI(rsi *service.RSIService) { s.rsiSvc = rsi }
+
 func (s *Server) SetTemplates(templates *service.TemplateService, templateApply *service.TemplateApplyService) {
 	s.templates = templates
 	s.templateApply = templateApply
@@ -107,6 +113,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		TeamImport: s.teamImportSvc,
 		Intake:     s.intakeSvc,
 		Connection: service.NewConnectionService(s.st, s.bus),
+		RSI:        s.rsiSvc,
 		// M4-B: the real-time issue triggers (github + gitcode) share the
 		// poller's create path (source_ref idempotency makes webhook + poll
 		// racing safe). A repo's own webhook_secret wins over the
@@ -631,7 +638,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 			if err := json.Unmarshal(raw, &p); err != nil || p.Title == "" || p.AssigneeID == "" {
 				return nil, &link.RPCError{Code: link.CodeInvalidParams, Message: "title and assignee_id are required"}
 			}
-			sg, err := s.goalSvc.CreateSubGoal(ctx, id.GoalID, p.Title, p.Description, p.AssigneeID, p.VerifierID, "agent", id.AgentID)
+			sg, err := s.goalSvc.CreateSubGoal(ctx, id.GoalID, p.Title, p.Description, p.AssigneeID, p.VerifierID, p.DependsOn, "agent", id.AgentID)
 			if err != nil {
 				return nil, &link.RPCError{Code: link.CodeInternal, Message: err.Error()}
 			}

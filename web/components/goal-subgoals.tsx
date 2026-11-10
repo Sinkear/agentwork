@@ -97,6 +97,7 @@ export function GoalSubGoals({ goalId }: { goalId: string }) {
   useWSEvent("sub_goal.cancelled", () => refetch());
 
   const agentName = (id: string) => agents?.find((a) => a.id === id)?.name ?? id.slice(0, 8);
+  const depTitle = (id: string) => subGoals?.find((s) => s.id === id)?.title ?? id.slice(0, 8);
 
   return (
     <div className="bg-surface-1 rounded-xl border border-line overflow-hidden">
@@ -122,6 +123,18 @@ export function GoalSubGoals({ goalId }: { goalId: string }) {
                     <span className={`transition-transform text-ink-3 ${expanded ? "rotate-90" : ""}`}>▸</span>
                     <span className="font-medium text-ink truncate max-w-[30%]">{sg.title}</span>
                     <SubGoalStatus status={sg.status} />
+                    {sg.depends_on && sg.depends_on.length > 0 && sg.status === "running" && (
+                      <span title="等待依赖完成" aria-label="等待依赖">🔒</span>
+                    )}
+                    {sg.depends_on && sg.depends_on.length > 0 && (
+                      <span className="flex items-center gap-1 flex-wrap">
+                        {sg.depends_on.map((depId) => (
+                          <span key={depId} className="px-1.5 py-px rounded-full text-[10px] bg-surface-2 text-ink-3">
+                            🔗 {depTitle(depId)}
+                          </span>
+                        ))}
+                      </span>
+                    )}
                     <span className="text-ink-3 text-xs">{agentName(sg.assignee_id)}</span>
                     {sg.verifier_id && (
                       <span className="text-ink-3 text-xs">· 验证：{agentName(sg.verifier_id)}</span>
@@ -150,6 +163,7 @@ export function GoalSubGoals({ goalId }: { goalId: string }) {
         <NewSubGoalForm
           goalId={goalId}
           agents={agents}
+          candidates={subGoals ?? []}
           onClose={() => setShowForm(false)}
           onCreate={() => setShowForm(false)}
         />
@@ -161,11 +175,13 @@ export function GoalSubGoals({ goalId }: { goalId: string }) {
 function NewSubGoalForm({
   goalId,
   agents,
+  candidates,
   onClose,
   onCreate,
 }: {
   goalId: string;
   agents?: { id: string; name: string }[];
+  candidates?: SubGoal[]; // 依赖候选 = 同 goal 其他 sub-goal（创建时不存在自身，全部可选）
   onClose: () => void;
   onCreate: () => void;
 }) {
@@ -174,11 +190,12 @@ function NewSubGoalForm({
   const [description, setDescription] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
   const [verifierId, setVerifierId] = useState("");
+  const [dependsOn, setDependsOn] = useState<string[]>([]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     createSubGoal.mutate(
-      { goalId, title, description, assignee_id: assigneeId, verifier_id: verifierId || undefined },
+      { goalId, title, description, assignee_id: assigneeId, verifier_id: verifierId || undefined, depends_on: dependsOn.length > 0 ? dependsOn : undefined },
       { onSuccess: onCreate }
     );
   };
@@ -219,6 +236,26 @@ function NewSubGoalForm({
             ))}
           </select>
         </Field>
+        {candidates && candidates.length > 0 && (
+          <Field label="依赖" hint="可选——勾选的前置子任务全部 verified 后，这个子任务才会开始执行">
+            <div className="border border-line-strong rounded-md max-h-40 overflow-y-auto divide-y divide-line">
+              {candidates.map((sg) => (
+                <label key={sg.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-surface-0">
+                  <input
+                    type="checkbox"
+                    checked={dependsOn.includes(sg.id)}
+                    onChange={(e) =>
+                      setDependsOn((prev) =>
+                        e.target.checked ? [...prev, sg.id] : prev.filter((x) => x !== sg.id)
+                      )
+                    }
+                  />
+                  <span className="truncate">{sg.title}</span>
+                </label>
+              ))}
+            </div>
+          </Field>
+        )}
         {createSubGoal.isError && (
           <p className="text-sm text-red-400">{String(createSubGoal.error)}</p>
         )}
