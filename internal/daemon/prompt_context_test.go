@@ -49,6 +49,8 @@ func seedCtx(t *testing.T) (*Daemon, *store.Store, string, string) {
 // language — the TEAM is NOT part of the prompt anymore (it rides the
 // workdir's AGENTS.md, see TestTeamProfile).
 func TestFixedBlockShape(t *testing.T) {
+	t.Parallel()
+
 	d, st, goalID, agentID := seedCtx(t)
 	ctx := context.Background()
 	block := d.buildFixedBlock(ctx, goalID, agentID, "B", "owner", "g", "goal desc", "测试能过", "repo", "")
@@ -74,6 +76,8 @@ func TestFixedBlockShape(t *testing.T) {
 // TestFixedBlockRoleContracts: each role gets its own behavioral contract —
 // the reviewer is told review-only, the owner the dispatch rules.
 func TestFixedBlockRoleContracts(t *testing.T) {
+	t.Parallel()
+
 	d, _, goalID, agentID := seedCtx(t)
 	ctx := context.Background()
 	owner := d.buildFixedBlock(ctx, goalID, agentID, "B", "owner", "g", "", "", "repo", "")
@@ -97,6 +101,8 @@ func TestFixedBlockRoleContracts(t *testing.T) {
 // carries member skills; a member sees the roster + playbook; a solo goal
 // gets nothing.
 func TestTeamProfile(t *testing.T) {
+	t.Parallel()
+
 	d, st, goalID, agentID := seedCtx(t)
 	ctx := context.Background()
 	d.squadSvc = service.NewSquadService(st, events.NewBus())
@@ -139,6 +145,8 @@ func TestTeamProfile(t *testing.T) {
 // TestWakeLineShapes: ONE unified shape — "You were mentioned by <who>
 // (comment <id>):" + content; no wrapper header; the anchor is optional.
 func TestWakeLineShapes(t *testing.T) {
+	t.Parallel()
+
 	wl := buildWakeLine("c1", "openagent-pm", "> 你觉得这个方案怎么样？")
 	if strings.Contains(wl, "## Why you were woken") || !strings.Contains(wl, "You were mentioned by openagent-pm (comment c1):") ||
 		!strings.Contains(wl, "你觉得这个方案怎么样？") {
@@ -166,6 +174,8 @@ func TestWakeLineShapes(t *testing.T) {
 // injecting result_summary text (决策 4-4 revised). The handoff branch must
 // carry the handoff note but must NOT inject the previous owner's report.
 func TestHandoffPromptDoesNotInjectPreviousOwnerReport(t *testing.T) {
+	t.Parallel()
+
 	d, st, goalID, agentID := seedCtx(t)
 	ctx := context.Background()
 
@@ -212,6 +222,8 @@ func TestHandoffPromptDoesNotInjectPreviousOwnerReport(t *testing.T) {
 // no summary) must not inject an empty "Previous owner's last report" block —
 // that would confuse the new owner with a blank citation.
 func TestHandoffPromptNoReportWhenNoPriorRun(t *testing.T) {
+	t.Parallel()
+
 	d, _, goalID, agentID := seedCtx(t)
 	ctx := context.Background()
 	q := &service.ClaimedRow{RunID: "run-new", GoalID: goalID, AgentID: agentID, Attempt: 1}
@@ -233,6 +245,8 @@ func TestHandoffPromptNoReportWhenNoPriorRun(t *testing.T) {
 // completed run's report. Cross-agent memory relies on ACP session resume +
 // the agent pulling the feed.
 func TestHandoffPromptSkipsCancelledRunSummary(t *testing.T) {
+	t.Parallel()
+
 	d, st, goalID, agentID := seedCtx(t)
 	ctx := context.Background()
 	var rtID string
@@ -281,6 +295,8 @@ func TestHandoffPromptSkipsCancelledRunSummary(t *testing.T) {
 // run has no trigger/note/handoff but a wake_anchor pointing at the reject
 // comment.
 func TestRejectPromptWakeIsNotHandoff(t *testing.T) {
+	t.Parallel()
+
 	d, st, goalID, agentID := seedCtx(t)
 	ctx := context.Background()
 
@@ -345,6 +361,8 @@ func TestRejectPromptWakeIsNotHandoff(t *testing.T) {
 // falls through to the default assignment branch. This guards against
 // isReject false-positives from the "all-empty" signature alone.
 func TestRejectPromptFallsThroughWithoutGateDecision(t *testing.T) {
+	t.Parallel()
+
 	d, _, goalID, agentID := seedCtx(t)
 	ctx := context.Background()
 	// No gate_decision, no reject comment — a bare owner spawn (first
@@ -368,6 +386,8 @@ func TestRejectPromptFallsThroughWithoutGateDecision(t *testing.T) {
 // absent or not reject). This guards the mutual-exclusivity: reject clears
 // handoff_note, so a non-empty handoff_note means a real handoff.
 func TestHandoffPromptUnaffectedByRejectChange(t *testing.T) {
+	t.Parallel()
+
 	d, st, goalID, agentID := seedCtx(t)
 	ctx := context.Background()
 	// A previous owner completed run (handoff memory source).
@@ -405,6 +425,8 @@ func TestHandoffPromptUnaffectedByRejectChange(t *testing.T) {
 // exist on the same run — a bare LEFT JOIN would produce a cartesian product
 // (one row per comment → duplicate consult entries in the prompt).
 func TestConsultStatusPicksAgentCommentByRunID(t *testing.T) {
+	t.Parallel()
+
 	d, st, goalID, ownerID := seedCtx(t)
 	ctx := context.Background()
 

@@ -13,6 +13,8 @@ import (
 // TestEvalGates covers the M2 gate rule engine: merge always fires, diff_*
 // fire on the run's changed paths, unknown gate kinds never fire.
 func TestEvalGates(t *testing.T) {
+	t.Parallel()
+
 	dir := newTestRepo(t)
 	ctx := context.Background()
 	base, _ := gitRun(ctx, dir, "rev-parse", "HEAD")
@@ -58,6 +60,8 @@ func TestEvalGates(t *testing.T) {
 // on any DELETED file regardless of domain policy — deleting is judged by a
 // human, never unattended (DESIGN.md §5.3, built-in and not overridable).
 func TestEvalGatesBuiltinDeleteBaseline(t *testing.T) {
+	t.Parallel()
+
 	dir := newTestRepo(t)
 	ctx := context.Background()
 
