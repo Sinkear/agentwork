@@ -18,7 +18,7 @@
 - 全仓 `t.Parallel()` 仅 10 处，`internal/daemon` 的 16 个测试文件中 **0 处**；测试相互独立性较好（仅 3 个文件用 `t.Setenv` 隔离 HOME：deliver_test.go、digest_test.go、worktree_test.go）。机器 7 vCPU，并行化空间明确。
 
 **② 拟改动位置（文件 + 行级，已在 33f16dc 核实）**
-- `internal/daemon/intake_test.go`、`verify_test.go`、`prompt_context_test.go`、`handoff_cancel_test.go`、`commit_test.go` 等文件的顶层测试函数，逐一加 `t.Parallel()`（优先挑相互独立、不碰全局状态的）。
+- `internal/daemon/intake_test.go`、`verify_test.go`、`gate_test.go`、`schedule_test.go`、`runaway_test.go`、`prompt_context_test.go`、`handoff_cancel_test.go`（7 个文件均无 `t.Setenv`，已逐一核实）的顶层测试函数，逐一加 `t.Parallel()`（优先挑相互独立、不碰全局状态的）。
 - 对使用 `t.Setenv` 的 3 个文件（`internal/daemon/deliver_test.go`、`digest_test.go`、`worktree_test.go`）保持串行（`t.Setenv` 会自动禁止并行）或重构为显式参数注入后再并行。
 - 次级目标（同法）：`cmd/agentwork-cli`（复跑 5.15s，最慢单测约 1.1s，同样调度开销为主）。
 
