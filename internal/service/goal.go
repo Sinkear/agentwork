@@ -102,6 +102,32 @@ func retryBackoffFor(attempt int) time.Duration {
 	return delay
 }
 
+// nonRetryableMarkers lists failure-summary substrings that identify
+// DETERMINISTIC faults: they cannot heal with time, so a retry is theater
+// that only burns the retry budget and re-wakes the leader for nothing.
+// Whitelist starts with the narrowest high-confidence marker only
+// (model-configuration errors); transient faults keep the full retry
+// behavior below. Extend only with equally unambiguous markers.
+var nonRetryableMarkers = []string{
+	"Model unavailable",
+}
+
+// isNonRetryable reports whether a failed run's summary matches a
+// deterministic (non-retryable) fault. Empty summaries are always
+// retryable — absence of evidence is not evidence of a config error.
+func isNonRetryable(summary string) bool {
+	s := strings.TrimSpace(summary)
+	if s == "" {
+		return false
+	}
+	for _, m := range nonRetryableMarkers {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // Handoff-cycle guard thresholds (决策 5-7): ≥4 ownership transitions write a
 // system warning comment; ≥8 park the goal in review for a human decision —
 // a collaboration anomaly is not a task failure (unlike the mention pingpong
@@ -1334,7 +1360,13 @@ func (s *GoalService) reconcileOnRunEndOnce(ctx context.Context, rc goalRunConte
 		// "resume from prior progress" semantics; the agent re-clones each
 		// attempt anyway.)
 		isImportGoal := g.CreatedByType == "system" && g.CreatedByID == ImportCreatedByID
-		if rc.Attempt < maxAttempts && !isImportGoal {
+		// P3: deterministic faults (model/config/auth errors) cannot heal
+		// with time — same "retry buys nothing" rule as import goals above.
+		// Skip the retry and fall through to the goal-failed terminal branch
+		// with a summary that names the cause, so a human can tell
+		// "environment/config error" from "the work itself failed".
+		nonRetryable := isNonRetryable(rc.Summary)
+		if rc.Attempt < maxAttempts && !isImportGoal && !nonRetryable {
 			// Retry: enqueue a fresh run at attempt+1 on the same agent so
 			// history is preserved. P0-3 (决策 6-13): the retry run is born
 			// IN this transaction — a crash after the commit can no longer
@@ -1379,10 +1411,16 @@ func (s *GoalService) reconcileOnRunEndOnce(ctx context.Context, rc goalRunConte
 				`UPDATE run SET status='cancelled', cancel_reason='goal_terminal' WHERE goal_id=? AND status='queued'`, rc.GoalID); err != nil {
 				return fmt.Errorf("cancel queued runs on fail: %w", err)
 			}
-			// The goal ACTUALLY failed here (attempts exhausted) — the failure
-			// card fires once, not once per failed attempt (决策 5-10).
+			// The goal ACTUALLY failed here (attempts exhausted, or the
+			// failure is deterministic — import goal / non-retryable error,
+			// retrying would buy nothing) — the failure card fires once,
+			// not once per failed attempt (决策 5-10).
+			summary := rc.Summary
+			if nonRetryable {
+				summary = strings.TrimSpace(summary) + "（环境/配置错误，重试无效）"
+			}
 			pendingEvents = append(pendingEvents, events.Event{Topic: "goal:finished", Payload: map[string]any{
-				"goal_id": rc.GoalID, "status": "failed", "summary": rc.Summary,
+				"goal_id": rc.GoalID, "status": "failed", "summary": summary,
 				"agent_ran": rc.SessionID != "",
 			}})
 		}
