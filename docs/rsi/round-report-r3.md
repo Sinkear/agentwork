@@ -1,6 +1,6 @@
 # RSI R3 轮次演进报告（R1→R3）
 
-> 生成：2026-11-11 09:22 UTC · 生成器：`scripts/rsi-round-report.sh 3` · 数据源：daemon API `http://127.0.0.1:47813`（列表端点）+ 本地 git log（agentwork-int-v2）
+> 生成：2026-11-11 09:36 UTC · 生成器：`scripts/rsi-round-report.sh 3` · 数据源：daemon API `http://127.0.0.1:47813`（列表端点）+ 本地 git log（agentwork-int-v2）
 > 本报告自包含：不登录平台即可读懂。指标口径见各节脚注；API 不可达的小节会显式标注。
 
 ## ① 循环演进视图
@@ -27,14 +27,14 @@
 
 ### R3：RSI R3：可感知性改进（演进报告机制）
 
-- goal 终态：`active` · run 总数 38（失败/取消 22）
+- goal 终态：`active` · run 总数 39（失败/取消 22）
 - 训练会话 `4f5193ccc3d0…`：status=`waiting` · 0 节点 · 关键路径 — · 首要发现：（无）
-  - 图结构：14 节点 / 21 边（agent 节点 7，集成节点 3）
+  - 图结构：14 节点 / 22 边（agent 节点 7，集成节点 3）
     - `sg:0e9ad6d5401` sg-IMPL：轮次演进报告生成器：cancelled · attempt 1 · 耗时 97.5m · 依赖 → 2 个节点
     - `sg:c1e064464d4` sg-ANALYZE：R2 问题清单与新提案：verified · attempt 3 · 耗时 55.3m · 依赖 → 1 个节点
     - `sg:3edbe2b48d3` sg-REPORT：生成首份正式演进报告：cancelled · attempt 1 · 耗时 —
     - `sg:52b00d7d4a4` sg-REBENCH：R3 基准复测：cancelled · attempt 1 · 耗时 —
-    - `sg:3991ce7f016` sg-IMPL-v2：轮次演进报告生成器（重派·执行角色）：running · attempt 4 · 耗时 37.2m
+    - `sg:3991ce7f016` sg-IMPL-v2：轮次演进报告生成器（重派·执行角色）：running · attempt 5 · 耗时 45.0m
     - `sg:b13a558163d` sg-REBENCH-v2：R3 基准复测（冷缓存口径·无依赖并行）：verified · attempt 1 · 耗时 18.6m
     - `sg:49c2619baec` sg-IMPL-v3：轮次演进报告生成器（重派·复用 sg-REBENCH-v2 已合入基点）：cancelled · attempt 1 · 耗时 12.9m
     - 依赖边：`sg:0e9ad6d5401` → `sg:3edbe2b48d3`
@@ -103,6 +103,7 @@
 
 **本轮（R3）实施提交：**
 
+- [`90bcc13`](https://github.com/Sinkear/agentwork/commit/90bcc13) docs(rsi): 对齐最新集成基点 dfcd444 重新生成 R3 演进报告（R3-1 rework）
 - [`3ac0b1f`](https://github.com/Sinkear/agentwork/commit/3ac0b1f) fix(rsi): 协作约定迁出根级 AGENTS.md，根治集成冲突（R3-1 修订）
 - [`a47f403`](https://github.com/Sinkear/agentwork/commit/a47f403) docs(rsi): 对齐新集成基点——报告吸收 bench R3 复测权威数字（解决集成冲突）
 - [`c3af19e`](https://github.com/Sinkear/agentwork/commit/c3af19e) docs(rsi): R3 轮次演进报告回填本工作项 commit 链接
@@ -117,7 +118,6 @@
 - [`e7c2572`](https://github.com/Sinkear/agentwork/commit/e7c2572) docs: R1/R2 自迭代交付物迁移至新基线（proposals/benchmark/impl-notes）
 - [`e08cb72`](https://github.com/Sinkear/agentwork/commit/e08cb72) test(P1): 并行化 internal/daemon 独立顶层测试（R2 提案1在新基线重放）
 - [`e2bda1d`](https://github.com/Sinkear/agentwork/commit/e2bda1d) test(P2)+feat(P3): R2 已批准提案在新基线（agentwork-int-v2）语义化重放
-- [`112d50f`](https://github.com/Sinkear/agentwork/commit/112d50f) Merge pull request #3 from Sinkear/feat/workflow-rsi
 
 **集成分支 `agentwork-int-v2` 近期提交（含历轮改进）：**
 
@@ -173,4 +173,4 @@
 
 ---
 
-*本报告由 `scripts/rsi-round-report.sh` 自动生成；如与平台数据不一致，以 daemon API 为准。生成时间：2026-11-11 09:22 UTC。*
+*本报告由 `scripts/rsi-round-report.sh` 自动生成；如与平台数据不一致，以 daemon API 为准。生成时间：2026-11-11 09:36 UTC。*
