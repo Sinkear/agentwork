@@ -99,6 +99,33 @@ type goalRunContext struct {
 
 const maxAttempts = 3
 
+// nonRetryableMarkers lists failure-summary substrings that identify
+// DETERMINISTIC faults: they cannot heal with time, so a retry is theater
+// that only burns the retry budget and re-wakes the leader for nothing.
+// Whitelist starts with the narrowest high-confidence marker only
+// (model-configuration errors); transient faults keep the full retry
+// behavior below. Extend only with equally unambiguous markers.
+// (RSI R2 提案3【已批准】—— 基线重建 agentwork-int-v2 时语义化重放)
+var nonRetryableMarkers = []string{
+	"Model unavailable",
+}
+
+// isNonRetryable reports whether a failed run's summary matches a
+// deterministic (non-retryable) fault. Empty summaries are always
+// retryable — absence of evidence is not evidence of a config error.
+func isNonRetryable(summary string) bool {
+	s := strings.TrimSpace(summary)
+	if s == "" {
+		return false
+	}
+	for _, m := range nonRetryableMarkers {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // retryBackoffFor spaces retry attempts: attempt 2 waits 30s, attempt 3
 // waits 60s (capped at 5m). A transient failure (dead link, machine
 // stall) must not burn the whole retry budget in one second.
@@ -1390,7 +1417,16 @@ func (s *GoalService) reconcileOnRunEndOnce(ctx context.Context, rc goalRunConte
 		// "resume from prior progress" semantics; the agent re-clones each
 		// attempt anyway.)
 		isImportGoal := g.CreatedByType == "system" && g.CreatedByID == ImportCreatedByID
-		if rc.Attempt < maxAttempts && !isImportGoal {
+		// P3: deterministic faults (model/config/auth errors) cannot heal
+		// with time — same "retry buys nothing" rule as import goals above.
+		// Skip the retry and fall through to the goal-failed terminal branch
+		// with a summary that names the cause, so a human can tell
+		// "environment/config error" from "the work itself failed".
+		nonRetryable := isNonRetryable(rc.Summary)
+		if nonRetryable {
+			rc.Summary = rc.Summary + "（环境/配置错误，重试无效）"
+		}
+		if rc.Attempt < maxAttempts && !isImportGoal && !nonRetryable {
 			// Retry: enqueue a fresh run at attempt+1 on the same agent so
 			// history is preserved. P0-3 (决策 6-13): the retry run is born
 			// IN this transaction — a crash after the commit can no longer
