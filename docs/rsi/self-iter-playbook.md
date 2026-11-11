@@ -87,3 +87,25 @@ tail -f /tmp/agentwork-daemon.log
 - sg-O 只读：分析 agent 不得修改业务代码。
 - 提案上限 3 条/轮，按预期收益排序；复测计划必须写进提案（下一轮 sg-B 如何验证）。
 - bench 的任务每轮保持同构；改基准 = 重新建立基线（旧趋势作废）。
+
+## 6. 每轮收尾：轮次演进报告（强制协作约定）
+
+- 每个 RSI 自迭代 goal（R1、R2、…）到达终态前，**必须**运行
+  `scripts/rsi-round-report.sh <轮次号N>`，生成 `docs/rsi/round-report-r<N>.md`
+  并随本轮交付一并提交（commit message 用 `docs(rsi): R<N> 轮次演进报告`）。
+- 报告固定五节，缺一不可：【① 循环演进视图】【② 过程暴露问题清单】
+  【③ 改进点（每条带 commit+diff 链接+效果数字）】【④ 跨轮指标对比】
+  【⑤ 下一轮候选任务清单】。
+- 报告必须自包含：不依赖读者登录平台即可理解；数据源为 daemon API 列表端点
+  （`/rsi/sessions`、`/rsi/sessions/{id}`、`/goals`、`/goals/{id}/runs`、
+  `/goals/{id}/comments`、`/rsi/sessions/{id}/rounds`）与本地 git log。
+  注意：`/rsi` 与 `/runs/{id}` 单查端点为 404，不要使用。
+- 报告中的效果数字（before/after）必须来自基准复测报告（`benchmark-report*.md`），
+  不得凭记忆填写；API 不可得的小节显式标注，不得伪造。
+- 下一轮的 optimizer 分析与本轮收尾验证都以最新一份 round-report 为起点。
+- **路径约定**：本约定宿主在 `docs/rsi/self-iter-playbook.md`（随仓库跟踪、
+  集成无冲突）。不要把本节写入仓库根 `AGENTS.md`——根级 AGENTS.md 是
+  agentwork 平台每次 run 注入 agent 简报的路径（运行时未跟踪文件），跟踪它
+  会让任何 change integrate 的 `git merge` 因「untracked working tree files
+  would be overwritten」被拒（R3 实测两次集成冲突即此根因）；`.gitignore`
+  已将 `AGENTS.md`/`AGENTWORK.md` 列为忽略项。
