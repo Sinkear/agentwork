@@ -1,6 +1,6 @@
 # RSI R3 轮次演进报告（R1→R3）
 
-> 生成：2026-11-11 09:36 UTC · 生成器：`scripts/rsi-round-report.sh 3` · 数据源：daemon API `http://127.0.0.1:47813`（列表端点）+ 本地 git log（agentwork-int-v2）
+> 生成：2026-11-11 09:55 UTC · 生成器：`scripts/rsi-round-report.sh 3` · 数据源：daemon API `http://127.0.0.1:47813`（列表端点）+ 本地 git log（agentwork-int-v2）
 > 本报告自包含：不登录平台即可读懂。指标口径见各节脚注；API 不可达的小节会显式标注。
 
 ## ① 循环演进视图
@@ -103,6 +103,8 @@
 
 **本轮（R3）实施提交：**
 
+- [`eca4620`](https://github.com/Sinkear/agentwork/commit/eca4620) chore(rsi): 空内容触发——基于 90bcc13 请求平台重新生成 Revision（无文件改动，分支对齐）
+- [`58f9fb0`](https://github.com/Sinkear/agentwork/commit/58f9fb0) docs(rsi): 重跑生成器刷新 R3 演进报告（R3 goal 图 14/22、run 39 条、本工作项 commit 90bcc13 列入改进点）
 - [`90bcc13`](https://github.com/Sinkear/agentwork/commit/90bcc13) docs(rsi): 对齐最新集成基点 dfcd444 重新生成 R3 演进报告（R3-1 rework）
 - [`3ac0b1f`](https://github.com/Sinkear/agentwork/commit/3ac0b1f) fix(rsi): 协作约定迁出根级 AGENTS.md，根治集成冲突（R3-1 修订）
 - [`a47f403`](https://github.com/Sinkear/agentwork/commit/a47f403) docs(rsi): 对齐新集成基点——报告吸收 bench R3 复测权威数字（解决集成冲突）
@@ -116,8 +118,6 @@
 - [`eab6b4a`](https://github.com/Sinkear/agentwork/commit/eab6b4a) docs(rsi): R3 分析报告——R2 过程暴露问题清单 + 3 条新提案 + 下一轮候选任务
 - [`ff797d2`](https://github.com/Sinkear/agentwork/commit/ff797d2) docs(rsi): R3 分析——R2 全量失败 run 清单与三份新提案（AGENTWORK_HOME 泄漏 / rsi_round 编号 / bench 口径）
 - [`e7c2572`](https://github.com/Sinkear/agentwork/commit/e7c2572) docs: R1/R2 自迭代交付物迁移至新基线（proposals/benchmark/impl-notes）
-- [`e08cb72`](https://github.com/Sinkear/agentwork/commit/e08cb72) test(P1): 并行化 internal/daemon 独立顶层测试（R2 提案1在新基线重放）
-- [`e2bda1d`](https://github.com/Sinkear/agentwork/commit/e2bda1d) test(P2)+feat(P3): R2 已批准提案在新基线（agentwork-int-v2）语义化重放
 
 **集成分支 `agentwork-int-v2` 近期提交（含历轮改进）：**
 
@@ -145,21 +145,21 @@
 
 ## ④ 跨轮指标对比
 
-汇总自各轮 rsi 训练会话冻结的 metrics（`/rsi/sessions/{id}` 与 `/rsi/sessions/{id}/rounds`）。
+汇总自各轮 rsi 训练会话冻结的 metrics（`/rsi/sessions/{id}/rounds` 账本；session 未冻结时回退 `/rsi/sessions/{id}` 实时 workflow.metrics，并已标注）。
 注意：R1/R2 的 rsi_round 账本 round_no 均为 1（提案 P-B 待修），故下表按「goal 标题里的轮次号」对齐，而非账本 round_no。
 
-| 轮 | 节点数 | 边数 | 关键路径 | 墙钟 | 工作总量 | 排队等待 | 并行收益 | lane 数 | lane 失衡 | 首要发现 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| R1 | 3 | 3 | 45.6s | 175.4m | 45.6s | 0.3s | 1 | 1 | 1 | 重试放大：平均每节点 3.5 次 run |
-| R2 | 5 | 5 | 41.6m | 46.8m | 41.6m | 36.6m | 1 | 2 | 1.51 | 重试放大：平均每节点 2.5 次 run |
-| R3 | — | — | — | — | — | — | — | — | — | — |
+| 轮 | 指标来源 | 节点数 | 边数 | 关键路径 | 墙钟 | 工作总量 | 排队等待 | 并行收益 | lane 数 | lane 失衡 | 首要发现 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| R1 | rounds 账本 | 3 | 3 | 45.6s | 175.4m | 45.6s | 0.3s | 1 | 1 | 1 | 重试放大：平均每节点 3.5 次 run |
+| R2 | rounds 账本 | 5 | 5 | 41.6m | 46.8m | 41.6m | 36.6m | 1 | 2 | 1.51 | 重试放大：平均每节点 2.5 次 run |
+| R3 | session 实时（未冻结） | 14 | 22 | 142.1m | 113.9m | 251.3m | 1.2s | 1.77 | 3 | 2.12 | — |
 
 解读提示（含 bench R3 复测结论，权威来源 benchmark-report-r3.md）：
 - `重试放大`（top finding）从 R1「平均每节点 3.5 次 run」降到 R2「2.5 次」，仍是两轮共同首要发现。
 - R1/R2 的 wall_ms/critical_path 差异部分来自基准任务规格不同（R1 纯基准、R2 含实施），跨轮结论看趋势不看点值。
 - 基准口径（P-C）：跨轮对比 build 只采冷列——R2 基线 44.417s → R3 新基线 e7c2572 41.285s（约 -7%），R2 已批准提案收益在新基线重建中得到保持；温列（R2 中位 4.387s / R3 中位 4.672s）仅参照不采信。
 - 测试健康：R2 全绿 → R3 复测 6 例失败（2 包），全部为测试环境隔离缺陷（AGENTWORK_HOME 全局泄漏击穿 t.Setenv 隔离 + digest 跨运行残留），非业务代码缺陷；机器验证门以 `unset AGENTWORK_HOME;` 前缀口径运行为全绿。
-- R3 本轮会话尚未冻结（goal 进行中），收尾后重跑生成器补入。
+- R3 行标注「session 实时（未冻结）」表示该会话尚未冻结、数字取自训练页同源的实时 workflow.metrics，收尾冻结后重跑生成器即切换为 rounds 账本口径。
 
 ## ⑤ 下一轮候选任务清单
 
@@ -173,4 +173,4 @@
 
 ---
 
-*本报告由 `scripts/rsi-round-report.sh` 自动生成；如与平台数据不一致，以 daemon API 为准。生成时间：2026-11-11 09:36 UTC。*
+*本报告由 `scripts/rsi-round-report.sh` 自动生成；如与平台数据不一致，以 daemon API 为准。生成时间：2026-11-11 09:55 UTC。*

@@ -367,47 +367,61 @@ w("")
 # ---------------------------------------------------------------- ④ 跨轮指标对比
 w("## ④ 跨轮指标对比")
 w("")
-w("汇总自各轮 rsi 训练会话冻结的 metrics（`/rsi/sessions/{id}` 与 `/rsi/sessions/{id}/rounds`）。")
+w("汇总自各轮 rsi 训练会话冻结的 metrics（`/rsi/sessions/{id}/rounds` 账本；session 未冻结时回退 `/rsi/sessions/{id}` 实时 workflow.metrics，并已标注）。")
 w("注意：R1/R2 的 rsi_round 账本 round_no 均为 1（提案 P-B 待修），故下表按「goal 标题里的轮次号」对齐，而非账本 round_no。")
 w("")
-# 从 rounds 数据聚合每轮指标
+# 从 rounds 数据聚合每轮指标；rounds 为空时回退 session 详情 workflow.metrics
 metrics_rows = []
 for rn in sorted(round_info):
     info = round_info[rn]
     best = None
+    src = ""
     for s in info["sessions"]:
         rid = s["id"]
         rl = rounds_by_session.get(rid) or []
         if rl:
             r0 = rl[-1]  # 该 session 最新一条 round
-            best = r0.get("metrics") or {}
+            if r0.get("metrics"):
+                best, src = r0["metrics"], "rounds"
         else:
+            # rounds 账本为空（session 未冻结）时，回退到 session 详情的
+            # workflow.metrics（训练页同源实时指标）；再退 report.metrics。
             det = load(f"session_{rid}.json")
             if det:
-                rep = det.get("report") or {}
-                best = rep.get("metrics") or best
+                wf = det.get("workflow") or {}
+                if wf.get("metrics") and not best:
+                    best, src = wf["metrics"], "session-detail"
+                if not best:
+                    rep = det.get("report") or {}
+                    if rep.get("metrics"):
+                        best, src = rep["metrics"], "session-detail"
+    if best:
+        best = dict(best)
+        best["_src"] = src
     metrics_rows.append((rn, info, best or {}))
 if metrics_rows:
-    w("| 轮 | 节点数 | 边数 | 关键路径 | 墙钟 | 工作总量 | 排队等待 | 并行收益 | lane 数 | lane 失衡 | 首要发现 |")
-    w("|---|---|---|---|---|---|---|---|---|---|---|")
+    w("| 轮 | 指标来源 | 节点数 | 边数 | 关键路径 | 墙钟 | 工作总量 | 排队等待 | 并行收益 | lane 数 | lane 失衡 | 首要发现 |")
+    w("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for rn, info, m in metrics_rows:
-        w(f"| R{rn} | {m.get('node_count', info['sessions'][0].get('node_count', '—')) if m else '—'} "
+        src = ("rounds 账本" if m.get("_src") == "rounds" else "session 实时（未冻结）") if m else "—"
+        w(f"| R{rn} | {src} "
+          f"| {m.get('node_count', info['sessions'][0].get('node_count', '—')) if m else '—'} "
           f"| {m.get('edge_count', '—') if m else '—'} "
           f"| {fmt_ms(m.get('critical_path_ms')) if m else '—'} "
           f"| {fmt_ms(m.get('wall_ms')) if m else '—'} "
           f"| {fmt_ms(m.get('work_sum_ms')) if m else '—'} "
           f"| {fmt_ms(m.get('queue_wait_ms')) if m else '—'} "
-          f"| {m.get('parallel_speedup', '—') if m else '—'} "
+          f"| {round(m.get('parallel_speedup'), 2) if m and m.get('parallel_speedup') else '—'} "
           f"| {m.get('lane_count', '—') if m else '—'} "
           f"| {round(m.get('lane_imbalance'), 2) if m and m.get('lane_imbalance') else '—'} "
-          f"| {info['sessions'][0].get('top_title') or '—'} |" if info['sessions'] else f"| R{rn} | — | — | — | — | — | — | — | — | — | 训练会话未冻结 |")
+          f"| {info['sessions'][0].get('top_title') or '—'} |" if info['sessions'] else f"| R{rn} | — | — | — | — | — | — | — | — | — | — | 训练会话未冻结 |")
     w("")
     w("解读提示（含 bench R3 复测结论，权威来源 benchmark-report-r3.md）：")
     w("- `重试放大`（top finding）从 R1「平均每节点 3.5 次 run」降到 R2「2.5 次」，仍是两轮共同首要发现。")
     w("- R1/R2 的 wall_ms/critical_path 差异部分来自基准任务规格不同（R1 纯基准、R2 含实施），跨轮结论看趋势不看点值。")
     w("- 基准口径（P-C）：跨轮对比 build 只采冷列——R2 基线 44.417s → R3 新基线 e7c2572 41.285s（约 -7%），R2 已批准提案收益在新基线重建中得到保持；温列（R2 中位 4.387s / R3 中位 4.672s）仅参照不采信。")
     w("- 测试健康：R2 全绿 → R3 复测 6 例失败（2 包），全部为测试环境隔离缺陷（AGENTWORK_HOME 全局泄漏击穿 t.Setenv 隔离 + digest 跨运行残留），非业务代码缺陷；机器验证门以 `unset AGENTWORK_HOME;` 前缀口径运行为全绿。")
-    w("- R3 本轮会话尚未冻结（goal 进行中），收尾后重跑生成器补入。")
+    w("- R3 行标注「session 实时（未冻结）」表示该会话尚未冻结、数字取自训练页同源的实时 workflow.metrics，收尾冻结后重跑生成器即切换为 rounds 账本口径。")
 else:
     w("（训练会话指标不可得）")
 w("")
