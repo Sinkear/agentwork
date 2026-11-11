@@ -41,6 +41,7 @@ func newTestRepo(t *testing.T) string {
 // STANDARD signal (POSIX exit 127 = command not found) — no text parsing —
 // while genuine work failures (non-zero exits) are not flagged.
 func TestPolicyIssueViaExit127(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ctx := context.Background()
 
@@ -64,6 +65,7 @@ func TestPolicyIssueViaExit127(t *testing.T) {
 }
 
 func TestCommitRunChanges(t *testing.T) {
+	t.Parallel()
 	dir := newTestRepo(t)
 	ctx := context.Background()
 
@@ -97,6 +99,7 @@ func TestCommitRunChanges(t *testing.T) {
 // approval) must be a NO-OP — the exclude leaves nothing staged and a commit
 // would fail with "nothing to commit" (regression from the pathspec exclude).
 func TestCommitRunChangesOnlyGuide(t *testing.T) {
+	t.Parallel()
 	dir := newTestRepo(t)
 	ctx := context.Background()
 	if err := os.WriteFile(filepath.Join(dir, "AGENTWORK.md"), []byte("coordination guide\n"), 0o644); err != nil {
@@ -116,6 +119,7 @@ func TestCommitRunChangesOnlyGuide(t *testing.T) {
 // run that just requested approval) must pass diff_contains — "all changes
 // carry a test" holds vacuously when there are no changes.
 func TestCheckGuardsEmptyDiffPasses(t *testing.T) {
+	t.Parallel()
 	dir := newTestRepo(t)
 	ctx := context.Background()
 	base, _ := gitRun(ctx, dir, "rev-parse", "HEAD")
@@ -130,6 +134,7 @@ func TestCheckGuardsEmptyDiffPasses(t *testing.T) {
 // TestRunVerification: exit 0 passes, non-zero fails, and the report carries
 // the command output.
 func TestRunVerification(t *testing.T) {
+	t.Parallel()
 	dir := newTestRepo(t)
 	ctx := context.Background()
 
@@ -161,6 +166,7 @@ func TestRunVerification(t *testing.T) {
 // gitignored, not committed) — the setup's own side effects must not be
 // judged as the run's changes.
 func TestRunVerificationSetup(t *testing.T) {
+	t.Parallel()
 	dir := newTestRepo(t)
 	ctx := context.Background()
 
@@ -204,6 +210,7 @@ func TestRunVerificationSetup(t *testing.T) {
 // the run's baseline commit (regression: this was git status before, which
 // was always empty post-commit and failed every diff_contains guard).
 func TestCheckGuardsDiffContains(t *testing.T) {
+	t.Parallel()
 	dir := newTestRepo(t)
 	ctx := context.Background()
 	base, _ := gitRun(ctx, dir, "rev-parse", "HEAD")
@@ -286,6 +293,7 @@ func TestCheckGuardsDiffContains(t *testing.T) {
 // root. This is the semantic path.Match lacks (it treats "**" as two plain
 // '*', which never crosses '/').
 func TestGlobMatchDoublestar(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		pattern, name string
 		want          bool
@@ -314,6 +322,7 @@ func TestGlobMatchDoublestar(t *testing.T) {
 // branch even when the repo has no .gitignore of its own. The exclusion
 // knowledge belongs to the domain, never hardcoded in the platform.
 func TestCommitRunChangesExcludesDependencies(t *testing.T) {
+	t.Parallel()
 	dir := newTestRepo(t)
 	ctx := context.Background()
 	// node_modules tree without any .gitignore — the case the domain's
@@ -367,6 +376,7 @@ func TestCommitRunChangesExcludesDependencies(t *testing.T) {
 // TestBuildEvidence: the bundle carries changed paths, verify output, and the
 // agent summary — the approval card's raw material (decision 2-3).
 func TestBuildEvidence(t *testing.T) {
+	t.Parallel()
 	dir := newTestRepo(t)
 	ctx := context.Background()
 	base, _ := gitRun(ctx, dir, "rev-parse", "HEAD")
@@ -389,6 +399,7 @@ func TestBuildEvidence(t *testing.T) {
 // capability (M4) — token as HTTPS username, SSH untouched, an already-
 // credentialed URL never overridden.
 func TestGitCloneURL(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ url, cred, want string }{
 		{"https://github.com/yusheng-g/agentwork.git", "ghp_abc123",
 			"https://ghp_abc123@github.com/yusheng-g/agentwork.git"},
@@ -417,6 +428,7 @@ func TestGitCloneURL(t *testing.T) {
 // separately and flagged, not reverted here). AGENTWORK.md (the platform's
 // injected guide) survives the clean for forensics.
 func TestGuestWorkspaceReset(t *testing.T) {
+	t.Parallel()
 	dir := newTestRepo(t)
 	ctx := context.Background()
 

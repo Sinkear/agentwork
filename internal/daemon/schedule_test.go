@@ -17,6 +17,7 @@ import (
 // 'active' into assignee_id and left status empty — fired goals were never
 // scheduled).
 func TestFireScheduleGoalInsert(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -94,6 +95,7 @@ func TestFireScheduleGoalInsert(t *testing.T) {
 // FIRST run are born in one transaction (P0-3) — and a duplicate firing of
 // the same planned_at is a no-op (uq idempotency): one goal, one run.
 func TestFireScheduleAtomicBirth(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -171,6 +173,7 @@ func TestFireScheduleAtomicBirth(t *testing.T) {
 // flooded the queue with identical stale goals (live: a multi-hour downtime
 // produced three "南京当前温度" goals five seconds apart).
 func TestScheduleMissedOccurrencesSkipped(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -252,6 +255,7 @@ func TestScheduleMissedOccurrencesSkipped(t *testing.T) {
 // miss), the goal is born, and the daemon re-derives next_run_at onto the
 // cron's next boundary — the 6-hour cadence resumes untouched.
 func TestFireNowRunsOnNextTick(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
