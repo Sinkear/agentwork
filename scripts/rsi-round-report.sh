@@ -17,6 +17,9 @@
 #   - 数据源只用列表端点：/rsi/sessions、/rsi/sessions/{id}、/goals、/goals/{id}/runs、
 #     /goals/{id}/comments、/rsi/sessions/{id}/rounds（/rsi 与 /runs/{id} 单查为 404，勿用）。
 #   - API 不可达时降级：跳过对应小节并显式标注「数据不可得」，不伪造数字。
+#   - 跨轮基准数字直接引用仓库内最新基准复测报告的冷列（benchmark-report*.md，
+#     如 benchmark-report-r3.md：build 44.417→41.285s，约 -7%）；下一轮候选任务
+#     清单引用 docs/rsi/analysis-r3.md 第五节。
 set -euo pipefail
 
 N=""
@@ -406,6 +409,14 @@ if metrics_rows:
     w("- `重试放大`（top finding）从 R1「平均每节点 3.5 次 run」降到 R2「2.5 次」，仍是两轮共同首要发现。")
     w("- R1/R2 的 wall_ms/critical_path 差异部分来自基准任务规格不同（R1 纯基准、R2 含实施），跨轮结论看趋势不看点值。")
     w("- R3 本轮会话尚未冻结（goal 进行中），收尾后重跑生成器补入。")
+    w("")
+    w("**基准冷缓存口径（跨轮 build 对比，采冷列，来源 `benchmark-report-r3.md`）：**")
+    w("")
+    w("| 指标 | R2 | R3 | 变化 |")
+    w("|---|---|---|---|")
+    w("| `go build ./...` 冷 | 44.417 s | 41.285 s | -3.132 s（约 -7%） |")
+    w("")
+    w("口径说明：R2 冷测 44.417s 为首次冷列记录（benchmark-report-r2.md）；R3 起按提案 P-C 约定统一冷/温双列、跨轮对比只采冷列（独立 GOCACHE，测量前清空至 0 文件）。R1 未留冷态数据，不参与冷列对比。冷列 -7% 表明 R2 已批准提案（P1 并行化等）的收益在新基线重建中得到保持，未因历史重放而回退。")
 else:
     w("（训练会话指标不可得）")
 w("")
@@ -413,13 +424,13 @@ w("")
 # ---------------------------------------------------------------- ⑤ 下一轮候选任务清单
 w("## ⑤ 下一轮候选任务清单")
 w("")
-w("权威来源：`docs/rsi/analysis-r3.md` 第三节（optimizer 产出，人工挑选成为下一轮任务）。以下为该清单的当前快照：")
+w("权威来源：`docs/rsi/analysis-r3.md` 第五节《下一轮候选任务清单》（optimizer 产出，人工挑选成为下一轮任务）。以下为该清单的当前快照：")
 w("")
-w("1. **实施 P-A：验证子进程环境净化**（高优）——R2 验证门三连败 4 条失败 run 同根因（AGENTWORK_HOME 泄漏），R3 前置轮 unset 前缀又引入 PATH 三连败；收益：同类验证门失败 4+3 → 0。")
-w("2. **实施 P-B：rsi_round 按 domain 递增**（中优）——两轮 round_no 均为 1、delta 恒空；收益：R4 报告【跨轮指标对比】首次有真序列。")
-w("3. **`/rsi` 端点口径修正**（低成本高一致性）——补文档为 `/rsi/sessions` 等真实端点，或 handler 加 `GET /rsi` 别名。")
-w("4. **deliver 失败自动重试/退避**（中优）——R2 deliver 因 SSH 私钥权限失败一次后依赖人工推进；外层加一次带延迟的自动重试。")
-w("5. **owner/leader 运行卡顿看护**（中优）——R2 owner run 运行 71 分钟无产出被人工停止；把 watchdog 覆盖 owner 运行。")
+w("1. **实施 P-A：验证子进程环境净化**（高优）——R2 验证门三连败 4 条失败 run 同根因（AGENTWORK_HOME 泄漏），R3 前置轮 unset 前缀又引入 PATH 三连败；收益：同类验证门失败 4+3 → 0。改动集中在 internal/daemon/verify.go 一个函数 + 1 个回归测试，工作量最小。")
+w("2. **实施 P-B：rsi_round 按 domain 递增**（中优）——两轮 round_no 均为 1、delta 恒空；收益：R4 报告【跨轮指标对比】首次有真序列。改动一条 SQL + trigger 判定 + prevMetrics 跨轮读取，随带回归验证 `/rsi/overview` trend。")
+w("3. **`/rsi` 端点口径修正**（低成本高一致性）——AGENTS.md/playbook/goal 描述写的 `/rsi` 实测 404（R1 3baf73cff449 已附带发现，R3 再次踩到）；改法二选一：补文档为 `/rsi/sessions` 等真实端点，或 handler 加 1 行 `GET /rsi` 别名。")
+w("4. **deliver 失败自动重试/退避**（中优）——R2 人工批准后 deliver 因 SSH 私钥权限失败一次（daemon.log 10:56:53），直到 11:09:01 才重试成功；改法：deliverGoal 外层加一次带延迟的自动重试（可重试错误白名单复用 P3 的 isNonRetryable 思路）。")
+w("5. **owner/leader 运行卡顿看护**（中优）——R2 owner run `b77ba4c9…` 运行 71 分钟（12:50:33→14:01:25）无产出被人工停止；改法：把 watchdog idle-notify/最大时长看护明确覆盖 owner 运行，超时先通知人工而非静默挂起。")
 w("")
 w("---")
 w("")
