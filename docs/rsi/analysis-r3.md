@@ -1,76 +1,82 @@
-# RSI R3 分析报告（optimizer 产出，只读）
+# RSI R3 分析报告：R2 过程暴露问题清单与新提案（optimizer · sg-ANALYZE）
 
-- 轮次：R3（新基线 agentwork-int-v2，基线 commit e7c2572）
-- 数据源：daemon API（http://127.0.0.1:47813，/rsi/sessions、/rsi/sessions/{id}/rounds、/goals/{id}/runs、/goals/{id}/comments）+ 本仓 git log + 真实状态目录 `/root/.agentwork` 现场证据
-- 输入会话：R1 session（goal R1，3 节点/3 边，finding=重试放大 3.5 次/节点）、R2 session（goal R2，5 节点/5 边，finding=重试放大 2.5 次/节点）
-- 约束遵守：本轮未修改任何业务代码，仅产出本文件。
-
----
-
-## 一、《过程暴露问题清单》（R2 goal 全部 runs 逐一核对）
-
-R2 goal 共 8 条 run，其中失败/取消 5 条；R1 goal 共 31 条 run，其中失败/取消 18 条。逐条如下（根因分类：环境 / 代码 / 流程）。
-
-### R2（当前轮数据）
-
-| # | run id | 状态 | 错误摘要 | 根因分类 | 当前状态 |
-|---|--------|------|----------|----------|----------|
-| P-1a | a234f3422b5b9991ec96ccc8725bd222 | failed（验证门第 1 败） | `go test` 3 个测试同型失败：TestGitWorkdirAndTransferPush / TestPersistentGoalWorkdir（gitwork_test.go:59/:156，`fetch: exit status 128`）+ TestDeliverMergeIdentityNoGlobalGitConfig（deliver_test.go:114）。git 报 `/tmp/TestGitWorkdirAndTransferPush*/bare.git does not appear to be a git repository` | **环境→代码（环境变量泄漏）**：验证门子进程原样继承 daemon 的 `AGENTWORK_HOME`（见提案 A），门内测试解析状态根目录落到 daemon 真实家目录，跨测试状态互相污染 | 已绕过（第 4 次验证 b319cffb 通过；泄漏机制本身未修，正式修复见提案 A） |
-| P-1b | 176d72f22468e367261a285b0e96207f | failed（验证门第 2 败） | 与 P-1a 完全同型、同 3 个测试同 3 行号 | 同上（失败模式重复即 RSI finding「重试放大」的直接来源） | 同上 |
-| P-1c | d08e376d8a129de9782bfaeea2df5a7b | failed（验证门第 3 败） | 与 P-1a 完全同型 | 同上 | 同上 |
-| P-2 | 37969c7dce3cabd75e50f98dd630555d | failed（owner run，验证失败） | 除同型三败外，digest 测试出现 `articles = 50, want 2`：真实状态目录 `/root/.agentwork/digest/articles.json` 被历次门内测试累计写入 50 条；错误文本含 `Please make sure you have the correct access rights`（"SSH 权限"表象） | **环境（同 P-1 根因）**：所谓 SSH 权限报错是 git 对被污染/不可达路径的标准 128 提示，并非真实 SSH 凭据问题；现场证据：`/root/.agentwork/digest/articles.json.corrupt` 至今存在 | 已解决表象、未除根因（与 P-1 同一修复） |
-| P-3 | b77ba4c9cef45a1d9c236e03f000100f | cancelled（owner run 第 2 次尝试） | result_summary 为空；comments 记录「前一轮运行被人工停止（卡顿）」「Run cancelled: stopped by user」 | **流程/环境（双 connect 互抢 peer）**：同一机器重复 `agentwork connect` 抢占 peer 注册导致编排卡顿（R1 同类证据：run 75dbf852「machine offline — must run agentwork connect」） | 已绕过（人工停止后以单 connect 实例重入成功：87bf5d1447450275fc29777ce38b752b completed）；平台侧防重入待修 |
-
-### R1（跨轮参照，仅列根因聚类）
-
-| 聚类 | 数量 | 代表 run id | 根因分类 | 当前状态 |
-|------|------|-------------|----------|----------|
-| Model unavailable 重试循环 | 12 | 8318c5cc…（attempt1→3 × 多节点） | 环境（模型不可用却按可重试处理） | 已解决（R2 P3 落地不可重试白名单，起步仅 Model unavailable） |
-| 机器离线 | 1 | 75dbf852… | 环境（connect 未运行） | 已绕过 |
-| git fetch 被杀 / worktree add 取消 | 2 | 3dec4083…、deaee148… | 环境（资源/取消） | 已绕过 |
-| 平台取消 | 3 | 32612975… 等 | 流程（人工停止） | 已绕过 |
-
-### 上轮遗留问题状态汇总
-
-- 重试放大（R1 3.5 次/节点 → R2 2.5 次/节点）：**未闭环**。P3 只覆盖 `Model unavailable` 一种不可重试错误；本轮 R2 的 3 连败属"确定性环境类失败仍被重试"的同一问题，是 R3 提案 A 的直接依据。
-- 验证门环境泄漏：**待修**（提案 A）。
-- rsi_round 轮次编号：**待修**（提案 B，证据见下）。
-- 基准口径：**待修**（提案 C；R1 的 build 11.574s/test 23.012s 为温缓存口径，R2 补测冷缓存 44.417s，跨轮对比口径不一致）。
+- 日期：2026-11-11
+- 作者：optimizer（只读分析，未改任何业务代码）
+- 数据源：daemon API（`http://127.0.0.1:47813` 的 `/goals`、`/goals/{id}/runs`、`/goals/{id}/comments`、`/rsi/sessions`、`/rsi/overview`）、`rsi_round` 账本（R1 `1521efe0…` / R2 `8aa88fdd…`）、`/root/.agentwork/daemon.log`、git log（agentwork-int-v2 基线 `e7c2572`）
+- 说明：goal 描述与 AGENTS.md 中写的 `/rsi` 端点实测 404，实际可用端点为 `/rsi/sessions`、`/rsi/sessions/{id}`、`/rsi/sessions/{id}/rounds`、`/rsi/overview`（已列入问题清单 #8）。
 
 ---
 
-## 二、新提案（≤3 条）
+## 一、《过程暴露问题清单》（R1+R2 全部失败/异常 run 逐条）
 
-### 提案 A：验证子进程环境净化（AGENTWORK_HOME 泄漏的正式修复）
+### R2（goal 25da0cc684817ac4d8a685180e6bbc21，8 条 run，4 失败 1 取消）
 
-- **问题依据**：R2 验证门三连败（run a234f342 / 176d72f2 / d08e376d，同一签名三测三行号）；owner run 37969c7d 实证门内测试读写了 daemon 真实状态（`articles = 50, want 2`）；现场 `/root/.agentwork/digest/articles.json.corrupt` 残留。代码依据：`internal/daemon/verify.go:171-187`（runVerifiedCmd）与 `verify.go:373-380`（runVerifyOutput）均 `exec.CommandContext(...)` 后**未设置 c.Env**，子进程完整继承 daemon 环境（含 AGENTWORK_HOME，如 `internal/paths/paths.go:27` 所定义）。
-- **拟改动位置**：`internal/daemon/verify.go` 两处 exec 构造点——为验证/守卫子进程显式构造 `c.Env`：基于 `os.Environ()` 剔除 `AGENTWORK_HOME`，代之以每轮验证的隔离目录（如 `<verify 工作目录>/.agentwork-verify-home`，mkdir 一次复用），使门内任何未 `t.Setenv` 的代码路径也绝不可能触碰 daemon 真实状态根。同一函数族内 setup 命令（runSetupOnly，:152 复用 runVerifiedCmd）自动一并生效。
-- **预期收益**（可量化）：消除 R2 中占失败 run 4/5 的整类失败；该类确定性失败当前平均烧 3 次重试才收敛（R2：2 节点 5 次 run），修复后这类失败归零，预计子任务平均 run 数从 2.5 降至 ~1（与 RSI finding「重试放大」闭环）；同时杜绝 daemon 真实数据被测试污染（digest 50 条/损坏文件类事故归零）。
-- **风险与回滚**：风险=若某 domain 的 setup/verify 命令**合法依赖**读取真实 AGENTWORK_HOME（如需要 daemon 状态的集成验证），会被切到隔离目录。缓解：仅净化 AGENTWORK_HOME 一项（其余环境原样保留），并在 domain 模板文档标注该行为；如需真实状态可在命令内显式 `AGENTWORK_HOME=...` 覆盖。回滚：单 commit `git revert` 即可，无数据迁移。
-- **用户可感知说明**：以后构建门不会再因为"测试误碰了系统真实数据"而莫名其妙连挂三次——任务一次通过率明显变高，等待结果的时间更短，也不会再出现系统目录里多出损坏的测试残留文件。
+| # | run id | 角色 | 状态 | 错误摘要 | 根因 | 当前状态 |
+|---|--------|------|------|----------|------|----------|
+| 1 | `37969c7dce3cabd75e50f98dd630555d` | owner | failed（验证门） | `go test ./... -count=1` FAIL：TestPersistentGoalWorkdir「bare.git does not appear to be a git repository」等 | **验证子进程继承 `AGENTWORK_HOME=/root/.agentwork`**，`paths.Home()` 优先读该变量（internal/paths/paths.go:33-42），`t.Setenv("HOME")` 的测试仍指向真实数据根：共享 runsRoot 里残留指向已删除临时 bare 仓的 clone → fetch 128 | **已绕过**（domain checks 改为 `unset AGENTWORK_HOME; …` 前缀），**待正式修复 → 提案 P-A** |
+| 2 | `a234f3422b5b9991ec96ccc8725bd222` | sg-IMPL att1 | failed（验证门） | TestGitWorkdirAndTransferPush fetch 128 + TestDeliverMergeIdentityNoGlobalGitConfig「deliver: fetch: exit 128」+ TestCollectDigestBatch* 「articles = 1, want 2」 | 同上泄漏：deliver/digest/gitwork 三类 `t.Setenv` 测试全部击穿到真实 `/root/.agentwork`（digest 断言被宿主真实 articles.json 污染） | 同上（已绕过，待修） |
+| 3 | `176d72f22468e367261a285b0e96207f` | sg-IMPL att2 | failed（验证门） | 与 #2 完全相同的三类 FAIL | 同上（失败模式重复，重试不修复原因） | 同上（已绕过，待修） |
+| 4 | `d08e376d8a129de9782bfaeea2df5a7b` | sg-IMPL att3 | failed（验证门） | 同上，第三次 | 同上；**三连败烧尽该工作项重试预算**，是「验证门三连败」本体 | 同上（已绕过，待修） |
+| 5 | `b77ba4c9cef45a1d9c236e03f000100f` | owner | cancelled（stopped） | 运行 71 分钟（12:50→14:01）无产出，人工停止并重发指令 | leader 轮运行卡顿（turn 未正常结束，看护未覆盖 owner 运行） | **已绕过**（人工停止 + 3cb160d91 重发）；候选任务 5 |
+| 6 | —（非 run，deliver 阶段） | — | deliver 失败一次 | daemon.log 10:56:53：deliver fetch 失败「UNPROTECTED PRIVATE KEY FILE! Permissions 0750 for /root/.ssh/id_ed25519」 | 容器重启重置了 SSH 私钥权限；人工批准（10:56:51）后的自动 deliver 被拒 | **已解决**（权限修正后 11:09:01 重试 → 11:09:24 merged feat-25da0cc6 → agentwork-int）；但本次重试依赖人工，候选任务 4 |
+| 7 | `b319cffb1e8b40b033554096c1cf6a95` | sg-IMPL（环境修复后） | completed | — | 验证门通过（unset 前缀生效） | ✅ 已解决 |
+| 8 | `a25f178a99e4747071a657c198f8f2bb` | sg-REBENCH | completed | — | R2 复测全绿（14 包 0 FAIL） | ✅ 已解决 |
 
-### 提案 B：rsi_round 轮次编号按 domain 递增
+### R1（goal 3ec2bfc64b364e7ee24c5f91b67e4c22，31 条 run，12 失败 5 取消）
 
-- **问题依据**：API `/rsi/sessions/{id}/rounds` 实测：R1（session 371a5055…）与 R2（session f31c3a6c…）的 round_no **均为 1**；两轮的 baseline_json 与 delta_json **均为空 {}**。代码依据：`internal/service/rsi_analyze.go:130` `SELECT COALESCE(MAX(round_no),0) FROM rsi_round WHERE session_id=?`——编号按 session 取 MAX，新 session 必从 1 重新计数；且因同 session 内无前轮记录，:137 的前轮基线查询永远取不到数据，跨轮 delta 机制**实际从未生效**。
-- **拟改动位置**：`internal/service/rsi_analyze.go:130` 附近——轮次号改为按 domain 递增：先经 session→goal 取 domain_id（或给 rsi_round 冗余 domain_id 列，`internal/store/store.go:130-149` 建表处加列+索引迁移），查询改为同 domain 内 `MAX(round_no)+1`；基线查询（:137）同样按 domain 取上一轮 metrics，使 baseline_json/delta_json 真正填充。
-- **预期收益**（可量化）：round_no 变为全局演进序号（R1=1、R2=2、R3=3…），delta_json 从恒空 {} 变为每轮必含「上轮 vs 本轮」的指标差值；演进报告第④节「跨轮指标对比」从依赖手工汇总变为 API 直读，报告生成器的对比节数据 100% 可自动获得。
-- **风险与回滚**：风险=存量两行 round_no=1（不同 session）在改为 domain 维度后需要一次 backfill（按 started_at 顺序重排为 1、2）；uq_rsi_round_session 唯一索引保持不变，不冲突。回滚：revert commit + 如加了列，回滚脚本删列（单文件 SQLite，操作前备份）。
-- **用户可感知说明**：在平台的"优化轮次"页面里，每一轮会清楚地显示这是第几轮、比上一轮变好还是变差多少——不再每一轮都显示"第 1 轮"且看不到前后对比。
+| # | run id（节选，共 12 条同类） | 角色 | 状态 | 错误摘要 | 根因 | 当前状态 |
+|---|--------|------|------|----------|------|----------|
+| 9 | `8318c5cc0a2128b41c0bccd096cb2f6a`（att1-3）、`899a791b…`、`e65c9c3c…`、`c9d79653…`、`9922892c…`、`75415878…`、`ceffb017…`、`4716f2f2…`、`f97a5701…`、`e068d49d…` | bench/owner | failed | `Model unavailable: opencode/muse-ember-1.0`，每次 5-6s 即退出 | 新建会话拿到默认模型不在网关清单；凡新建会话的成员任务首 prompt 必败，重试预算被确定性错误烧光（12 条 run） | **已解决**（opengw 网关配置 + opencode 2.2.5 升级）；该教训已由 P3 不可重试快速失败对症 |
+| 10 | `75dbf852eaa1af4e3b2e7d63360f5f4a` | owner | failed | `machine offline — the machine must run agentwork connect` | 连接中断 | **已解决**（重连） |
+| 11 | `3dec40838070ad66c2ad1eae508ed691` | owner | failed | `git: fetch: signal: killed` | fetch 被杀（连接/资源竞争期间） | **已解决**（随 #12 修复） |
+| 12 | `0ae48700b684d04e4c77395326733b33`（att2）、`e1ca8d3faa7f87c52248dbbce7d8f008`（att1） | owner | cancelled | 在途 run 被平台取消（link down）；另有 `deaee148…`「git: worktree add: context canceled」 | **双 `agentwork connect` 实例互抢 peer**，杀掉在途 run | **已解决**（人工合并为单实例，见 204344e947f7 评论；已固化为单实例纪律） |
 
-### 提案 C：bench 基准统一冷缓存口径（固化成脚本 + 协作约定）
+### 数据类问题（非 run 失败，但直接伤害可感知性）
 
-- **问题依据**：R1 基线（build 11.574s / test 23.012s）为温缓存口径；R2 复测给出温缓存中位（test 11.559s）+ 冷缓存单点（build 44.417s）双口径，「test -50%」的跨轮结论混入口径因素，无法归因纯净。R3 的 sg-REBENCH 简报已改用 `GOCACHE=/tmp/r3-gocache go build ./...` 冷口径，但口径目前只存在于简报文本中，未固化。
-- **拟改动位置**：新增 `scripts/bench-caliber.sh`（固定命令序列：冷 build=独立 GOCACHE 计时；go test ./... -count=1 三连跑取中位；包级 Top10 提取；输出固定格式 markdown 片段），并在 `AGENTS.md` 协作约定节加一行"每轮 bench 必须用该脚本产数"。
-- **预期收益**（可量化）：R1→R2→R3→… 所有 benchmark-report 的数字同口径可直接竖排对比；消除"温/冷混比"造成的不可归因差异（R2 数据显示同机冷缓 build 是温缓的 ~10 倍，44.4s vs 4.4s——不锁口径时跨轮结论可偏差一个数量级）。
-- **风险与回滚**：无代码风险（纯脚本+文档）；唯一成本是每轮 bench 多跑一次冷缓存（约 45s）。回滚：删脚本+删约定行即可。
-- **用户可感知说明**：以后每轮"改进了多少"的对比数字都是同一把尺子量出来的，用户看到的百分比提升是真提升，不会因为测量方法变化而虚高或虚低。
+| # | 问题 | 证据 | 当前状态 |
+|---|------|------|----------|
+| 13 | **rsi_round 轮次编号不递增**：两轮均 `round_no=1`、`trigger=terminal` | rsi_round 两行（R1 `1521efe0374196cf889d8e53f15b01d1` / R2 `8aa88fdd89937757d9b449e11efd3e6e`）；`/rsi/overview` trend 两条 round_no=1；delta_json 均为 `{}` | **待修 → 提案 P-B** |
+| 14 | **基准口径漂移**：同一基线（33f16dc/0bf354e）test 实测 23.012s（首跑，含测试二进制编译）→ 14.5s（sg-B2 复跑）→ 11.3s（R1 冻结口径），差近 2 倍；build 冷 38-44s vs 温 3.9-5.6s 差约 10 倍 | run `25c28dc347ef`（23.012s）vs `3c3289b01724`（14.5s）；benchmark-report-r2.md 冷 44.417s / 温中位 4.387s | **待修 → 提案 P-C**（R3 sg-REBENCH 派发词已按冷缓存口径，属约定层修复） |
+| 15 | **`/rsi` 端点口径不一致**：AGENTS.md/goal 描述写 `/rsi`，实测 404；R1 阻塞汇报（3baf73cff449）即已附带发现 | `curl /rsi` → "404 page not found"；实际为 `/rsi/sessions` 等 4 端点 | 待修（文档/别名级，候选任务 3） |
 
 ---
 
-## 三、《下一轮候选任务清单》（按优先级）
+## 二、新提案（≤3 条，均【待评审】，等待人工批准）
 
-1. **[高] 实施提案 A：验证子进程环境净化**。依据：R2 验证门三连败（run a234f342/176d72f2/d08e376d）+ 真实状态污染实证（articles=50、articles.json.corrupt）。预期收益：确定性环境类验证失败归零，子任务平均 run 数 2.5→~1。
-2. **[高] 实施提案 B：rsi_round 轮次编号按 domain 递增 + delta 基线生效**。依据：/rounds API 实测两轮 round_no 恒 1、delta_json 恒空。预期收益：跨轮 delta 从 0% 可用率到 100%，演进报告对比节自动化。
-3. **[中] 实施提案 C：bench 口径固化脚本**。依据：R1/R2 口径不一致（温 23.0s vs 冷/温混比）。预期收益：跨轮对比同尺子，结论可归因。
-4. **[中] 不可重试白名单扩类**：把「确定性 git 128 / 环境缺依赖」纳入 isNonRetryable（`internal/service/goal.go:105-123` 白名单起步仅 Model unavailable）。依据：R2 三连败属确定性错误仍被重试；R1 12 次 Model unavailable 已闭环但类目未扩。预期收益：同类失败从 3 次重试收敛降为 1 次即终态。
-5. **[低] connect 防重入**：同一机器重复 `agentwork connect` 互抢 peer 导致编排卡顿（R2 owner run b77ba4c9 被迫人工停止；R1 run 75dbf852 machine offline 同族）。预期收益：消除人工干预点，编排不再卡顿。
+### 提案 P-A【待评审】验证子进程环境净化（AGENTWORK_HOME 泄漏的正式修复）
+
+- **问题依据**：R2 验证门三连败（run `a234f342…`/`176d72f2…`/`d08e376d…` + owner `37969c7d…`，共 4 条失败 run）全部同一根因：`runVerifiedCmd`（internal/daemon/verify.go:171-186）用 `exec.CommandContext` 启动验证命令时**不裁剪环境**，子进程继承 daemon 的 `AGENTWORK_HOME=/root/.agentwork`；而 `paths.Home()` 优先读该变量（internal/paths/paths.go:33-42），导致所有 `t.Setenv("HOME")` 的测试（deliver/digest/gitwork/worktree 四个文件）隔离击穿——gitwork 撞上共享 runsRoot 里的残留 clone、digest 断言撞上宿主真实 articles.json。当前靠 domain checks 里每个命令手写 `unset AGENTWORK_HOME;` 前缀绕过（本轮 domain `cd46c8f9…` checks 已如此配置），属「靠每个 verify 命令记得 unset」的脆弱约定。
+- **拟改动位置**：internal/daemon/verify.go:171-186 `runVerifiedCmd`——构造 `c := exec.CommandContext(...)` 后新增 `c.Env = sanitizeVerifyEnv()`；新函数过滤 `os.Environ()` 中的 `AGENTWORK_HOME` 与 `AGENTWORK_DB` 两项（只剥离这两个改写状态根的变量，保留其余环境，避免误伤需要调 CLI 的 verify 命令）。同步在 internal/daemon/verify_test.go 加回归用例：预设 `AGENTWORK_HOME` 后跑 `sh -c 'echo $AGENTWORK_HOME'` 断言输出为空。
+- **预期收益**：该类验证门失败从 R2 的 4/8 条 run（50%）降为 0；domain checks 可去掉 unset 前缀（恢复策略原文 `go build ./...`）；任何域名的 verify 不再因宿主状态泄漏误红。可量化：验证门同类失败 4 → 0。
+- **风险与回滚**：极低——仅影响 verify 子进程环境，不碰 agent/CLI 通道；若某域 verify 确需读宿主状态，可在 checks.Setup 显式 `export AGENTWORK_HOME=…` 找回。回滚 = revert 该单 commit（domain 里的 unset 前缀是幂等 no-op，回滚后行为不变）。
+- **用户可感知说明**：交付前的自动质量检查不再因为「测试偷看了平台自己的数据」而莫名变红，任务一次通过率明显提高，你不用再反复点批准重试。
+
+### 提案 P-B【待评审】rsi_round 轮次编号按 domain 递增
+
+- **问题依据**：rsi_round 账本两行 round_no 均为 1（R1 `1521efe0…` / R2 `8aa88fdd…`，trigger 均为 terminal），`/rsi/overview` trend 无法区分轮次，跨轮 delta_json 恒为空 `{}`——「跨轮指标对比」与演进报告第五节失去数据基础。根因：internal/service/rsi_analyze.go:128-131 中 `round_no = MAX(round_no)+1` 按 `session_id` 取值，而每个 train goal 终态生成**新的** training_session（R1 session `371a5055…`、R2 session `f31c3a6c…`），编号永远从 1 重来。
+- **拟改动位置**：internal/service/rsi_analyze.go:128-131——改为按 domain 取 MAX：`SELECT COALESCE(MAX(r.round_no),0) FROM rsi_round r JOIN goal g ON g.id=r.goal_id WHERE g.domain_id=?`（domain_id 从本次分析的目标行读取；domain 为空或无历史时回退现有 session 级查询）。trigger 判定同步改为 domain 级 `prevNo==0`。schema 不动：唯一索引 `uq_rsi_round_session(session_id, round_no)`（internal/store/store.go:148）仍成立。
+- **预期收益**：R3 起轮次编号 1→2→3 连续；洞察页趋势与每轮演进报告【跨轮指标对比】首次具备可比序列；delta_json 开始产出真实轮间差值（如「重试放大 3.5→2.5」将直接呈现为轮间 delta 而非手工查表）。
+- **风险与回滚**：低——只影响新写入行的编号；已存两行 round_no=1 保持原样（历史读取按 created_at 排序仍正确，前端无破坏）。回滚 = revert 单 commit，编号回到 session 级。
+- **用户可感知说明**：训练分析页的「轮次趋势」从此能看到 1→2→3 的连续编号和每轮之间的真实变化，而不是每轮都叫「第 1 轮」。
+
+### 提案 P-C【待评审】bench 基准统一冷缓存口径
+
+- **问题依据**：同一基线（agentwork-int HEAD 33f16dc）上，`go test ./... -count=1` 首跑实测 23.012s（run `25c28dc347ef`，含全部测试二进制编译），复跑降到 14.5s（run `3c3289b01724`）；`go build ./...` 冷 38-44s vs 温 3.9-5.6s 差约 10 倍（benchmark-report-r2.md）。R1→R2 报告里「测试 23.0s→11.6s、-50%」的结论混入了大量缓存口径噪音（docs/rsi-round-evolution-report.md 问题 #8 已自认），跨轮对比不可信。
+- **拟改动位置**：纯约定层，不改业务代码——① docs/rsi/self-iter-playbook.md「每轮操作」小节固化口径：build 必测冷（独立 GOCACHE，如 `GOCACHE=$(mktemp -d) go build ./...`）+ 温中位各一列；test 以温 3 连跑中位为准并注明首跑编译已完成的口径；② 所有基准报告必须同时记录冷/温两列与 GOCACHE 路径；③ R3 的 sg-REBENCH 派发词已按此口径执行（`GOCACHE=/tmp/r3-gocache` 冷构建），本轮即为首个统一口径样本。下一轮可再落 scripts/rsi-bench.sh 统一计时（builder 实施）。
+- **预期收益**：跨轮 build 对比噪音从 ±50%（23.0 vs 14.5 同基线）收敛到冷/温分列后各自 ±10% 内；演进报告【跨轮指标对比】的百分比首次可信，人工批准提案时有真实数字依据。
+- **风险与回滚**：无代码风险，仅测量与文档约定；口径写错回滚 = 改回 playbook 文档即可。
+- **用户可感知说明**：每轮报告里「这轮比上轮快了百分之多少」从此是真实改进，不再混入缓存冷热的假象，你看报告做批准决策更有依据。
+
+---
+
+## 三、《下一轮候选任务清单》（按优先级，供人工挑选成为 R4 任务）
+
+1. **实施 P-A：验证子进程环境净化**（高优）——依据：R2 验证门三连败 4 条失败 run 同根因；收益：同类验证门失败 4→0，domain checks 可简化；改动集中在 verify.go 一个函数 + 1 个回归测试，工作量最小。
+2. **实施 P-B：rsi_round 按 domain 递增**（中优）——依据：两轮 round_no 均为 1、delta 恒空；收益：R4 报告【跨轮指标对比】首次有真序列；改动一条 SQL + trigger 判定，随带回归验证 `/rsi/overview` trend。
+3. **`/rsi` 端点口径修正**（低成本高一致性）——依据：AGENTS.md/playbook/goal 描述写的 `/rsi` 实测 404（R1 3baf73cff449 已附带发现，R3 再次踩到）；改法二选一：补文档为 `/rsi/sessions` 等真实端点，或 handler 加 1 行 `GET /rsi` 别名指向 overview。
+4. **deliver 失败自动重试/退避**（中优）——依据：R2 人工批准后 deliver 因 SSH 权限失败一次（daemon.log 10:56:53），直到 11:09:01 才重试成功，期间依赖人工推进；改法：deliverGoal 外层加一次带延迟的自动重试（可重试错误白名单复用 P3 的 isNonRetryable）。
+5. **owner/leader 运行卡顿看护**（中优）——依据：R2 owner run `b77ba4c9…` 运行 71 分钟无产出被人工停止；改法：把 watchdog idle-notify/最大时长看护明确覆盖 owner 运行（目前主要命中 worker），超时先通知人工而非静默挂起。
+
+---
+
+*本报告只读产出，未改动任何业务代码；三条提案均待人工评审批准后方可由 builder 实施。*
