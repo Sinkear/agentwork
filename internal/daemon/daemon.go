@@ -122,7 +122,10 @@ const runawayGrace = 5 * time.Minute
 const idleWindow = 2 * time.Minute
 
 // maxAttempts bounds per-run retries; mirrored from service. A run that fails
-// this many times leaves the goal failed for human inspection.
+// this many times leaves the goal failed for human inspection. Exception:
+// deterministic (non-retryable) faults — e.g. "Model unavailable" config
+// errors — fast-fail at the goal layer (goal.go isNonRetryable) without
+// burning the budget.
 const maxAttempts = 3
 
 // Daemon owns per-agent workers and the run dispatch loop.
