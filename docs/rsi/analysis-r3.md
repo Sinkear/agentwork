@@ -22,14 +22,14 @@
 | 7 | `b319cffb1e8b40b033554096c1cf6a95` | sg-IMPL（环境修复后） | completed | — | 验证门通过（unset 前缀生效） | ✅ 已解决 |
 | 8 | `a25f178a99e4747071a657c198f8f2bb` | sg-REBENCH | completed | — | R2 复测全绿（14 包 0 FAIL） | ✅ 已解决 |
 
-### R1（goal 3ec2bfc64b364e7ee24c5f91b67e4c22，31 条 run，12 失败 5 取消）
+### R1（goal 3ec2bfc64b364e7ee24c5f91b67e4c22，31 条 run，15 失败 3 取消；本轮已按 API 全量复核）
 
 | # | run id（节选，共 12 条同类） | 角色 | 状态 | 错误摘要 | 根因 | 当前状态 |
 |---|--------|------|------|----------|------|----------|
-| 9 | `8318c5cc0a2128b41c0bccd096cb2f6a`（att1-3）、`899a791b…`、`e65c9c3c…`、`c9d79653…`、`9922892c…`、`75415878…`、`ceffb017…`、`4716f2f2…`、`f97a5701…`、`e068d49d…` | bench/owner | failed | `Model unavailable: opencode/muse-ember-1.0`，每次 5-6s 即退出 | 新建会话拿到默认模型不在网关清单；凡新建会话的成员任务首 prompt 必败，重试预算被确定性错误烧光（12 条 run） | **已解决**（opengw 网关配置 + opencode 2.2.5 升级）；该教训已由 P3 不可重试快速失败对症 |
+| 9 | `8318c5cc…`（bench att1-3，含 `634c78a8…`、`9cd850bf…`）、`899a791b…`、`e65c9c3c…`、`c9d79653…`、`9922892c…`、`75415878…`、`ceffb017…`、`4716f2f2…`、`f97a5701…`、`e068d49d…` | bench/owner | failed | `Model unavailable: opencode/muse-ember-1.0`，每次 5-6s 即退出 | 新建会话拿到默认模型不在网关清单；凡新建会话的成员任务首 prompt 必败，重试预算被确定性错误烧光（12 条 run） | **已解决**（opengw 网关配置 + opencode 2.2.5 升级）；该教训已由 P3 不可重试快速失败对症 |
 | 10 | `75dbf852eaa1af4e3b2e7d63360f5f4a` | owner | failed | `machine offline — the machine must run agentwork connect` | 连接中断 | **已解决**（重连） |
 | 11 | `3dec40838070ad66c2ad1eae508ed691` | owner | failed | `git: fetch: signal: killed` | fetch 被杀（连接/资源竞争期间） | **已解决**（随 #12 修复） |
-| 12 | `0ae48700b684d04e4c77395326733b33`（att2）、`e1ca8d3faa7f87c52248dbbce7d8f008`（att1） | owner | cancelled | 在途 run 被平台取消（link down）；另有 `deaee148…`「git: worktree add: context canceled」 | **双 `agentwork connect` 实例互抢 peer**，杀掉在途 run | **已解决**（人工合并为单实例，见 204344e947f7 评论；已固化为单实例纪律） |
+| 12 | `0ae48700b684d04e4c77395326733b33`（att2，cancelled）、`e1ca8d3faa7f87c52248dbbce7d8f008`（att1，cancelled）、`326129752dd07417876b7f7b958b580d`（att3，failed「cancelled by platform」）、`deaee148a46b066ccadfc8b79d672c7c`（failed「git: worktree add: context canceled」） | owner | cancelled/failed | 在途 run 被平台取消/打断 | **双 `agentwork connect` 实例互抢 peer**，杀掉在途 run | **已解决**（人工合并为单实例，见 204344e947f7 评论；已固化为单实例纪律） |
 
 ### 数据类问题（非 run 失败，但直接伤害可感知性）
 
