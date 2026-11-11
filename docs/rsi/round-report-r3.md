@@ -1,6 +1,6 @@
 # RSI R3 轮次演进报告（R1→R3）
 
-> 生成：2026-11-11 08:58 UTC · 生成器：`scripts/rsi-round-report.sh 3` · 数据源：daemon API `http://127.0.0.1:47813`（列表端点）+ 本地 git log（agentwork-int-v2）
+> 生成：2026-11-11 09:04 UTC · 生成器：`scripts/rsi-round-report.sh 3` · 数据源：daemon API `http://127.0.0.1:47813`（列表端点）+ 本地 git log（agentwork-int-v2）
 > 本报告自包含：不登录平台即可读懂。指标口径见各节脚注；API 不可达的小节会显式标注。
 
 ## ① 循环演进视图
@@ -27,15 +27,16 @@
 
 ### R3：RSI R3：可感知性改进（演进报告机制）
 
-- goal 终态：`active` · run 总数 31（失败/取消 20）
+- goal 终态：`active` · run 总数 35（失败/取消 20）
 - 训练会话 `4f5193ccc3d0…`：status=`waiting` · 0 节点 · 关键路径 — · 首要发现：（无）
-  - 图结构：10 节点 / 14 边（agent 节点 6，集成节点 2）
+  - 图结构：13 节点 / 19 边（agent 节点 7，集成节点 3）
     - `sg:0e9ad6d5401` sg-IMPL：轮次演进报告生成器：cancelled · attempt 1 · 耗时 — · 依赖 → 2 个节点
     - `sg:c1e064464d4` sg-ANALYZE：R2 问题清单与新提案：verified · attempt 3 · 耗时 55.3m · 依赖 → 1 个节点
     - `sg:3edbe2b48d3` sg-REPORT：生成首份正式演进报告：cancelled · attempt 1 · 耗时 —
     - `sg:52b00d7d4a4` sg-REBENCH：R3 基准复测：cancelled · attempt 1 · 耗时 —
-    - `sg:3991ce7f016` sg-IMPL-v2：轮次演进报告生成器（重派·执行角色）：running · attempt 1 · 耗时 —
+    - `sg:3991ce7f016` sg-IMPL-v2：轮次演进报告生成器（重派·执行角色）：running · attempt 2 · 耗时 20.9m
     - `sg:b13a558163d` sg-REBENCH-v2：R3 基准复测（冷缓存口径·无依赖并行）：verified · attempt 1 · 耗时 18.6m
+    - `sg:49c2619baec` sg-IMPL-v3：轮次演进报告生成器（重派·复用 sg-REBENCH-v2 已合入基点）：running · attempt 1 · 耗时 —
     - 依赖边：`sg:0e9ad6d5401` → `sg:3edbe2b48d3`
     - 依赖边：`sg:c1e064464d4` → `sg:3edbe2b48d3`
     - 依赖边：`sg:0e9ad6d5401` → `sg:52b00d7d4a4`
@@ -86,9 +87,9 @@
 
 | 问题 | 上轮状态 | 本轮收尾状态 |
 |---|---|---|
-| AGENTWORK_HOME 泄漏进验证子进程（R2 验证门三连败根因） | 待修（提案 P-A） | 待评审 |
+| AGENTWORK_HOME 泄漏进验证子进程（R2 验证门三连败根因） | 待修（提案 P-A） | 待评审；bench R3 复测确认同一泄漏还击穿 go test 子进程的 t.Setenv 隔离（6 例失败根因 A/A'/B），P-A 实施时应一并覆盖测试进程环境 |
 | rsi_round 轮次编号不按 domain 递增（两轮均 round_no=1） | 待修（提案 P-B） | 待评审 |
-| 基准冷/温缓存口径漂移（跨轮对比混入缓存噪音） | 待修（提案 P-C） | 待评审 |
+| 基准冷/温缓存口径漂移（跨轮对比混入缓存噪音） | 待修（提案 P-C） | P-C 口径已执行：R3 复测（8295f7a）按冷/温双列产出，跨轮对比采冷列（R2 44.417s → R3 41.285s，约 -7%） |
 | `/rsi` 端点口径不一致（文档写 `/rsi`，实测 404） | 待修（候选任务 3） | 本报告已按真实端点实施，文档口径待统一 |
 | 验证命令 PATH 依赖宿主 shell 配置（go 软链缺失三连败） | 已解决（/usr/local/bin 软链） | 已解决，P-A 落地时固化 PATH 语义 |
 | deliver 因 SSH 私钥权限失败、依赖人工重试 | 已解决（人工修权限） | 待修（候选任务 4：deliver 自动重试） |
@@ -100,7 +101,9 @@
 
 **本轮（R3）实施提交：**
 
-- [`fbc88c2`](https://github.com/Sinkear/agentwork/commit/fbc88c2) feat(rsi): 轮次演进报告生成器 + R3 首份演进报告 + AGENTS.md 收尾约定（R3-1）
+- [`fc36b2e`](https://github.com/Sinkear/agentwork/commit/fc36b2e) docs(rsi): R3 轮次演进报告回填本工作项 commit 链接
+- [`d840844`](https://github.com/Sinkear/agentwork/commit/d840844) feat(rsi): 轮次演进报告生成器 + R3 首份演进报告 + AGENTS.md 收尾约定（R3-1）
+- [`8295f7a`](https://github.com/Sinkear/agentwork/commit/8295f7a) bench: R3 基准复测报告（冷缓存口径·冷/温双列·6例测试隔离缺陷根因归类）
 - [`e7c2572`](https://github.com/Sinkear/agentwork/commit/e7c2572) docs: R1/R2 自迭代交付物迁移至新基线（proposals/benchmark/impl-notes）
 - [`e08cb72`](https://github.com/Sinkear/agentwork/commit/e08cb72) test(P1): 并行化 internal/daemon 独立顶层测试（R2 提案1在新基线重放）
 - [`e2bda1d`](https://github.com/Sinkear/agentwork/commit/e2bda1d) test(P2)+feat(P3): R2 已批准提案在新基线（agentwork-int-v2）语义化重放
@@ -113,8 +116,6 @@
 - [`4289095`](https://github.com/Sinkear/agentwork/commit/4289095) workflow rsi mvp version
 - [`3aecbef`](https://github.com/Sinkear/agentwork/commit/3aecbef) Merge pull request #2 from Sinkear/fix/bugs
 - [`b9259ea`](https://github.com/Sinkear/agentwork/commit/b9259ea) feat(rsi): RSI workflow — 训练任务、分析服务与前端页面
-- [`35b1518`](https://github.com/Sinkear/agentwork/commit/35b1518) webhook ui，前端bug，总览页修复
-- [`11cd194`](https://github.com/Sinkear/agentwork/commit/11cd194) Merge pull request #1 from Sinkear/feat/template-export
 
 **集成分支 `agentwork-int-v2` 近期提交（含历轮改进）：**
 
@@ -131,11 +132,11 @@
 - [`3aecbef`](https://github.com/Sinkear/agentwork/commit/3aecbef) Merge pull request #2 from Sinkear/fix/bugs
 - [`b9259ea`](https://github.com/Sinkear/agentwork/commit/b9259ea) feat(rsi): RSI workflow — 训练任务、分析服务与前端页面
 
-**历轮改进点与效果数字（来源：docs/rsi/proposals.md、benchmark-report-r2.md、impl-notes.md）：**
+**历轮改进点与效果数字（来源：docs/rsi/proposals.md、benchmark-report-r2.md、benchmark-report-r3.md、impl-notes.md；口径冲突时以最新复测报告为准）：**
 
 | 轮 | 提案 | 改进 | commit | 效果数字（before → after） |
 |---|---|---|---|---|
-| R2 | P1 | 并行化 internal/daemon 独立顶层测试（70 个测试函数加 t.Parallel） | [`e08cb72`](https://github.com/Sinkear/agentwork/commit/e08cb72) | test 总时长 14.4s → 11.6s（中位，-20%）；单包最大耗时下降 |
+| R2 | P1 | 并行化 internal/daemon 独立顶层测试（70 个测试函数加 t.Parallel） | [`e08cb72`](https://github.com/Sinkear/agentwork/commit/e08cb72) | internal/daemon 包测试中位 5.911s（R2 复测基准，P1 后保持；R3 复测 5.855s 持平）；详见 benchmark-report-r2.md §3、benchmark-report-r3.md §4 |
 | R2 | P2 | CDN 漂移守卫对畸形响应 fail 改 skip | [`8ca9957`](https://github.com/Sinkear/agentwork/commit/8ca9957) | 14 包 0 FAIL（修复前该守卫对畸形响应直接 FAIL） |
 | R2 | P3 | 失败重试引入不可重试错误快速失败 | [`18a8c3c`](https://github.com/Sinkear/agentwork/commit/18a8c3c) | 确定性错误（如模型不可用）不再烧尽重试预算（R1 曾 12 条 run 同因全败） |
 | R3 | R3-1 | 轮次演进报告生成器 + AGENTS.md 收尾约定 | 本工作项 commit（合入后由下轮报告回填链接） | 可感知性 5 缺口 → 5 节报告覆盖；每轮收尾强制产出 |
@@ -151,16 +152,18 @@
 | R2 | 5 | 5 | 41.6m | 46.8m | 41.6m | 36.6m | 1 | 2 | 1.51 | 重试放大：平均每节点 2.5 次 run |
 | R3 | — | — | — | — | — | — | — | — | — | — |
 
-解读提示：
+解读提示（含 bench R3 复测结论，权威来源 benchmark-report-r3.md）：
 - `重试放大`（top finding）从 R1「平均每节点 3.5 次 run」降到 R2「2.5 次」，仍是两轮共同首要发现。
 - R1/R2 的 wall_ms/critical_path 差异部分来自基准任务规格不同（R1 纯基准、R2 含实施），跨轮结论看趋势不看点值。
+- 基准口径（P-C）：跨轮对比 build 只采冷列——R2 基线 44.417s → R3 新基线 e7c2572 41.285s（约 -7%），R2 已批准提案收益在新基线重建中得到保持；温列（R2 中位 4.387s / R3 中位 4.672s）仅参照不采信。
+- 测试健康：R2 全绿 → R3 复测 6 例失败（2 包），全部为测试环境隔离缺陷（AGENTWORK_HOME 全局泄漏击穿 t.Setenv 隔离 + digest 跨运行残留），非业务代码缺陷；机器验证门以 `unset AGENTWORK_HOME;` 前缀口径运行为全绿。
 - R3 本轮会话尚未冻结（goal 进行中），收尾后重跑生成器补入。
 
 ## ⑤ 下一轮候选任务清单
 
 权威来源：`docs/rsi/analysis-r3.md` 第三节（optimizer 产出，人工挑选成为下一轮任务）。以下为该清单的当前快照：
 
-1. **实施 P-A：验证子进程环境净化**（高优）——R2 验证门三连败 4 条失败 run 同根因（AGENTWORK_HOME 泄漏），R3 前置轮 unset 前缀又引入 PATH 三连败；收益：同类验证门失败 4+3 → 0。
+1. **实施 P-A：验证子进程环境净化**（高优）——R2 验证门三连败 4 条失败 run 同根因（AGENTWORK_HOME 泄漏），R3 前置轮 unset 前缀又引入 PATH 三连败；bench R3 复测进一步确认该泄漏还击穿 go test 子进程隔离（6 例失败，根因 A/A'/B）；收益：同类验证门/测试失败 4+3+6 → 0。
 2. **实施 P-B：rsi_round 按 domain 递增**（中优）——两轮 round_no 均为 1、delta 恒空；收益：R4 报告【跨轮指标对比】首次有真序列。
 3. **`/rsi` 端点口径修正**（低成本高一致性）——补文档为 `/rsi/sessions` 等真实端点，或 handler 加 `GET /rsi` 别名。
 4. **deliver 失败自动重试/退避**（中优）——R2 deliver 因 SSH 私钥权限失败一次后依赖人工推进；外层加一次带延迟的自动重试。
@@ -168,4 +171,4 @@
 
 ---
 
-*本报告由 `scripts/rsi-round-report.sh` 自动生成；如与平台数据不一致，以 daemon API 为准。生成时间：2026-11-11 08:58 UTC。*
+*本报告由 `scripts/rsi-round-report.sh` 自动生成；如与平台数据不一致，以 daemon API 为准。生成时间：2026-11-11 09:04 UTC。*
