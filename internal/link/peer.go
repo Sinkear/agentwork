@@ -72,6 +72,25 @@ func NewPeer(conn *websocket.Conn) *Peer {
 	return p
 }
 
+// newPeerNoRead constructs a Peer WITHOUT starting the reader loop — the
+// caller registers handlers first, then startReadLoop (used by tests to
+// close the Handle/dispatch race deterministically; production callers use
+// NewPeer).
+func newPeerNoRead(conn *websocket.Conn) *Peer {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Peer{
+		conn:     conn,
+		pending:  make(map[string]chan *wireResponse),
+		handlers: make(map[string]Handler),
+		done:     make(chan struct{}),
+		ctx:      ctx,
+		cancel:   cancel,
+	}
+}
+
+// startReadLoop launches the reader goroutine (companion of newPeerNoRead).
+func (p *Peer) startReadLoop() { go p.readLoop() }
+
 // Handle registers the handler for a method (overwrites).
 func (p *Peer) Handle(method string, h Handler) {
 	p.mu.Lock()

@@ -12,6 +12,18 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+
+// NewPeerForTest constructs a peer whose handlers are registered BEFORE the
+// reader loop starts — the race-free equivalent of NewPeer + Handle loop.
+func NewPeerForTest(conn *websocket.Conn, handlers map[string]Handler) *Peer {
+	p := newPeerNoRead(conn)
+	for m, h := range handlers {
+		p.Handle(m, h)
+	}
+	p.startReadLoop()
+	return p
+}
+
 // linkTestServer starts an httptest WS server whose peer handles the given
 // methods; the client dials it and both peers are returned.
 func linkTestServer(t *testing.T, handlers map[string]Handler) (*Peer, *Peer) {
@@ -22,10 +34,12 @@ func linkTestServer(t *testing.T, handlers map[string]Handler) (*Peer, *Peer) {
 		if err != nil {
 			return
 		}
-		peer := NewPeer(conn)
-		for m, h := range handlers {
-			peer.Handle(m, h)
-		}
+		// Register handlers BEFORE the reader loop starts consuming frames.
+		// NewPeer starts readLoop immediately; a request arriving before
+		// Handle() lands used to race the dispatch ("method not found" under
+		// load — live: a deliver-time verification flake). Handlers-first
+		// closes the window deterministically.
+		peer := NewPeerForTest(conn, handlers)
 		peer.Wait()
 	}))
 	t.Cleanup(srv.Close)
