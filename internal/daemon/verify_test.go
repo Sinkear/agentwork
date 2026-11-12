@@ -131,6 +131,41 @@ func TestCheckGuardsEmptyDiffPasses(t *testing.T) {
 	}
 }
 
+// TestRunVerifiedCmdSanitizesAgentworkEnv (P-A 回归, RSI R3 提案【已批准】):
+// the verify subprocess must NOT inherit AGENTWORK_HOME/AGENTWORK_DB — the
+// daemon sets them, and paths.Home() prefers AGENTWORK_HOME over HOME, so
+// every t.Setenv("HOME") test isolation was pierced through the inherited
+// variable (R2 验证门 4 条失败 run 同根因). Other environment variables pass
+// through untouched.
+func TestRunVerifiedCmdSanitizesAgentworkEnv(t *testing.T) {
+	t.Setenv("AGENTWORK_HOME", "/tmp/agentwork-leak-probe")
+	t.Setenv("AGENTWORK_DB", "/tmp/agentwork-leak-probe.db")
+	t.Setenv("AGENTWORK_VERIFY_CANARY", "passed-through")
+
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	out, code := runVerifiedCmd(ctx, dir, `sh -c 'echo -n "$AGENTWORK_HOME"'`, 30)
+	if code != 0 {
+		t.Fatalf("echo must exit 0, got %d: %s", code, out)
+	}
+	if out != "" {
+		t.Fatalf("AGENTWORK_HOME must be stripped from the verify subprocess env, got %q", out)
+	}
+
+	out, _ = runVerifiedCmd(ctx, dir, `sh -c 'echo -n "$AGENTWORK_DB"'`, 30)
+	if out != "" {
+		t.Fatalf("AGENTWORK_DB must be stripped from the verify subprocess env, got %q", out)
+	}
+
+	// Only the two state-root variables are stripped — the rest passes
+	// through so verify commands can still reach their tools.
+	out, _ = runVerifiedCmd(ctx, dir, `sh -c 'echo -n "$AGENTWORK_VERIFY_CANARY"'`, 30)
+	if out != "passed-through" {
+		t.Fatalf("non-agentwork env must pass through, got %q", out)
+	}
+}
+
 // TestRunVerification: exit 0 passes, non-zero fails, and the report carries
 // the command output.
 func TestRunVerification(t *testing.T) {
