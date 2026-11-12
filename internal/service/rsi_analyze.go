@@ -124,17 +124,41 @@ func (s *RSIService) Analyze(ctx context.Context, sessionID string) error {
 	// Insight-panel ledger: append one optimization round per analysis run.
 	// Round 1 fires at goal terminal; later rounds come from manual re-runs
 	// after fixes were applied — the delta column is the result display.
+	// (P-B, RSI R3 提案【已批准】) The ordinal is DOMAIN-scoped, not
+	// session-scoped: every train goal gets a NEW training_session, so a
+	// session-level MAX restarts numbering at 1 every round and the trend
+	// panel shows "round 1" forever with empty deltas. Joining through the
+	// analyzed goal's domain gives the true 1→2→3 sequence across rounds;
+	// a goal with no domain (or a domain with no history) falls back to the
+	// session-level query — same number the pre-P-B code would have written.
+	var goalDomain string
+	_ = tx.QueryRowContext(ctx, `SELECT domain_id FROM goal WHERE id=?`, goalID).Scan(&goalDomain)
 	var prevNo int
 	var prevMetrics string
-	_ = tx.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(round_no),0) FROM rsi_round WHERE session_id=?`, sessionID).Scan(&prevNo)
+	if goalDomain != "" {
+		_ = tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(r.round_no),0) FROM rsi_round r JOIN goal g ON g.id=r.goal_id
+			 WHERE g.domain_id=?`, goalDomain).Scan(&prevNo)
+	}
+	if prevNo == 0 {
+		_ = tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(round_no),0) FROM rsi_round WHERE session_id=?`, sessionID).Scan(&prevNo)
+	}
 	roundNo := prevNo + 1
 	trigger := "manual_retry"
 	if prevNo == 0 {
 		trigger = "terminal"
 	} else {
+		// The previous round lives in a PREVIOUS session (each goal round
+		// gets its own session) — locate it by the domain-level ordinal, not
+		// by session, so the delta has a real baseline.
 		_ = tx.QueryRowContext(ctx,
-			`SELECT metrics_json FROM rsi_round WHERE session_id=? AND round_no=?`, sessionID, prevNo).Scan(&prevMetrics)
+			`SELECT r.metrics_json FROM rsi_round r JOIN goal g ON g.id=r.goal_id
+			 WHERE g.domain_id=? AND r.round_no=?`, goalDomain, prevNo).Scan(&prevMetrics)
+		if prevMetrics == "" {
+			_ = tx.QueryRowContext(ctx,
+				`SELECT metrics_json FROM rsi_round WHERE session_id=? AND round_no=?`, sessionID, prevNo).Scan(&prevMetrics)
+		}
 	}
 	criticalCount := 0
 	for _, f := range findings {

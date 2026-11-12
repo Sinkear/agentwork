@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eushing/agentwork/internal/logging"
+	"github.com/eushing/agentwork/internal/paths"
 	"github.com/eushing/agentwork/internal/service"
 )
 
@@ -166,14 +168,77 @@ func runSetupOnly(ctx context.Context, dir string, checks service.Checks, timeou
 	return b.String(), true
 }
 
+// sanitizeVerifyEnv builds the environment for a verify subprocess: the
+// daemon's environment MINUS the two variables that redirect agentwork's own
+// state root (P-A, RSI R3 提案【已批准】). The daemon legitimately runs with
+// AGENTWORK_HOME/AGENTWORK_DB set — but a verify command inherits them, then
+// any test that t.Setenv("HOME") resolves paths through paths.Home(), which
+// prefers AGENTWORK_HOME, and the isolation is pierced: gitwork tests hit
+// stale clones in the shared runsRoot, digest assertions hit the host's real
+// articles.json (R2 验证门 4 条失败 run 同根因). Only these two are stripped —
+// the rest of the environment passes through untouched (a verify command may
+// legitimately need to call the agentwork CLI or other tools).
+func sanitizeVerifyEnv() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok &&
+			(k == paths.EnvHome || k == paths.EnvDB) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// verifyEnvHints lists toolchain binaries the acceptance policies commonly
+// invoke; the PATH hint mentions the ones that are NOT reachable (only a
+// hint — never a judgment, the commands themselves decide pass/fail).
+var verifyEnvHints = []string{"go", "node"}
+
+// verifyPathHint returns a one-line report note when the inherited PATH
+// cannot reach a common toolchain binary (P-A 姊妹问题: R3 前置轮三连败 — the
+// daemon's PATH lacked /usr/local/go/bin, every verify command died with a
+// 0-second exit 127 and nothing explained why). The check probes the ENV
+// PATH the subprocess will see, not this process's exec resolution.
+func verifyPathHint() string {
+	pathEnv := ""
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "PATH" {
+			pathEnv = v
+			break
+		}
+	}
+	var missing []string
+	for _, tool := range verifyEnvHints {
+		if _, err := exec.LookPath(tool); err != nil {
+			// LookPath uses the process PATH — the same PATH the subprocess
+			// inherits (minus the stripped AGENTWORK_* vars, which never
+			// affect lookup).
+			missing = append(missing, tool)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("[hint] PATH 下未探测到工具链命令 %s（daemon PATH=%q）——验证命令可能 0 秒退出 127；若属预期（纯 shell 检查）可忽略，否则在宿主安装工具或将二进制软链进 PATH",
+		strings.Join(missing, "/"), pathEnv)
+}
+
 // runVerifiedCmd runs one command under verify_timeout and returns its
 // combined output and exit code (0 = ok; -1 = timeout; -2 = could not start).
+// The subprocess environment is sanitized (sanitizeVerifyEnv) so the
+// acceptance policy is always judged against a clean state root.
 func runVerifiedCmd(ctx context.Context, dir, cmd string, timeout int) (string, int) {
 	cctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 	c := exec.CommandContext(cctx, "sh", "-c", cmd)
 	c.Dir = dir
+	c.Env = sanitizeVerifyEnv()
 	out, err := c.CombinedOutput()
+	if note := verifyPathHint(); note != "" {
+		out = append(out, []byte("\n"+note+"\n")...)
+	}
 	if err == nil {
 		return string(out), 0
 	}

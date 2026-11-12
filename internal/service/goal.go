@@ -126,6 +126,13 @@ func isNonRetryable(summary string) bool {
 	return false
 }
 
+// IsNonRetryableFailure exposes the non-retryable whitelist to other
+// packages (P-D: the daemon's deliver auto-retry consults the same
+// whitelist instead of keeping a divergent copy). Read-only.
+func IsNonRetryableFailure(summary string) bool {
+	return isNonRetryable(summary)
+}
+
 // retryBackoffFor spaces retry attempts: attempt 2 waits 30s, attempt 3
 // waits 60s (capped at 5m). A transient failure (dead link, machine
 // stall) must not burn the whole retry budget in one second.
