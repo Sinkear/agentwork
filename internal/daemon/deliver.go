@@ -11,7 +11,86 @@ import (
 
 	"github.com/eushing/agentwork/internal/events"
 	"github.com/eushing/agentwork/internal/logging"
+	"github.com/eushing/agentwork/internal/service"
 )
+
+// deliverRetryDelay is the fixed wait before deliverGoal's single automatic
+// retry (P-D, RSI R4 候选4【已批准】): long enough for the usual transient
+// causes (a git server hiccup, a restarted remote, a network blip) to clear,
+// short enough that a human is not left babysitting the approval for minutes.
+const deliverRetryDelay = 60 * time.Second
+
+// deliverGoalRetryable reports whether a failed deliver's note describes a
+// TRANSIENT fault worth one automatic retry (P-D). Mirrors the
+// isNonRetryable whitelist idea (internal/service/goal.go, consulted via
+// service.IsNonRetryableFailure): only clear deterministic failures are
+// excluded. Two families never retry:
+//   - post-merge verification/guard failures — the merged state has a code
+//     problem; retrying replays the same verdict and burns 10+ minutes;
+//   - merge conflicts — the branch needs a human's reject-and-fix cycle,
+//     a blind retry would re-abort identically.
+//
+// Everything else (fetch/push network errors, repo prepare timeouts, the
+// owner-run wait deadline) gets exactly one retry — R2 实录: an SSH-permission
+// hiccup failed a deliver at 10:56:53 and only succeeded after a human
+// re-approved at 11:09:01.
+var nonRetryableDeliverMarkers = []string{
+	"deliver: post-merge verification failed",
+	"deliver: post-merge guards failed",
+	"deliver: merge conflict",
+}
+
+func deliverGoalRetryable(note string) bool {
+	s := strings.TrimSpace(note)
+	if s == "" {
+		return false
+	}
+	for _, m := range nonRetryableDeliverMarkers {
+		if strings.Contains(s, m) {
+			return false
+		}
+	}
+	return !service.IsNonRetryableFailure(s)
+}
+
+// deliverGoalWithRetry wraps deliverGoal with ONE delayed automatic retry
+// (P-D): a failed deliver whose note is retryable (deliverGoalRetryable)
+// waits deliverRetryDelay and runs deliverGoal again — its own merge/push
+// idempotency makes the replay safe. The retry (and any skip) is logged to
+// daemon.log for forensics. finishDeliver has already annotated the goal on
+// the first failure, so the note the human sees stays the FIRST failure's —
+// the retry succeeding overwrites it via MarkDelivered success.
+func (d *Daemon) deliverGoalWithRetry(ctx context.Context, goalID string) {
+	d.deliverGoal(ctx, goalID)
+
+	var note string
+	_ = d.st.DB().QueryRowContext(ctx,
+		`SELECT review_request FROM goal WHERE id=? AND status='review'`, goalID).Scan(&note)
+	if !strings.HasPrefix(strings.TrimSpace(note), "deliver:") {
+		return // delivered fine (or left review for another reason) — no retry
+	}
+	if !deliverGoalRetryable(note) {
+		logging.Infof("daemon: deliver %s: first failure is not retryable, no auto-retry: %s", goalID, firstLine(note))
+		return
+	}
+	logging.Infof("daemon: deliver %s: failed (%s) — auto-retry in %s", goalID, firstLine(note), deliverRetryDelay)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(deliverRetryDelay):
+	}
+	logging.Infof("daemon: deliver %s: auto-retry starting", goalID)
+	d.deliverGoal(ctx, goalID)
+}
+
+// firstLine returns the first line of a (possibly multi-line) note for log
+// lines that must stay one line long.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
 
 // deliver — the deterministic merge step (DESIGN.md §7). After the human
 // approves the checkpoint, the platform merges the goal branch into the
@@ -34,7 +113,7 @@ func (d *Daemon) onGoalApproved(ctx context.Context, e events.Event) {
 	if goalID == "" {
 		return
 	}
-	go d.deliverGoal(context.Background(), goalID)
+	go d.deliverGoalWithRetry(context.Background(), goalID)
 }
 
 // deliverWaitForRuns bounds how long deliver waits for an in-flight run
