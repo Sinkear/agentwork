@@ -65,6 +65,46 @@ tail -f /tmp/agentwork-daemon.log
 # ⑥ 复测对比：GET /rsi/sessions/{id}/rounds 或 GET /rsi/overview 的 trend
 ```
 
+### 3.1 基准口径（冷/温分列，P-C 固化）
+
+> 来源：R3 提案 P-C（analysis-r3.md 问题 #14「基准口径漂移」：同一基线 test 实测 23.012s（首跑含编译）→ 14.5s（复跑）→ 11.3s（R1 冻结口径），差近 2 倍；build 冷 38-44s vs 温 3.9-5.6s 差约 10 倍）。
+> 生效范围：R4 起强制；R3 复测报告（benchmark-report-r3.md）已按本口径执行，是首个样本；R1/R2 报告数字口径不全，跨轮对比以冷列为准并注明口径生效轮次。
+
+所有基准测量（sg-B / sg-REBENCH）与基准报告必须遵守：
+
+- **`go build ./...`：冷/温双列，缺一不可。**
+  - **冷列**（跨轮对比唯一采列）：独立 GOCACHE——`GOCACHE=$(mktemp -d) go build ./...`（目录新建即空 = 真冷态）；若复用固定路径（如 `/tmp/rN-gocache`），测量前必须 `rm -rf` 清空至 0 文件。模块缓存（`/root/go/pkg/mod`）两列共热，报告注明。
+  - **温列**：标准 GOCACHE（默认 `/root/.cache/go-build`）3 连跑取中位。
+- **`go test ./... -count=1`：以温 3 连跑中位为准**，报告必须注明口径「首跑含全部测试二进制编译，中位代表纯执行口径」（依据：同一基线首跑 23.012s vs 复跑 14.5s，差值即编译开销）。
+- **两列都必须记录实际使用的 GOCACHE 路径**（见 3.2 模板环境节）。
+
+```bash
+# 冷构建（独立 GOCACHE，目录新建即空 → 真冷态）
+time env GOCACHE=$(mktemp -d) go build ./...
+# 或复用固定路径（测量前清空至 0 文件）：
+rm -rf /tmp/rN-gocache && time env GOCACHE=/tmp/rN-gocache go build ./...
+
+# 温构建 3 连跑（标准 GOCACHE，取中位）
+for i in 1 2 3; do time go build ./...; done
+
+# 温测试 3 连跑（-count=1 禁用测试结果缓存；首跑含测试二进制编译）
+for i in 1 2 3; do time go test ./... -count=1; done
+
+# 包级耗时 Top10（喂给基准报告第 3 节）
+go test ./... -count=1 2>&1 | grep -E '^(ok|FAIL)' | sort -k3 -rn | head -10
+```
+
+（后续若落 `scripts/rsi-bench.sh` 统一计时脚本，本节口径即其规格来源；脚本落地前以手跑命令为准。）
+
+### 3.2 基准报告模板（benchmark-report*.md 必须包含）
+
+1. **环境节**：`go version` 输出、内核/架构（`uname -a`）、CPU 核数、**GOCACHE 路径（冷/温各一行）**、模块缓存路径及大小、影响测量的环境变量（如 `AGENTWORK_HOME`）。
+2. **冷/温双列总表**：每个计时项一行——冷列（独立 GOCACHE）、温列（3 连跑原始值 + 中位）、失败用例数；表下注明跨轮对比采列口径（build 采冷列、test 采温中位）。
+3. **包级 Top10**：`go test ./... -count=1` 按包耗时降序前 10（含 PASS/FAIL 状态），用于定位最慢包。
+4. **结论节**：冷列/温中位与上一轮同口径数字的对比 + 测试健康结论（失败用例逐条归因：环境隔离缺陷 vs 业务缺陷；R3 报告 §5-§6 为范例）。
+
+报告头部写明基线 commit 与「工作区内唯一有效版本」声明（防同名文件集成冲突，R2 实测教训）。
+
 ## 4. 指标怎么读（回答「为什么比裸 agent 慢」）
 
 训练页（/training）→ 编排 tab / 洞察 tab：
@@ -80,6 +120,15 @@ tail -f /tmp/agentwork-daemon.log
 | findings（9 类） | 结构瓶颈的机器判据 | serial_chain / merge_candidate / ping_pong… |
 
 判定「可优化」四条件：统计显著（对比基线中位数）、可归因（finding+具体 span）、可干预（改 depends_on/分派/闸门粒度）、可回滚。
+
+### 4.1 RSI 指标口径补充（node_count 与图口径，P-C 固化）
+
+- **`node_count` 不是「分派了几个工作项」**。图装配（internal/service/workflow.go）把以下节点全部计入：`goal` 根节点、`sg:<id>` 执行节点（**owner 派发与「重派」各占独立节点**——同一工作项重派后是 `sg-XXX-v2` 这类新 sub_goal，节点数随之膨胀）、`verify:<id>` 验证节点、`review`/`consult` 审查与咨询节点、`chg:<id>` **集成节点**（每个 change 一行）。R3 报告实测：R1 3 节点 / R2 5 节点（含 2 集成）/ R3 14 节点（含 3 集成），重派/验证/集成节点占大头。
+- 因此 `retry_amplification`、`serialization_loss_ms` 等按节点数归一化的指标，口径上都受验证/集成/重派节点稀释或放大，跨轮解读时先看节点构成再下结论。
+- **跨轮对比图结构时必须区分两个口径**：
+  - **「设计图」**：sg-B/sg-O 等按 goal 派发词声明的工作项及其 `depends_on`——即「这一轮本来打算怎么跑」（R2 派发词：基准→提案 2 个工作项）。
+  - **「实际执行图」**：冻结 `workflow_json` 的真实节点/边——含重派（failed 后重派的新 sub_goal）、验证/审查/咨询节点、集成节点与时间推断的 `seq` 边（R3 实际执行图 14 节点 22 边，远超设计的 3 项）。
+  - 写进报告/提案的「图变大/变复杂」结论必须注明是哪个口径；比较轮间差异时两边同口径对比（设计 vs 设计、执行 vs 执行），不得拿设计图节点数对比执行图节点数。
 
 ## 5. 铁律
 
