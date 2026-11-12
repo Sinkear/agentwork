@@ -182,12 +182,20 @@ func pruneStaleGoalWorkdirs() {
 // the skills library — and NEVER become the agent's commit); the pushed
 // AGENTS.md profile is excluded only while unchanged (an agent-modified
 // profile IS its own file and gets committed).
-func gitAddExcludeArgs(excludeProfile bool) []string {
+func gitAddExcludeArgs(ctx context.Context, wt string, excludeProfile bool) []string {
 	excludes := []string{}
 	for _, dir := range projectSkillsDirs() {
 		excludes = append(excludes, ":(exclude)"+dir)
 	}
-	if excludeProfile {
+	// Git subtlety (live: R3/R4 runs burned retry budgets on it): an
+	// exclude pathspec NAMING a git-ignored file makes `git add` exit 1
+	// ("paths are ignored ... use -f") even though the add would have
+	// skipped the file anyway. So: a git-ignored AGENTS.md is left
+	// unnamed (add -A skips it silently); the exclude is only for a
+	// NON-ignored file we must keep out of the commit. Mirrors the
+	// daemon-side commitRunChanges check-ignore guard, inverted.
+	// check-ignore exits 0 when the file IS git-ignored.
+	if _, err := runGit(ctx, wt, "check-ignore", "-q", "AGENTS.md"); err != nil && excludeProfile {
 		excludes = append(excludes, ":(exclude)AGENTS.md")
 	}
 	return excludes
@@ -205,7 +213,7 @@ func commitAndPush(ctx context.Context, p link.RunDispatchParams, wt, repo, bran
 			excludeProfile = true
 		}
 	}
-	args := append([]string{"add", "-A", "--"}, gitAddExcludeArgs(excludeProfile)...)
+	args := append([]string{"add", "-A", "--"}, gitAddExcludeArgs(ctx, wt, excludeProfile)...)
 	if out, err := runGit(ctx, wt, args...); err != nil {
 		return "", fmt.Errorf("git add: %v: %s", err, out)
 	}
