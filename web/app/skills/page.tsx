@@ -307,7 +307,7 @@ function CreateSkillDialog({ onClose }: { onClose: () => void }) {
       wide
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button type="button" variant="outline" onClick={onClose}>取消</Button>
           <Button type="submit" form="skill-form" disabled={create.isPending || !file}>
             {create.isPending ? "上传中…" : "上传"}
           </Button>
@@ -414,21 +414,25 @@ function SkillSyncDialog({ skill, onClose }: { skill: Skill; onClose: () => void
   const counts = data?.counts;
   const state = stateMeta(data?.state);
 
+  // Distinct keys force React to remount the footer when switching between the
+  // compare view and the edit form. Without this, React reuses the last button
+  // DOM node and mutates it into the form's submit button; the same click then
+  // submits the form with unchanged values, so "修改来源" appeared broken.
   const configuredFooter = (
-    <>
-      <Button variant="outline" onClick={onClose}>关闭</Button>
-      <Button variant="ghost" onClick={() => compare.refetch()} disabled={compare.isFetching}>
+    <div key="sync-view" className="contents">
+      <Button type="button" variant="outline" onClick={onClose}>关闭</Button>
+      <Button type="button" variant="ghost" onClick={() => compare.refetch()} disabled={compare.isFetching}>
         {compare.isFetching ? "比较中…" : "重新比较"}
       </Button>
-      <Button variant="ghost" onClick={() => setEditing(true)}>修改来源</Button>
-    </>
+      <Button type="button" variant="ghost" onClick={() => setEditing(true)}>修改来源</Button>
+    </div>
   );
 
   const editingFooter = (
-    <>
-      <Button variant="outline" onClick={onClose}>取消</Button>
+    <div key="sync-edit" className="contents">
+      <Button type="button" variant="outline" onClick={onClose}>取消</Button>
       {source && (
-        <Button variant="ghost" onClick={() => setEditing(false)}>返回同步</Button>
+        <Button type="button" variant="ghost" onClick={() => setEditing(false)}>返回同步</Button>
       )}
       <Button
         type="submit"
@@ -437,7 +441,7 @@ function SkillSyncDialog({ skill, onClose }: { skill: Skill; onClose: () => void
       >
         {configure.isPending ? "保存中…" : "保存来源"}
       </Button>
-    </>
+    </div>
   );
 
   const mutationError =
