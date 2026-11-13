@@ -1633,6 +1633,10 @@ func (d *Daemon) sweepRunWorktrees(ctx context.Context) {
 	// worktree dirs — the reserved sibling names are skipped.
 	reserved := map[string]bool{
 		"repos": true, "proc": true, "scratch": true, "sessions": true,
+		// skills/ is the persistent skill library (runs/skills/<skillID>/),
+		// NOT a run worktree — sweeping it would delete every skill package
+		// on the daemon's first restart.
+		"skills": true,
 	}
 	// Sessions die with the process — their worktrees (runs/sessions/<goal>/
 	// <agent>) are stale on restart and would hold branch checkouts hostage.

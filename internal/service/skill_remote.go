@@ -603,15 +603,19 @@ func (s *SkillService) localSkillFiles(ctx context.Context, id string) (map[stri
 	return out, nil
 }
 
-// ignoredSkillFile: the local build artifact (package.zip) and git metadata
-// are never part of the remote content.
+// ignoredSkillFile: local build artifacts (package.zip, Python bytecode
+// caches, OS metadata) and git metadata are never part of the remote content.
 func ignoredSkillFile(rel string) bool {
 	rel = strings.TrimPrefix(rel, "./")
 	if rel == "" || rel == "package.zip" {
 		return true
 	}
+	if strings.HasSuffix(rel, ".pyc") || strings.HasSuffix(rel, ".pyo") {
+		return true
+	}
 	for _, seg := range strings.Split(rel, "/") {
-		if seg == ".git" {
+		switch seg {
+		case ".git", "__pycache__", ".DS_Store", "Thumbs.db":
 			return true
 		}
 	}

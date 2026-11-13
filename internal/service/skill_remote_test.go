@@ -586,3 +586,28 @@ func TestSkillSyncUnconfigured(t *testing.T) {
 		t.Fatalf("PullRequest err = %v, want ErrValidation", err)
 	}
 }
+
+// TestIgnoredSkillFile: local build artifacts (package.zip, Python bytecode
+// caches, OS metadata) and git metadata never sync; ordinary files do.
+func TestIgnoredSkillFile(t *testing.T) {
+	ignored := []string{
+		"package.zip",
+		"./package.zip",
+		".git/config",
+		"scripts/__pycache__/base_cases.cpython-312.pyc",
+		"nested/__pycache__/mod.pyc",
+		"cache.pyo",
+		".DS_Store",
+		"docs/Thumbs.db",
+	}
+	for _, p := range ignored {
+		if !ignoredSkillFile(p) {
+			t.Fatalf("ignoredSkillFile(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"SKILL.md", "scripts/run.py", "docs/notes.md", ".gitkeep"} {
+		if ignoredSkillFile(p) {
+			t.Fatalf("ignoredSkillFile(%q) = true, want false", p)
+		}
+	}
+}

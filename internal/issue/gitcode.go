@@ -260,10 +260,25 @@ func (c *GitCodeClient) CreatePull(ctx context.Context, repo, title, head, base,
 	return u, n, nil
 }
 
+// gitCodePermissionAllowsPush maps GitCode's named permission to the push
+// capability. The collaborator endpoint reports "read"/"write"/"admin".
+func gitCodePermissionAllowsPush(permission string) bool {
+	switch strings.ToLower(strings.TrimSpace(permission)) {
+	case "write", "admin", "maintainer", "owner":
+		return true
+	}
+	return false
+}
+
 // CheckPushPermission reports the token identity and whether it can push to
-// the repo. GitCode exposes the permission under "permission" or
-// "permissions" (push/admin true). identity is returned even when the repo
-// lookup fails.
+// the repo. GitCode's repo object does NOT carry a permission block for the
+// caller (verified against api.gitcode.com: /repos/{repo} has no
+// permission/permissions field), so the authoritative probe is the
+// GitHub-compatible collaborator permission endpoint
+// /repos/{repo}/collaborators/{login}/permission, which reports
+// permission:"write" + access_level:30 for Developers. Older/self-hosted
+// shapes that DO embed permission on the repo (or only list collaborators)
+// are accepted as fallbacks. identity is returned even when a lookup fails.
 func (c *GitCodeClient) CheckPushPermission(ctx context.Context, repo string) (string, bool, error) {
 	var user struct {
 		Login    string `json:"login"`
@@ -276,6 +291,25 @@ func (c *GitCodeClient) CheckPushPermission(ctx context.Context, repo string) (s
 	if identity == "" {
 		identity = user.Username
 	}
+	// 1) Collaborator permission endpoint: an explicit answer wins.
+	if identity != "" {
+		var cp struct {
+			Permission  string             `json:"permission"`
+			AccessLevel flexInt            `json:"access_level"`
+			Permissions *gitCodePermission `json:"permissions"`
+		}
+		if err := c.do(ctx, http.MethodGet,
+			"/repos/"+repo+"/collaborators/"+url.PathEscape(identity)+"/permission", nil, &cp); err == nil {
+			if cp.Permissions.allowsPush() || gitCodePermissionAllowsPush(cp.Permission) || int(cp.AccessLevel) >= 30 {
+				return identity, true, nil
+			}
+			if cp.Permission != "" || cp.AccessLevel != 0 {
+				return identity, false, nil
+			}
+			// Empty body: fall through to the repo/collaborator probes.
+		}
+	}
+	// 2) Repo-level permission (the shape some GitCode revisions used).
 	var r struct {
 		Permission  *gitCodePermission `json:"permission"`
 		Permissions *gitCodePermission `json:"permissions"`
@@ -285,6 +319,24 @@ func (c *GitCodeClient) CheckPushPermission(ctx context.Context, repo string) (s
 	}
 	if r.Permission.allowsPush() || r.Permissions.allowsPush() {
 		return identity, true, nil
+	}
+	// 3) Collaborator roster: the repo object lists members but no caller
+	// permission, so match the token identity in the roster.
+	var members []struct {
+		Login       string             `json:"login"`
+		Username    string             `json:"username"`
+		Permission  string             `json:"permission"`
+		AccessLevel flexInt            `json:"access_level"`
+		Permissions *gitCodePermission `json:"permissions"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/collaborators", nil, &members); err == nil {
+		for _, m := range members {
+			if m.Login != identity && m.Username != identity {
+				continue
+			}
+			return identity, m.Permissions.allowsPush() ||
+				gitCodePermissionAllowsPush(m.Permission) || int(m.AccessLevel) >= 30, nil
+		}
 	}
 	return identity, false, nil
 }

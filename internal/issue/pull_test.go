@@ -151,3 +151,91 @@ func TestGitCodeCheckPushPermission(t *testing.T) {
 		})
 	}
 }
+
+// TestGitCodeCheckPushPermissionCollaborator covers the probe GitCode
+// actually answers: the repo object has no permission block, while the
+// GitHub-compatible collaborator permission endpoint reports
+// permission:"write" + access_level:30 for Developers. Repo-level and
+// roster fallbacks are covered too.
+func TestGitCodeCheckPushPermissionCollaborator(t *testing.T) {
+	cases := []struct {
+		name          string
+		permStatus    int
+		permJSON      string
+		repoJSON      string
+		collaborators string
+		want          bool
+	}{
+		{
+			name:       "collaborator write",
+			permStatus: http.StatusOK,
+			permJSON:   `{"permission":"write","access_level":30}`,
+			repoJSON:   `{"name":"o/r"}`,
+			want:       true,
+		},
+		{
+			name:       "collaborator read wins over repo push",
+			permStatus: http.StatusOK,
+			permJSON:   `{"permission":"read","access_level":20}`,
+			repoJSON:   `{"permission":{"push":true}}`,
+			want:       false,
+		},
+		{
+			name:       "empty collaborator falls back to repo",
+			permStatus: http.StatusOK,
+			permJSON:   `{}`,
+			repoJSON:   `{"permission":{"push":true}}`,
+			want:       true,
+		},
+		{
+			name:       "missing collaborator endpoint falls back to repo",
+			permStatus: http.StatusNotFound,
+			repoJSON:   `{"permissions":{"admin":true}}`,
+			want:       true,
+		},
+		{
+			name:          "roster match grants push",
+			permStatus:    http.StatusNotFound,
+			repoJSON:      `{"name":"o/r"}`,
+			collaborators: `[{"login":"gitcoder","permission":"write","access_level":30}]`,
+			want:          true,
+		},
+		{
+			name:          "roster read reports no push",
+			permStatus:    http.StatusNotFound,
+			repoJSON:      `{"name":"o/r"}`,
+			collaborators: `[{"login":"gitcoder","permission":"read","access_level":20}]`,
+			want:          false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/user":
+					_, _ = w.Write([]byte(`{"login":"gitcoder"}`))
+				case "/repos/o/r/collaborators/gitcoder/permission":
+					w.WriteHeader(c.permStatus)
+					if c.permStatus == http.StatusOK {
+						_, _ = w.Write([]byte(c.permJSON))
+					}
+				case "/repos/o/r":
+					_, _ = w.Write([]byte(c.repoJSON))
+				case "/repos/o/r/collaborators":
+					_, _ = w.Write([]byte(c.collaborators))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			cl := &GitCodeClient{token: "tok", http: srv.Client(), baseURL: srv.URL}
+			identity, canPush, err := cl.CheckPushPermission(context.Background(), "o/r")
+			if err != nil {
+				t.Fatalf("CheckPushPermission: %v", err)
+			}
+			if identity != "gitcoder" || canPush != c.want {
+				t.Fatalf("CheckPushPermission = %q %v, want gitcoder %v", identity, canPush, c.want)
+			}
+		})
+	}
+}
