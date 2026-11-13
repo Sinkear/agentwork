@@ -6,7 +6,7 @@ import Link from "next/link";
 import { ArrowRight, Check, Loader2, PenLine, Send, Sparkles, Trash2 } from "lucide-react";
 import { PageBody, PageHeader, SectionCard, Button, inputCls } from "@/components/ui";
 import { NewGoalForm } from "@/components/new-goal-form";
-import { AcpChatClient, ChatEvent, PermissionRequest } from "@/lib/acp";
+import { AcpChatClient, AcpCloseInfo, ChatEvent, PermissionRequest, formatAcpClose } from "@/lib/acp";
 import { listAgents, listGoals } from "@/lib/api";
 import { describeStewardFailure } from "@/lib/steward";
 import { useAgents, useSquads, useDomains } from "@/lib/queries";
@@ -54,6 +54,20 @@ export default function NewGoalPage() {
   } | null>(null);
 
   const clientRef = useRef<AcpChatClient | null>(null);
+  // 握手中的 client（还没到 ready）：组件卸载/重试时必须能关掉它——旧代码
+  // 只在 newSession 成功后才写 clientRef，握手期间被卸载的 socket 谁也关不掉，
+  // 机器侧会留下一条悬空的 chat channel（daemon 日志里的 “web read: close 1005”）。
+  const inflightRef = useRef<AcpChatClient | null>(null);
+  const connectingRef = useRef<Promise<AcpChatClient> | null>(null);
+  // 代际：每次重试/重来/卸载都 +1。旧连接的 onEvent/onClose 据此丢弃，
+  // StrictMode 二次挂载和“重试”都不会被上一次连接的迟到回调污染。
+  const genRef = useRef(0);
+  // 一次“提交”的代次：失败后迟到的 success/error 不再改 UI。
+  const attemptRef = useRef(0);
+  // 同步的在途闸门：disabled 挡不住回车/双击的同一帧连点。
+  const inFlightRef = useRef(false);
+  // 失败后“重试”要重放的那句话（首轮 / 追问都要能重试）。
+  const lastAskRef = useRef<{ say: string; first: boolean } | null>(null);
   const sessionRef = useRef("");
   const stewardRef = useRef<string | null>(null);
   // 起点时间：创建成功后用它挑出“这次新建的那条”任务，不依赖管家回传的 id。
@@ -61,16 +75,21 @@ export default function NewGoalPage() {
   const lineId = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const busy = phase === "connecting" || phase === "running";
+  // 半死连接提醒：连接在、但机器一直不回应时，别让用户盯着一个无声的转圈。
+  const [slow, setSlow] = useState(false);
 
   const push = useCallback((line: Omit<Line, "id">) => {
-    lineId.current += 1;
+    // Allocate the id OUTSIDE the updater: the updater runs lazily and may
+    // run twice (StrictMode), so reading lineId.current inside it let two
+    // queued pushes both see the latest counter → duplicate React keys.
+    const id = (lineId.current += 1);
     setLines((prev) => {
       // 流式片段合并到一个气泡里（与管家聊天一致）。
       const last = prev[prev.length - 1];
       if (last && last.role === line.role && (line.role === "agent") && !last.pending) {
         return [...prev.slice(0, -1), { ...last, text: last.text + line.text }];
       }
-      return [...prev, { ...line, id: lineId.current }];
+      return [...prev, { ...line, id }];
     });
   }, []);
 
@@ -78,65 +97,123 @@ export default function NewGoalPage() {
     scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight);
   }, [lines, busy]);
 
+  // 关掉当前连接（含握手中的那一个）并让这一代的所有回调失效。
+  // 先关 socket 再清 ref：旧连接的 onClose 在 gen 不匹配时会自行忽略，
+  // 不会把“重试/重来”的界面改成失败态。
+  const disposeClient = useCallback(() => {
+    genRef.current += 1;
+    connectingRef.current = null;
+    const current = clientRef.current;
+    const inflight = inflightRef.current;
+    clientRef.current = null;
+    inflightRef.current = null;
+    sessionRef.current = "";
+    if (inflight && inflight !== current) inflight.close();
+    current?.close();
+    setPerm(null);
+  }, []);
+
   // 连接管家（懒连接：打开页面不建会话，不浪费一次 CLI 启动）。
-  const ensureClient = useCallback(async () => {
+  // 并发保护：同一帧里连点两次只会有一个握手（connectingRef 复用在途 promise）。
+  const ensureClient = useCallback(async (): Promise<AcpChatClient> => {
     if (clientRef.current && sessionRef.current) return clientRef.current;
-    setPhase("connecting");
-    const steward = stewardRef.current
-      ? { id: stewardRef.current }
-      : (await listAgents()).find((a) => a.type === "steward");
-    if (!steward) {
-      setPhase("failed");
-      setError("还没有管家 agent——先连一台机器并重启服务，平台会自动创建管家。");
-      throw new Error("no steward");
-    }
-    stewardRef.current = steward.id;
-    const client = new AcpChatClient({
-      onEvent: (ev: ChatEvent) => {
-        if (ev.kind === "agent") push({ role: "agent", text: ev.text });
-        else if (ev.kind === "tool") {
-          if (ev.isResult) {
-            setLines((prev) =>
-              prev.map((l) =>
-                l.role === "tool" && l.toolName === ev.toolName && l.pending
-                  ? { ...l, text: ev.output ?? "", pending: false }
-                  : l
-              )
-            );
-          } else {
-            push({ role: "tool", text: ev.text, toolName: ev.toolName, pending: true });
+    if (connectingRef.current) return connectingRef.current;
+    const gen = genRef.current;
+    const run = (async () => {
+      setPhase("connecting");
+      const steward = stewardRef.current
+        ? { id: stewardRef.current }
+        : (await listAgents()).find((a) => a.type === "steward");
+      if (!steward) {
+        throw new Error("还没有管家 agent——先连一台机器并重启服务，平台会自动创建管家。");
+      }
+      stewardRef.current = steward.id;
+      const client = new AcpChatClient({
+        onEvent: (ev: ChatEvent) => {
+          if (gen !== genRef.current) return;
+          if (ev.kind === "agent") push({ role: "agent", text: ev.text });
+          else if (ev.kind === "tool") {
+            if (ev.isResult) {
+              setLines((prev) =>
+                prev.map((l) =>
+                  l.role === "tool" && l.toolName === ev.toolName && l.pending
+                    ? { ...l, text: ev.output ?? "", pending: false }
+                    : l
+                )
+              );
+            } else {
+              push({ role: "tool", text: ev.text, toolName: ev.toolName, pending: true });
+            }
           }
-        }
-      },
-      onPermissionRequest: (req, respond) => setPerm({ req, respond }),
-      onClose: () => setError((e) => e || "与管家的连接断开了"),
-    });
-    const host = window.location.host;
-    await client.connect(
-      `ws${window.location.protocol === "https:" ? "s" : ""}://${host}/backend/agents/${steward.id}/acp`
-    );
-    sessionRef.current = await client.newSession();
-    clientRef.current = client;
-    setPhase("ready");
-    return client;
+        },
+        onPermissionRequest: (req, respond) => {
+          if (gen !== genRef.current) return;
+          setPerm({ req, respond });
+        },
+        onClose: (info?: AcpCloseInfo) => {
+          if (gen !== genRef.current) return;
+          clientRef.current = null;
+          sessionRef.current = "";
+          setPhase((p) => (p === "created" ? p : "failed"));
+          const detail = info ? formatAcpClose(info) : "连接已断开";
+          // 这里只兜底“没建成就断了”的情况；具体失败原因由 ask 的 catch
+          // 覆盖成带阶段的完整消息。
+          setError(
+            (e) => e || `与管家的连接断开了（${detail}）——可以点「重试」重新连接，或改用手动填写。`
+          );
+        },
+      });
+      inflightRef.current = client;
+      const host = window.location.host;
+      await client.connect(
+        `ws${window.location.protocol === "https:" ? "s" : ""}://${host}/backend/agents/${steward.id}/acp`
+      );
+      if (gen !== genRef.current) {
+        client.close();
+        throw new Error("连接已取消（页面状态已重置）");
+      }
+      sessionRef.current = await client.newSession();
+      if (gen !== genRef.current) {
+        client.close();
+        throw new Error("连接已取消（页面状态已重置）");
+      }
+      clientRef.current = client;
+      inflightRef.current = null;
+      return client;
+    })();
+    connectingRef.current = run;
+    try {
+      return await run;
+    } finally {
+      if (connectingRef.current === run) connectingRef.current = null;
+    }
   }, [push]);
 
   useEffect(() => {
     return () => {
-      clientRef.current?.close();
-      clientRef.current = null;
-      sessionRef.current = "";
+      // StrictMode 的第一次 cleanup 发生在本页还没连接时（懒连接），
+      // 这里只关真实存在的 ref——不会误伤“首次渲染时正在建立”的 socket。
+      attemptRef.current += 1;
+      inFlightRef.current = false;
+      disposeClient();
     };
-  }, []);
+  }, [disposeClient]);
 
   // 跟管家说一句话：把“要做什么”包成一条建任务的指令，让 CLI 直接建。
   const ask = useCallback(
     async (say: string, first: boolean) => {
       const body = say.trim();
-      if (!body || busy) return;
+      if (!body || inFlightRef.current) return;
+      inFlightRef.current = true;
+      const attempt = ++attemptRef.current;
+      lastAskRef.current = { say: body, first };
       setError("");
+      setSlow(false);
       try {
         const client = await ensureClient();
+        // 期间被“重试/重来/卸载”取消了：这次请求的结果一律不再改 UI。
+        if (attempt !== attemptRef.current) return;
+        setPhase("running");
         if (first) {
           startedAtRef.current = Date.now();
           setLines([]);
@@ -163,23 +240,55 @@ export default function NewGoalPage() {
           push({ role: "user", text: body });
           await client.prompt(sessionRef.current, body);
         }
+        if (attempt !== attemptRef.current) return;
         setPhase("ready");
         setFollowUp("");
       } catch (e) {
+        if (attempt !== attemptRef.current) return;
         setPhase("failed");
+        // 完整暴露失败阶段 + WS 关闭码/原因：绝不再只留一个无声的转圈。
         const raw = String((e as Error).message ?? e);
-        const head = /连接已关闭|连接失败|not connected/.test(raw)
-          ? "与管家的连接没建立起来。"
-          : raw;
-        setError(head);
-        // 诊断慢一点没关系，先把失败原因摆出来，再补上具体到机器/CLI 的解释。
+        setError(`没建成：${raw}`);
+        disposeClient();
+        // 诊断慢一点没关系，先摆事实，再补上具体到机器/CLI 的解释。
         void describeStewardFailure(stewardRef.current).then((why) => {
           if (why) setError((prev) => (prev ? `${prev}\n${why}` : why));
         });
+      } finally {
+        inFlightRef.current = false;
       }
     },
-    [busy, ensureClient, push]
+    [ensureClient, push, disposeClient]
   );
+
+  // 失败后的「重试」：彻底关掉旧连接，用同一句话重新走一遍握手。
+  const retry = useCallback(() => {
+    const last = lastAskRef.current;
+    // 让还在途中的旧请求作废（半死 socket 上的 prompt 可能很长），
+    // 它的迟到回调不能再改这一次的界面。
+    attemptRef.current += 1;
+    inFlightRef.current = false;
+    disposeClient();
+    setError("");
+    setSlow(false);
+    setLines([]);
+    if (!last) {
+      setPhase("idle");
+      return;
+    }
+    setPhase("running");
+    void ask(last.say, last.first);
+  }, [ask, disposeClient]);
+
+  // 守护：连接在、但 60s 没有任何进展 —— 提示可能是半死连接，别静默转圈。
+  useEffect(() => {
+    if (phase !== "running" && phase !== "connecting") {
+      setSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSlow(true), 60_000);
+    return () => window.clearTimeout(timer);
+  }, [phase]);
 
   // 轮询：只要出现“本次提交之后创建”的任务，就算创建成功 → 切回任务视图。
   useEffect(() => {
@@ -271,14 +380,18 @@ export default function NewGoalPage() {
                 <button
                   type="button"
                   onClick={() => {
+                    // 回到初始态：作废在途尝试、关掉（含握手中的）连接。
+                    attemptRef.current += 1;
+                    inFlightRef.current = false;
+                    lastAskRef.current = null;
+                    disposeClient();
                     setLines([]);
                     setPhase("idle");
                     setText("");
+                    setFollowUp("");
                     setError("");
+                    setSlow(false);
                     startedAtRef.current = 0;
-                    clientRef.current?.close();
-                    clientRef.current = null;
-                    sessionRef.current = "";
                   }}
                   className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink"
                 >
@@ -336,18 +449,52 @@ export default function NewGoalPage() {
                     <span>已创建「{createdTitle || "任务"}」，正在打开任务详情…</span>
                   </div>
                 )}
+                {slow && phase !== "failed" && phase !== "created" && (
+                  <div className="space-y-2 rounded-md border border-line bg-surface-2 px-3 py-2 text-xs text-ink-2">
+                    <p>已经 60 秒没有新的进展——连接可能处于半死状态（socket 还在，但机器那头没回应）。</p>
+                    <div className="flex flex-wrap items-center gap-3">
+                      {lastAskRef.current && (
+                        <button
+                          type="button"
+                          onClick={retry}
+                          className="font-medium underline decoration-dotted underline-offset-2 hover:text-ink"
+                        >
+                          断开重试
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setManual(true)}
+                        className="underline decoration-dotted underline-offset-2 hover:text-ink"
+                      >
+                        改用手动填写
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {error && (
                   <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
                     {error.split("\n").map((line, i) => (
                       <p key={i}>{line}</p>
                     ))}
-                    <button
-                      type="button"
-                      onClick={() => setManual(true)}
-                      className="underline decoration-dotted underline-offset-2 hover:text-amber-200"
-                    >
-                      改用手动填写
-                    </button>
+                    <div className="flex flex-wrap items-center gap-3">
+                      {lastAskRef.current && (
+                        <button
+                          type="button"
+                          onClick={retry}
+                          className="font-medium underline decoration-dotted underline-offset-2 hover:text-amber-200"
+                        >
+                          重试（重新连接并再提交一次）
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setManual(true)}
+                        className="underline decoration-dotted underline-offset-2 hover:text-amber-200"
+                      >
+                        改用手动填写
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

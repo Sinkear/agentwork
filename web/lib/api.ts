@@ -105,6 +105,31 @@ export const updateAgent = (id: string, body: Record<string, unknown>) =>
 export const deleteAgent = (id: string) =>
   api<void>(`/agents/${id}`, { method: "DELETE" });
 
+// AgentDeleteImpact is the pre-delete impact report (GET
+// /agents/{id}/delete-impact): what a delete removes (schedules, run rows)
+// and what it keeps (finished goals, whose assignee then reads "已删除
+// agent"). Blockers are hard stops (active runs / goals still holding the
+// agent); the backend re-checks them, the dialog only mirrors them.
+export interface AgentDeleteBlocker {
+  kind: string;
+  count: number;
+  message: string;
+}
+export interface AgentDeleteImpact {
+  agent_id: string;
+  can_delete: boolean;
+  active_runs: number;
+  active_goals: number;
+  runs: number;
+  schedules: number;
+  enabled_schedules: number;
+  terminal_goals: number;
+  sub_goals: number;
+  blockers: AgentDeleteBlocker[];
+}
+export const getAgentDeleteImpact = (id: string) =>
+  api<AgentDeleteImpact>(`/agents/${id}/delete-impact`);
+
 // ── Agent pin (sidebar) ──
 // Pin state lives in the agent_pin table (single-user, per-agent only). Row
 // existence = pinned. PUT toggles; GET returns the pinned id set. The

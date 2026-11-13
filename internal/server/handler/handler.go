@@ -74,6 +74,9 @@ func (h *Handlers) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /agents/{id}", h.getAgent)
 	mux.HandleFunc("PUT /agents/{id}", h.updateAgent)
 	mux.HandleFunc("DELETE /agents/{id}", h.deleteAgent)
+	// Read-only preflight for the delete confirm dialog: live-work blockers
+	// and the cascade counts (runs/schedules/terminal history).
+	mux.HandleFunc("GET /agents/{id}/delete-impact", h.agentDeleteImpact)
 	mux.HandleFunc("GET /agents/{id}/history", h.agentHistory)
 	// Sidebar pin: PUT toggles one agent's pin, GET lists pinned ids. The
 	// static /agents/pinned path wins over the /agents/{id} wildcard in
@@ -275,6 +278,14 @@ func (h *Handlers) deleteAgent(w http.ResponseWriter, r *http.Request) {
 		go h.Daemon.PushMachineSkills(context.Background(), machineID)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// agentDeleteImpact returns the preflight summary for the delete confirm
+// dialog: live-work blockers (queued/running runs, non-terminal goals) plus
+// the cascade counts. Unknown agent → 404 via service.ErrNotFound.
+func (h *Handlers) agentDeleteImpact(w http.ResponseWriter, r *http.Request) {
+	out, err := h.Agent.DeleteImpact(r.Context(), r.PathValue("id"))
+	writeJSON(w, out, err)
 }
 
 // ── agent pin ──

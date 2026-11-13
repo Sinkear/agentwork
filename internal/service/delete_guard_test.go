@@ -48,27 +48,35 @@ func rowExists(t *testing.T, st *store.Store, table, id string) bool {
 	return n > 0
 }
 
-// TestDeleteAgentRefusedByGuards: each of the six referencing rows blocks the
-// delete with a validation error and leaves the agent in place.
-func TestDeleteAgentRefusedByGuards(t *testing.T) {
+// TestDeleteAgentDeleteGuards: only LIVE work blocks an agent delete.
+// Non-terminal goals and queued/running runs refuse it, and the squad/issue
+// guards are unchanged. Terminal goal history and schedules no longer block:
+// the delete succeeds, keeps the terminal goals and cascades the schedules.
+func TestDeleteAgentDeleteGuards(t *testing.T) {
 	ctx := context.Background()
 
-	// 1) goal referencing the agent (any status — even terminal blocks).
+	// 1) terminal goal: history only, does NOT block — the goal stays behind
+	// as audit history (goal.assignee_id has no FK).
 	{
 		as, _, _, _, gs, st := newGuardServices(t)
 		agent := seedAgent(t, st, "a-goal")
 		dom := seedDomain(t, st)
-		if _, err := gs.Create(ctx, Goal{Title: "g", AssigneeType: "agent", AssigneeID: agent, Status: "done", DomainID: dom}); err != nil {
+		g, err := gs.Create(ctx, Goal{Title: "g", AssigneeType: "agent", AssigneeID: agent, Status: "done", DomainID: dom})
+		if err != nil {
 			t.Fatalf("create goal: %v", err)
 		}
-		err := as.Delete(ctx, agent)
-		wantRefused(t, err, "goal guard")
-		if !rowExists(t, st, "agent", agent) {
-			t.Fatal("agent must survive a refused delete")
+		if err := as.Delete(ctx, agent); err != nil {
+			t.Fatalf("terminal goal must not block the delete: %v", err)
+		}
+		if rowExists(t, st, "agent", agent) {
+			t.Fatal("agent must be gone after a successful delete")
+		}
+		if !rowExists(t, st, "goal", g.ID) {
+			t.Fatal("terminal goal history must be kept")
 		}
 	}
 
-	// 2) schedule referencing the agent.
+	// 2) schedule: no longer blocks — it cascades with the agent.
 	{
 		as, _, ds, ss, _, st := newGuardServices(t)
 		agent := seedAgent(t, st, "a-sched")
@@ -76,13 +84,18 @@ func TestDeleteAgentRefusedByGuards(t *testing.T) {
 		if _, err := ds.FreezeChecks(ctx, dom, Checks{}, "medium"); err != nil { // seedDomain already froze; idempotent
 			t.Fatalf("freeze: %v", err)
 		}
-		if _, err := ss.Create(ctx, Schedule{Name: "s", TitleTemplate: "t", AssigneeType: "agent", AssigneeID: agent, DomainID: dom, CronExpression: "*/5 * * * *", Timezone: "UTC"}); err != nil {
+		sched, err := ss.Create(ctx, Schedule{Name: "s", TitleTemplate: "t", AssigneeType: "agent", AssigneeID: agent, DomainID: dom, CronExpression: "*/5 * * * *", Timezone: "UTC"})
+		if err != nil {
 			t.Fatalf("create schedule: %v", err)
 		}
-		err := as.Delete(ctx, agent)
-		wantRefused(t, err, "schedule guard")
-		if !rowExists(t, st, "agent", agent) {
-			t.Fatal("agent must survive a refused delete")
+		if err := as.Delete(ctx, agent); err != nil {
+			t.Fatalf("schedule must not block the delete: %v", err)
+		}
+		if rowExists(t, st, "agent", agent) {
+			t.Fatal("agent must be gone after a successful delete")
+		}
+		if rowExists(t, st, "schedule", sched.ID) {
+			t.Fatal("schedule must cascade with the agent")
 		}
 	}
 
@@ -119,7 +132,7 @@ func TestDeleteAgentRefusedByGuards(t *testing.T) {
 		}
 	}
 
-	// 5) running run on the agent.
+	// 5) running run on the agent (queued would block identically).
 	{
 		as, _, _, _, _, st := newGuardServices(t)
 		agent := seedAgent(t, st, "a-run")
@@ -153,8 +166,8 @@ func TestDeleteAgentRefusedByGuards(t *testing.T) {
 	}
 }
 
-// TestDeleteAgentSucceedsAtZeroRefs: with no referencing rows, the delete
-// succeeds, drops the agent's run history, and cancels non-terminal sub-goals.
+// TestDeleteAgentSucceedsAtZeroRefs: with no live work, the delete succeeds,
+// drops the agent's run history, and cancels non-terminal sub-goals.
 func TestDeleteAgentSucceedsAtZeroRefs(t *testing.T) {
 	ctx := context.Background()
 	as, _, ds, _, gs, st := newGuardServices(t)
@@ -172,6 +185,13 @@ func TestDeleteAgentSucceedsAtZeroRefs(t *testing.T) {
 	sg, err := gs.CreateSubGoal(ctx, g.ID, "work", "do it", worker, "", "agent", owner)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
+	}
+	// CreateSubGoal enqueues a queued owner run for worker. A queued run is
+	// live work now, so mark it completed to simulate an idle agent (the guard
+	// only looks at run.status).
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE run SET status='completed' WHERE agent_id=? AND status IN ('queued','running')`, worker); err != nil {
+		t.Fatalf("finish worker's queued run: %v", err)
 	}
 	// A completed run by worker (history) — must be dropped with the agent.
 	if _, err := st.DB().ExecContext(ctx,

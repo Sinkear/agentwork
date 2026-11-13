@@ -748,7 +748,10 @@ func (g *gitCLI) git(ctx context.Context, dir string, args ...string) (string, e
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), gitutil.SanitizeURL(msg))
+		// The args carry the clone URL with the embedded token: sanitise BOTH
+		// the command line and git's stderr, or the token leaks through the
+		// API error response (and the daemon log).
+		return "", fmt.Errorf("git %s: %s", gitutil.SanitizeURL(strings.Join(args, " ")), gitutil.SanitizeURL(msg))
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }

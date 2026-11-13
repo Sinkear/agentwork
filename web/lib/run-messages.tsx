@@ -113,7 +113,11 @@ export function StreamCards({ items, compact }: { items: RenderItem[]; compact?:
           );
         }
         if (item.kind === "tool") {
-          const collapsed = collapsedRef.current.get(item.key) ?? false;
+          // Default: collapsed — a tool card is one line until the human
+          // opens it. Streaming tool_call_update merges into the SAME card
+          // key, so an update never re-expands a closed card; a manual
+          // toggle (key present in the map) always wins.
+          const collapsed = collapsedRef.current.get(item.key) ?? true;
           return (
             <div key={item.key} className={sz}>
               <button

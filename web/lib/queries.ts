@@ -18,6 +18,7 @@ import {
   createAgent,
   updateAgent,
   deleteAgent,
+  getAgentDeleteImpact,
   listPinnedAgents,
   setAgentPin,
   listGoals,
@@ -94,6 +95,7 @@ export const qk = {
   skillSync: (id: string) => ["skills", id, "sync"] as const,
   agents: ["agents"] as const,
   pinnedAgents: ["agents", "pinned"] as const,
+  agentDeleteImpact: (id: string) => ["agents", id, "delete-impact"] as const,
   goals: ["goals"] as const,
   goal: (id: string) => ["goals", id] as const,
   goalRuns: (goalId: string) => ["goals", goalId, "runs"] as const,
@@ -256,6 +258,20 @@ export function useDeleteAgent() {
       qc.invalidateQueries({ queryKey: qk.agents });
       qc.invalidateQueries({ queryKey: qk.pinnedAgents });
     },
+  });
+}
+
+// useAgentDeleteImpact fetches the pre-delete impact report for the delete
+// confirm dialog. Disabled while no agent is selected (dialog closed); the
+// dialog opens only after a click, so one fetch per open (staleTime keeps a
+// quick cancel→reopen from re-hitting the API, refetch on open is fine).
+export function useAgentDeleteImpact(id: string | null) {
+  return useQuery({
+    queryKey: qk.agentDeleteImpact(id ?? ""),
+    queryFn: () => getAgentDeleteImpact(id as string),
+    enabled: !!id,
+    staleTime: 5_000,
+    retry: false,
   });
 }
 

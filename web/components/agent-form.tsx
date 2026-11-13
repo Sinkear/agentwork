@@ -92,7 +92,16 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
   const [mcpRows, setMcpRows] = useState<McpServer[]>(agent?.mcp_servers ?? []);
   const [maxConcurrent, setMaxConcurrent] = useState(String(agent?.max_concurrent ?? 3));
   const [skills, setSkills] = useState<string[]>(agent?.skills ?? []);
+  // 技能库可能几十上百条：名字/ID 大小写不敏感过滤，避免在长列表里翻找。
+  const [skillQuery, setSkillQuery] = useState("");
   const { data: skillLib } = useSkills();
+  const skillQ = skillQuery.trim().toLowerCase();
+  const visibleSkills = (skillLib ?? []).filter(
+    (sk) =>
+      !skillQ ||
+      sk.name.toLowerCase().includes(skillQ) ||
+      sk.id.toLowerCase().includes(skillQ)
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -166,26 +175,45 @@ export function AgentForm({ agent, onClose }: { agent?: Agent; onClose: () => vo
         </Field>
 
         <Field label="Skills（平台技能库）" hint="勾选的 skill 会下发到该 agent 所在机器，run 时按原名装入工作目录的项目级 skills">
-          <div className="border border-line rounded-lg divide-y divide-line max-h-48 overflow-y-auto">
-            {skillLib && skillLib.length > 0 ? (
-              skillLib.map((sk) => (
-                <label key={sk.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-surface-0">
-                  <input
-                    type="checkbox"
-                    checked={skills.includes(sk.id)}
-                    onChange={(e) =>
-                      setSkills((prev) =>
-                        e.target.checked ? [...prev, sk.id] : prev.filter((x) => x !== sk.id)
-                      )
-                    }
-                  />
-                  <span className="font-medium">{sk.name}</span>
-                  {sk.description && <span className="text-xs text-ink-3">— {sk.description}</span>}
-                </label>
-              ))
-            ) : (
-              <p className="px-3 py-2 text-xs text-ink-3">暂无技能——在「Skills」页面上传 skill 包后可在此勾选</p>
-            )}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <input
+                value={skillQuery}
+                onChange={(e) => setSkillQuery(e.target.value)}
+                className={`${inputCls} flex-1 !py-1.5 text-xs`}
+                placeholder="搜索技能名称 / ID…"
+                aria-label="搜索技能"
+              />
+              <span className="shrink-0 whitespace-nowrap text-[11px] text-ink-3 tabular-nums">
+                已选 {skills.length}
+                {skillLib ? ` / 共 ${skillLib.length}` : ""}
+              </span>
+            </div>
+            {/* 可拖拽高度的列表（右下角 resize-y）：min 12rem，最高 60vh；
+                Dialog 内容本身可滚动，不会把标题/底部按钮挤出屏幕。 */}
+            <div className="min-h-48 max-h-[60vh] resize-y overflow-y-auto rounded-lg border border-line divide-y divide-line">
+              {visibleSkills.length > 0 ? (
+                visibleSkills.map((sk) => (
+                  <label key={sk.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-surface-0">
+                    <input
+                      type="checkbox"
+                      checked={skills.includes(sk.id)}
+                      onChange={(e) =>
+                        setSkills((prev) =>
+                          e.target.checked ? [...prev, sk.id] : prev.filter((x) => x !== sk.id)
+                        )
+                      }
+                    />
+                    <span className="font-medium">{sk.name}</span>
+                    {sk.description && <span className="text-xs text-ink-3">— {sk.description}</span>}
+                  </label>
+                ))
+              ) : skillLib && skillLib.length > 0 ? (
+                <p className="px-3 py-2 text-xs text-ink-3">没有匹配的技能</p>
+              ) : (
+                <p className="px-3 py-2 text-xs text-ink-3">暂无技能——在「Skills」页面上传 skill 包后可在此勾选</p>
+              )}
+            </div>
           </div>
         </Field>
 

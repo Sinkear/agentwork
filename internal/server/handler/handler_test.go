@@ -30,7 +30,8 @@ func newTestHandlers(t *testing.T) (*Handlers, *store.Store, string) {
 	if err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
-	agent, err := service.NewAgentService(st, events.NewBus()).Create(ctx, service.Agent{Name: "A", RuntimeID: rt.ID, MaxConcurrent: 2})
+	as := service.NewAgentService(st, events.NewBus())
+	agent, err := as.Create(ctx, service.Agent{Name: "A", RuntimeID: rt.ID, MaxConcurrent: 2})
 	if err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
@@ -39,7 +40,7 @@ func newTestHandlers(t *testing.T) (*Handlers, *store.Store, string) {
 		t.Fatalf("seed domain: %v", err)
 	}
 
-	h := &Handlers{Goal: gs}
+	h := &Handlers{Goal: gs, Agent: as}
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
@@ -99,5 +100,47 @@ func TestListGoalsLimit(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("GET %s: expected 400, got %d", bad, rec.Code)
 		}
+	}
+}
+
+// TestAgentDeleteImpactHandler: GET /agents/{id}/delete-impact returns the
+// snake_case preflight JSON (blocked by the seeded active goals) and 404s for
+// an unknown agent.
+func TestAgentDeleteImpactHandler(t *testing.T) {
+	h, _, agentID := newTestHandlers(t)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/agents/"+agentID+"/delete-impact", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete-impact: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		AgentID       string `json:"agent_id"`
+		CanDelete     bool   `json:"can_delete"`
+		ActiveRuns    int    `json:"active_runs"`
+		ActiveGoals   int    `json:"active_goals"`
+		TerminalGoals int    `json:"terminal_goals"`
+		Blockers      []struct {
+			Kind    string `json:"kind"`
+			Count   int    `json:"count"`
+			Message string `json:"message"`
+		} `json:"blockers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode delete-impact: %v (body %s)", err, rec.Body.String())
+	}
+	if body.AgentID != agentID || body.CanDelete || body.ActiveGoals != 3 || len(body.Blockers) != 1 ||
+		body.Blockers[0].Kind != "active_goals" || body.Blockers[0].Count != 3 || body.Blockers[0].Message == "" {
+		t.Fatalf("unexpected delete-impact body: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/agents/does-not-exist/delete-impact", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown agent: status %d, body %s", rec.Code, rec.Body.String())
 	}
 }

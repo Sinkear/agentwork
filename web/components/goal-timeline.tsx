@@ -27,6 +27,7 @@ import { useWSEvent } from "@/lib/ws";
 import { Badge, Button, Dialog } from "@/components/ui";
 import type { TimelineItem } from "@/lib/types";
 import { groupMessages, StreamCards } from "@/lib/run-messages";
+import { useStickToBottom } from "@/lib/use-stick-to-bottom";
 
 /** 1min ago → "1min"; 3h12m → "3h 12m"; 2d → "2d". */
 function dur(start: number, end: number): string {
@@ -483,6 +484,9 @@ function RunDetail({ goalId, runId, agentName }: {
   const full = runs?.find((r) => r.id === runId);
   const [showStream, setShowStream] = useState(false);
   const { data: messages } = useGoalRunMessages(goalId, runId, showStream);
+  // 侧卡交互流：展开后贴底跟随新行 / streaming tool_call_update；容器是
+  // 条件渲染的，hook 的 callback ref 会在它真正挂载时绑定滚动位置。
+  const streamRef = useStickToBottom<HTMLDivElement>([showStream, messages]);
 
   const evidence = (() => {
     try { return full?.evidence ? (JSON.parse(full.evidence) as Record<string, unknown>) : null; }
@@ -521,7 +525,7 @@ function RunDetail({ goalId, runId, agentName }: {
         {showStream ? "收起交互流" : "查看交互流"}
       </button>
       {showStream && (
-        <div className="max-h-48 overflow-y-auto border-t border-line pt-1.5">
+        <div ref={streamRef} className="max-h-48 overflow-y-auto border-t border-line pt-1.5">
           {(messages ?? []).length === 0 ? (
             <div className="text-[10px] text-ink-3">尚无交互记录…</div>
           ) : (

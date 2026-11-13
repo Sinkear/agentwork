@@ -37,6 +37,13 @@ func TestDeleteAgentCancelsItsSubGoals(t *testing.T) {
 		`UPDATE sub_goal SET status='verified' WHERE id=?`, sgDone.ID); err != nil {
 		t.Fatal(err)
 	}
+	// CreateSubGoal enqueues owner runs for the sub-goal assignee; a queued
+	// run is live work and would (correctly) block the delete. Finish worker's
+	// runs so only the sub-goal cleanup is under test here.
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE run SET status='completed' WHERE agent_id=? AND status IN ('queued','running')`, worker); err != nil {
+		t.Fatal(err)
+	}
 
 	// Deleting the worker cancels the running one and leaves verified history.
 	bus := events.NewBus()
@@ -70,7 +77,6 @@ func TestDeleteAgentCancelsItsSubGoals(t *testing.T) {
 		t.Fatalf("verifying sub-goal must be cancelled with its verifier, got %q", sg3After.Status)
 	}
 }
-
 
 // TestSeedStewardForRuntime_Create covers the happy path: no steward exists,
 // an active hwcloud runtime is present → SeedStewardForRuntime creates the

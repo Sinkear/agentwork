@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { useAgents, useRuntimes, useDeleteAgent, usePinnedAgents, useSetAgentPin, useGoalEvents } from "@/lib/queries";
+import { useAgents, useRuntimes, useDeleteAgent, useAgentDeleteImpact, usePinnedAgents, useSetAgentPin, useGoalEvents } from "@/lib/queries";
 import { AgentForm } from "@/components/agent-form";
 import { ChatPanel } from "@/components/chat-panel";
 import {
   Button,
+  Dialog,
   PageBody,
   PageHeader,
   SectionCard,
@@ -31,6 +32,8 @@ export default function AgentsPage() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Agent | null>(null);
   const [chatting, setChatting] = useState<Agent | null>(null);
+  // 待删除的 agent：打开确认弹窗（先拉 delete-impact，再决定删不删）。
+  const [deleting, setDeleting] = useState<Agent | null>(null);
   // 纯渲染层筛选：搜索名称/描述/短 id/运行时，或只看已固定。
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<AgentScope>("all");
@@ -264,7 +267,9 @@ export default function AgentsPage() {
                         </Button>
                         <button
                           onClick={() => {
-                            if (confirm(`删除 agent「${a.name}」？被 goal/schedule/squad 引用时会被拒绝。`)) del.mutate(a.id);
+                            // 清掉上一次删除的错误，避免弹窗里显示旧报错。
+                            del.reset();
+                            setDeleting(a);
                           }}
                           className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-ink-3 transition-colors hover:bg-surface-2 hover:text-red-400"
                           title="删除 agent"
@@ -292,6 +297,109 @@ export default function AgentsPage() {
       {chatting && (
         <ChatPanel agentId={chatting.id} agentName={chatting.name} onClose={() => setChatting(null)} />
       )}
+      {deleting && (
+        <DeleteAgentDialog
+          agent={deleting}
+          pending={del.isPending}
+          error={del.isError ? String(del.error) : ""}
+          onClose={() => setDeleting(null)}
+          onConfirm={() =>
+            del.mutate(deleting.id, {
+              onSuccess: () => setDeleting(null),
+            })
+          }
+        />
+      )}
     </PageBody>
+  );
+}
+
+// 删除确认弹窗：先查 GET /agents/{id}/delete-impact，把"删掉什么、留下
+// 什么、为什么现在不能删"摆清楚，再让用户确认。后端接口未就绪/请求失败
+// 时退回一条警告并允许继续——后端自身的引用守卫仍是最后一道关。
+// 统计接口给出的字段：
+//   can_delete / active_runs / active_goals / runs / schedules /
+//   enabled_schedules / terminal_goals / sub_goals /
+//   blockers[{kind, count, message}]
+function DeleteAgentDialog({
+  agent,
+  pending,
+  error,
+  onClose,
+  onConfirm,
+}: {
+  agent: Agent;
+  pending: boolean;
+  error: string;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const { data: impact, isLoading, isError, error: impactError } = useAgentDeleteImpact(agent.id);
+  const blocked = !!impact && (!impact.can_delete || impact.blockers.length > 0);
+
+  return (
+    <Dialog
+      title={`删除 Agent：${agent.name}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button variant="danger" onClick={onConfirm} disabled={isLoading || blocked || pending}>
+            {pending ? "删除中…" : "确认删除"}
+          </Button>
+        </>
+      }
+    >
+      <p className="text-sm text-ink-2">确定要删除 agent「{agent.name}」吗？</p>
+
+      {isLoading ? (
+        <p className="text-xs text-ink-3">正在统计删除影响…</p>
+      ) : isError ? (
+        <>
+          <p className="text-xs text-red-400">无法获取删除影响：{String(impactError)}</p>
+          <p className="text-xs text-ink-3">
+            仍可直接删除；agent 被 goal / schedule / squad 引用时后端会拒绝。
+          </p>
+        </>
+      ) : impact ? (
+        blocked ? (
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-amber-300">暂时不能删除：</p>
+            <ul className="list-disc space-y-0.5 pl-4 text-xs text-ink-3">
+              {impact.blockers.length > 0 ? (
+                impact.blockers.map((b) => (
+                  // 后端的 message 是英文诊断句；两类已知 blocker 用中文
+                  // 说清楚"先做什么"，未知类型才回退到原始 message。
+                  <li key={b.kind}>
+                    {b.kind === "active_runs"
+                      ? `还有 ${b.count} 个排队/运行中的 run，请先等它们结束或取消`
+                      : b.kind === "active_goals"
+                        ? `还有 ${b.count} 个进行中的 goal，请先完成、取消或改派`
+                        : b.message}
+                  </li>
+                ))
+              ) : (
+                <li>该 agent 仍在使用中（活跃运行 / 活跃任务）。</li>
+              )}
+            </ul>
+            {impact.active_runs > 0 && (
+              <p className="text-[11px] text-ink-3">
+                活跃运行 {impact.active_runs} 个 · 活跃任务 {impact.active_goals} 个
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-1 text-xs text-ink-3">
+            <p>
+              将删除 {impact.schedules} 个调度（含 {impact.enabled_schedules} 个启用）、
+              {impact.runs} 条运行记录；{impact.terminal_goals} 条历史任务将保留（归属显示为已删除 agent）。
+            </p>
+            {impact.sub_goals > 0 && <p>{impact.sub_goals} 条子任务记录将保留。</p>}
+          </div>
+        )
+      ) : null}
+
+      {error && <p className="text-sm text-red-400">{error}</p>}
+    </Dialog>
   );
 }

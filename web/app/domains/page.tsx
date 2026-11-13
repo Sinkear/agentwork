@@ -18,6 +18,7 @@ import {
 import { WebhookPanel } from "@/components/webhook-panel";
 import type { Domain, DomainGitTestResult, Checks, Guard, GateRule, Run } from "@/lib/types";
 import { groupMessages, StreamCards } from "@/lib/run-messages";
+import { useStickToBottom } from "@/lib/use-stick-to-bottom";
 
 // GitTestButton probes UNSAVED form values (决策 6-24): repo URL + branch +
 // token read permission via `git ls-remote` on the daemon — a misconfigured
@@ -212,6 +213,9 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
   const [compileError, setCompileError] = useState<string | null>(null);
   const [compileRun, setCompileRun] = useState<Run | null>(null);
   const [runEvents, setRunEvents] = useState<ChatMessage[]>([]);
+  // 编译进度流：跟着新事件贴底（含 streaming tool_call_update），用户
+  // 往上翻看时让出滚动位置。
+  const compileStreamRef = useStickToBottom<HTMLDivElement>([runEvents]);
   // 手动编辑验收策略（决策 2-8 降级路径：不依赖模型编译；冻结后也可再编辑）
   const [editChecksOpen, setEditChecksOpen] = useState(false);
   const [dlgSetup, setDlgSetup] = useState<string[]>([]);
@@ -546,7 +550,7 @@ function DomainCard({ domain: initial }: { domain: Domain }) {
             <span className="inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
             {agents?.find((a) => a.id === compileRun.agent_id)?.name ?? compileRun.agent_id.slice(0, 8)} 正在分析项目、生成验收命令，请稍等……
           </div>
-          <div className="rounded bg-surface-0 border border-line p-2 max-h-44 overflow-y-auto">
+          <div ref={compileStreamRef} className="rounded bg-surface-0 border border-line p-2 max-h-44 overflow-y-auto">
             {runEvents.length === 0 ? (
               <span className="text-[11px] text-ink-3">等待 agent 开始…</span>
             ) : (

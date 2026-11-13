@@ -611,3 +611,21 @@ func TestIgnoredSkillFile(t *testing.T) {
 		}
 	}
 }
+
+// The git error path must never echo the credential: the command line in the
+// error message contains the clone URL with the embedded token, and that
+// string reaches the HTTP API response and the daemon log.
+func TestGitCLIErrorRedactsToken(t *testing.T) {
+	_, err := (&gitCLI{}).git(context.Background(), "",
+		"clone", "https://oauth2:supersecret-token@127.0.0.1:1/skills", t.TempDir())
+	if err == nil {
+		t.Fatal("expected clone failure")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "supersecret-token") {
+		t.Fatalf("token leaked into error: %s", msg)
+	}
+	if !strings.Contains(msg, "127.0.0.1:1/skills") {
+		t.Fatalf("sanitised error should keep the repo URL: %s", msg)
+	}
+}
