@@ -143,7 +143,18 @@ CREATE TABLE IF NOT EXISTS skill (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    -- Remote repository binding (feature: remote skill source). Empty
+    -- repo_url = the skill is local-only. repo_token is the git platform
+    -- token used for clone/push/PR; never returned by the API.
+    repo_url         TEXT NOT NULL DEFAULT '',
+    repo_provider    TEXT NOT NULL DEFAULT '',  -- github | gitcode
+    repo_branch      TEXT NOT NULL DEFAULT '',  -- remote branch; '' = main
+    repo_path        TEXT NOT NULL DEFAULT '',  -- subdirectory holding this skill in the repo
+    repo_token       TEXT NOT NULL DEFAULT '',
+    last_synced_at   TEXT NOT NULL DEFAULT '',
+    last_sync_action TEXT NOT NULL DEFAULT '',  -- pulled | pushed | pr
+    last_remote_sha  TEXT NOT NULL DEFAULT ''
 );
 
 -- A squad is a routing group. It does no work itself: assigning a goal to a
@@ -186,6 +197,7 @@ CREATE TABLE IF NOT EXISTS goal (
     assignee_type    TEXT NOT NULL DEFAULT 'agent',   -- agent | squad | human
     assignee_id      TEXT NOT NULL DEFAULT '',
     status           TEXT NOT NULL DEFAULT 'backlog', -- backlog|active|done|failed|review|cancelled
+    category         TEXT NOT NULL DEFAULT 'hitl',    -- hitl (human checkpoint) | hootl (finish without human review)
     handoff_note     TEXT NOT NULL DEFAULT '',
     review_request   TEXT NOT NULL DEFAULT '',        -- gate trigger reason / evidence pointer
     human_iterations INTEGER NOT NULL DEFAULT 0,      -- human reject iterations (separate from run.attempt)
@@ -443,6 +455,7 @@ CREATE TABLE IF NOT EXISTS schedule (
     domain_id       TEXT REFERENCES domain(id),-- v2 (M1): fired goals belong to this domain
     cron_expression TEXT NOT NULL,             -- 5-field standard cron
     timezone        TEXT NOT NULL DEFAULT 'UTC',
+    category        TEXT NOT NULL DEFAULT 'hitl', -- cloned goal category: hitl | hootl
     enabled         INTEGER NOT NULL DEFAULT 1,
     next_run_at     TEXT NOT NULL DEFAULT '',  -- next fire time RFC3339; '' = unset
     last_run_at     TEXT NOT NULL DEFAULT '',

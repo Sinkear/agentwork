@@ -10,6 +10,7 @@ import { GoalRuns } from "@/components/goal-runs";
 import { GoalSubGoals } from "@/components/goal-subgoals";
 import { GoalChanges } from "@/components/goal-changes";
 import { GoalStatusBar, GoalTimeline } from "@/components/goal-timeline";
+import { CategoryBadge } from "@/components/category-badge";
 import { Badge, AttentionChip, PageBody } from "@/components/ui";
 import type { Goal } from "@/lib/types";
 
@@ -56,6 +57,7 @@ function GoalDetailPageInner() {
         <div className="flex items-center gap-3 mt-3">
           <h1 className="text-lg font-semibold text-ink">{goal.title}</h1>
           <Badge status={goal.status} />
+          <CategoryBadge category={goal.category} />
           <AttentionChip attention={goal.attention} />
           <GoalStatusBar goalId={id} goalStatus={goal.status} />
         </div>

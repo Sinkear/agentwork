@@ -25,13 +25,14 @@ export function NewGoalForm({
   const [description, setDescription] = useState("");
   const [domainId, setDomainId] = useState("");
   const [domainErr, setDomainErr] = useState("");
+  const [category, setCategory] = useState<"hitl" | "hootl">("hitl");
   const [assigneeType, setAssigneeType] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
   const [assigneeErr, setAssigneeErr] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const body: Record<string, string> = { title };
+    const body: Record<string, string> = { title, category };
     if (description) body.description = description;
     if (assigneeType && assigneeId) {
       body.assignee_type = assigneeType;
@@ -92,6 +93,24 @@ export function NewGoalForm({
                 {d.name}
               </option>
             ))}
+          </select>
+        </Field>
+        {/* 验收分类：HITL 结束前走人工审批门禁；HOOTL 跳过复检，完成即结束。 */}
+        <Field
+          label="验收分类"
+          hint={
+            category === "hootl"
+              ? "无需人工复检，任务完成即结束"
+              : "结束前进入 review 阶段等待人工审批"
+          }
+        >
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value === "hootl" ? "hootl" : "hitl")}
+            className={inputCls}
+          >
+            <option value="hitl">HITL · 人工验收</option>
+            <option value="hootl">HOOTL · 免复检</option>
           </select>
         </Field>
         <Field label="负责人类型">

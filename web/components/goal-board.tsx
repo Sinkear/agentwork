@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Loader2 } from "lucide-react";
 import { AttentionChip, Button, Dialog, ReviewPhaseBadge, STATUS_LABEL } from "@/components/ui";
+import { CategoryBadge } from "@/components/category-badge";
 import {
   useActivateGoal,
   useCancelGoal,
@@ -460,8 +461,9 @@ export function GoalBoard({
                         <p className="line-clamp-3 text-[13px] font-medium leading-snug text-ink">{g.title}</p>
                       </div>
 
-                      {(g.attention || g.review_phase) && (
+                      {(g.attention || g.review_phase || g.category) && (
                         <div className="mt-2 flex flex-wrap items-center gap-1">
+                          <CategoryBadge category={g.category} className="scale-90" />
                           {g.review_phase && <ReviewPhaseBadge phase={g.review_phase} />}
                           {g.attention && <AttentionChip attention={g.attention} />}
                         </div>

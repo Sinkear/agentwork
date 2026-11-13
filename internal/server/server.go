@@ -66,6 +66,18 @@ func (s *Server) SetTemplates(templates *service.TemplateService, templateApply 
 
 // ListenAndServe mounts routes and serves until ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+	// Remote skill sync needs the issue providers' pull-request surface.
+	// service.PullProvider is a local structural interface with exactly
+	// CreatePull/CheckPushPermission, so issue.Provider satisfies it.
+	if s.skillSvc != nil {
+		s.skillSvc.SetPullProviderFactory(func(name, token string) (service.PullProvider, error) {
+			p, err := issue.NewProvider(name, token)
+			if err != nil {
+				return nil, err
+			}
+			return p, nil
+		})
+	}
 	settingsSvc := service.NewSettingsService(s.st)
 	machineSvc := service.NewMachineService(s.st)
 	// webhookSecret resolves one delivery's signing secret: the repo's own

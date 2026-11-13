@@ -9,6 +9,11 @@ import {
   listSkills,
   createSkill,
   deleteSkill,
+  configureSkillSource,
+  clearSkillSource,
+  compareSkillSync,
+  runSkillSync,
+  createSkillPullRequest,
   listAgents,
   createAgent,
   updateAgent,
@@ -86,6 +91,7 @@ export const qk = {
   runtimes: ["runtimes"] as const,
   machines: ["machines"] as const,
   skills: ["skills"] as const,
+  skillSync: (id: string) => ["skills", id, "sync"] as const,
   agents: ["agents"] as const,
   pinnedAgents: ["agents", "pinned"] as const,
   goals: ["goals"] as const,
@@ -150,6 +156,60 @@ export function useDeleteSkill() {
   return useMutation({
     mutationFn: deleteSkill,
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.skills }),
+  });
+}
+
+// ── Skill 远端仓库源同步（Feature A）──
+// 所有写操作都同时刷新技能列表（source/last_sync_* 会变）和该技能的 compare。
+function invalidateSkillSync(qc: ReturnType<typeof useQueryClient>, id: string) {
+  qc.invalidateQueries({ queryKey: qk.skills });
+  qc.invalidateQueries({ queryKey: qk.skillSync(id) });
+}
+
+export function useConfigureSkillSource() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: {
+      id: string;
+      body: { repo_url: string; provider?: string; branch?: string; path?: string; token?: string };
+    }) => configureSkillSource(vars.id, vars.body),
+    onSuccess: (_data, vars) => invalidateSkillSync(qc, vars.id),
+  });
+}
+
+export function useClearSkillSource() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => clearSkillSource(id),
+    onSuccess: (_data, id) => invalidateSkillSync(qc, id),
+  });
+}
+
+// 只读比较：远端探测失败（403/网络）是业务结果，不自动重试。
+export function useSkillSyncCompare(skillId: string, enabled = true) {
+  return useQuery({
+    queryKey: qk.skillSync(skillId),
+    queryFn: () => compareSkillSync(skillId),
+    enabled,
+    retry: false,
+  });
+}
+
+export function useRunSkillSync() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { id: string; direction: "pull" | "push" }) =>
+      runSkillSync(vars.id, vars.direction),
+    onSuccess: (_data, vars) => invalidateSkillSync(qc, vars.id),
+  });
+}
+
+export function useCreateSkillPullRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { id: string; title?: string; body?: string }) =>
+      createSkillPullRequest(vars.id, { title: vars.title, body: vars.body }),
+    onSuccess: (_data, vars) => invalidateSkillSync(qc, vars.id),
   });
 }
 export function useCreateRuntime() {

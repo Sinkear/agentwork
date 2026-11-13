@@ -27,6 +27,15 @@ state, in-process event bus, Go daemon + Next.js web UI.
   agents can carry their own extra MCP servers
 - **Triggers** — Web, cron schedules, GitHub/GitCode issues + pull requests
   (poll; issues also webhook), Feishu IM inbound (@-bot task creation)
+- **Task acceptance modes (HITL / HOOTL)** — goals and schedules are created
+  as HITL (human recheck at gates — the default) or HOOTL (the goal finishes
+  directly when its run completes, skipping the human gate). The category is
+  written to the creation log, shown in the web UI, and inherited by
+  schedule-fired goals
+- **Remote skill sources** — attach a GitHub/GitCode repository (branch, path,
+  token) to a skill, compare local vs remote, pull remote updates, push local
+  edits, or submit a pull request; sync and PR require the token to actually
+  hold push permission, verified against the provider API
 - **Feishu notifications** — approval cards (approve/reject right in IM),
   completion/failure pushes, a daily digest
 - **Real-time web UI** — live event stream, execution timeline, sub-goal /

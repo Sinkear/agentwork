@@ -23,13 +23,18 @@ import (
 // checks whether the reporting run still belongs to the current assignee
 // before touching status. See DESIGN.md §9.
 type Goal struct {
-	ID              string `json:"id"`
-	Title           string `json:"title"`
-	Description     string `json:"description"`
-	DomainID        string `json:"domain_id"`     // owning domain (required for agent/squad goals — v2)
-	AssigneeType    string `json:"assignee_type"` // agent | squad | human
-	AssigneeID      string `json:"assignee_id"`
-	Status          string `json:"status"` // backlog|active|done|failed|review|cancelled
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Description  string `json:"description"`
+	DomainID     string `json:"domain_id"`     // owning domain (required for agent/squad goals — v2)
+	AssigneeType string `json:"assignee_type"` // agent | squad | human
+	AssigneeID   string `json:"assignee_id"`
+	Status       string `json:"status"` // backlog|active|done|failed|review|cancelled
+	// Category is the human-in-the-loop mode (v3): "hitl" (default — acceptance
+	// checkpoint gates park a completed goal in review) | "hootl" (human out of
+	// the loop — a completed run whose finalization guard passed promotes to
+	// done WITHOUT evaluating the gates; the skip is logged as auto_completed).
+	Category        string `json:"category"`
 	HandoffNote     string `json:"handoff_note"`
 	ReviewRequest   string `json:"review_request"`   // gate trigger reason / deliver-failure note
 	HumanIterations int    `json:"human_iterations"` // reject iterations (separate from run.attempt)
@@ -203,6 +208,16 @@ func (s *GoalService) Create(ctx context.Context, g Goal) (*Goal, error) {
 	if g.CreatedByType == "" {
 		g.CreatedByType = "human"
 	}
+	// v3 HITL/HOOTL: an empty category means the default human-in-the-loop
+	// mode; any other value is a client bug and must be rejected rather than
+	// silently treated as hitl (it would park/goal-done the wrong way).
+	switch g.Category {
+	case "":
+		g.Category = "hitl"
+	case "hitl", "hootl":
+	default:
+		return nil, NewValidationError("category must be hitl or hootl")
+	}
 	// Note: review is a transitive status (the checkpoint gate) — reject it at
 	// creation so callers can't plant a goal in a waiting state. (blocked was
 	// retired with the wait-children model, 决策 6-10; the check stays as a
@@ -256,14 +271,18 @@ func (s *GoalService) Create(ctx context.Context, g Goal) (*Goal, error) {
 		domainID = g.DomainID
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO goal (id,title,description,domain_id,assignee_type,assignee_id,status,handoff_note,created_by_type,created_by_id,created_at,source_ref,connection_id)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		g.ID, g.Title, g.Description, domainID, g.AssigneeType, g.AssigneeID, g.Status, g.HandoffNote, g.CreatedByType, g.CreatedByID, g.CreatedAt, g.SourceRef, g.ConnectionID); err != nil {
+		`INSERT INTO goal (id,title,description,domain_id,assignee_type,assignee_id,status,category,handoff_note,created_by_type,created_by_id,created_at,source_ref,connection_id)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		g.ID, g.Title, g.Description, domainID, g.AssigneeType, g.AssigneeID, g.Status, g.Category, g.HandoffNote, g.CreatedByType, g.CreatedByID, g.CreatedAt, g.SourceRef, g.ConnectionID); err != nil {
 		return nil, fmt.Errorf("insert goal: %w", err)
 	}
+	// The creation activity carries the category: the UI timeline reads this
+	// row to render the HITL/HOOTL badge for goals whose mode changed later
+	// (and for schedule-fired goals, whose creation bypasses GoalService).
+	createdDetail, _ := json.Marshal(map[string]string{"category": g.Category})
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO activity_log (id,goal_id,actor_type,actor_id,action,detail,created_at) VALUES (?,?,?,?,?,?,?)`,
-		newID(), g.ID, g.CreatedByType, g.CreatedByID, "created", "{}", g.CreatedAt); err != nil {
+		newID(), g.ID, g.CreatedByType, g.CreatedByID, "created", string(createdDetail), g.CreatedAt); err != nil {
 		return nil, fmt.Errorf("insert activity: %w", err)
 	}
 	// The creation instruction lands in the comment feed AS A MENTION — the
@@ -323,7 +342,7 @@ func (s *GoalService) Create(ctx context.Context, g Goal) (*Goal, error) {
 
 func (s *GoalService) List(ctx context.Context) ([]Goal, error) {
 	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.connection_id,g.attention,
+		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.category,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.connection_id,g.attention,
 		        (SELECT r.agent_id FROM run r WHERE r.goal_id = g.id AND r.status IN ('running','queued') ORDER BY r.created_at DESC LIMIT 1),
 		        CASE WHEN g.status != 'review' THEN ''
 		     WHEN (SELECT COUNT(*) FROM run r WHERE r.goal_id=g.id AND r.role='review' AND r.status IN ('queued','running')) = 0 THEN 'awaiting_approval'
@@ -338,7 +357,7 @@ func (s *GoalService) List(ctx context.Context) ([]Goal, error) {
 	for rows.Next() {
 		var g Goal
 		var domainID, currentAgent sql.NullString
-		if err := rows.Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.ConnectionID, &g.Attention, &currentAgent, &g.ReviewPhase); err != nil {
+		if err := rows.Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.Category, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.ConnectionID, &g.Attention, &currentAgent, &g.ReviewPhase); err != nil {
 			return nil, err
 		}
 		g.DomainID = domainID.String
@@ -494,14 +513,14 @@ func (s *GoalService) Get(ctx context.Context, id string) (*Goal, error) {
 	var g Goal
 	var domainID, currentAgent sql.NullString
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.connection_id,g.attention,
+		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.category,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.connection_id,g.attention,
 		        (SELECT r.agent_id FROM run r WHERE r.goal_id = g.id AND r.status IN ('running','queued') ORDER BY r.created_at DESC LIMIT 1),
 		        CASE WHEN g.status != 'review' THEN ''
 		     WHEN (SELECT COUNT(*) FROM run r WHERE r.goal_id=g.id AND r.role='review' AND r.status IN ('queued','running')) = 0 THEN 'awaiting_approval'
 		     WHEN (SELECT COUNT(*) FROM run r WHERE r.goal_id=g.id AND r.role='review' AND r.status='running') > 0 THEN 'reviewing'
 		     ELSE 'awaiting_review' END
 		 FROM goal g WHERE g.id=?`, id).
-		Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.ConnectionID, &g.Attention, &currentAgent, &g.ReviewPhase)
+		Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.Category, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.ConnectionID, &g.Attention, &currentAgent, &g.ReviewPhase)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1050,8 +1069,8 @@ func (s *GoalService) reconcileOnRunEndOnce(ctx context.Context, rc goalRunConte
 
 	var g Goal
 	err = tx.QueryRowContext(ctx,
-		`SELECT id,assignee_type,assignee_id,status,title,created_by_type,created_by_id FROM goal WHERE id=?`, rc.GoalID).
-		Scan(&g.ID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.Title, &g.CreatedByType, &g.CreatedByID)
+		`SELECT id,assignee_type,assignee_id,status,category,title,created_by_type,created_by_id FROM goal WHERE id=?`, rc.GoalID).
+		Scan(&g.ID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.Category, &g.Title, &g.CreatedByType, &g.CreatedByID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil // goal vanished; nothing to reconcile
 	}
@@ -1236,6 +1255,45 @@ func (s *GoalService) reconcileOnRunEndOnce(ctx context.Context, rc goalRunConte
 				g.Title, rc.RunID, pendingSG, pendingChanges, pendingConsults, pendingAskHuman)
 			break // stay active — the attention loop owns the next step
 		}
+		// v3 HOOTL (human out of the loop): the human waived the acceptance
+		// checkpoint for this goal. The finalization guard above still
+		// protects an unfinished plan (sub-goals/changes/consults/ask-human),
+		// but once it passes the goal promotes to done WITHOUT evaluating
+		// gatesForGoal. The skip is recorded in the activity trail
+		// (auto_completed) so the UI timeline can explain why no review card
+		// appeared, and the finish event carries category + auto_approved so
+		// the notify layer can render the auto-completion.
+		if g.Category == "hootl" {
+			res, err := tx.ExecContext(ctx,
+				`UPDATE goal SET status='done', handoff_note='' WHERE id=? AND status NOT IN ('done','failed','cancelled','review')`,
+				rc.GoalID)
+			if err != nil {
+				return fmt.Errorf("auto-complete hootl goal: %w", err)
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				break // the goal moved elsewhere (review/terminal raced) — no auto-complete
+			}
+			detail, _ := json.Marshal(map[string]any{"category": "hootl", "gate_skipped": true})
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO activity_log (id,goal_id,actor_type,actor_id,action,detail,created_at) VALUES (?,?,?,?,'auto_completed',?,?)`,
+				newID(), rc.GoalID, "system", "", string(detail), now()); err != nil {
+				return fmt.Errorf("insert auto_completed activity: %w", err)
+			}
+			// Terminal state — drop queued runs (same rule as the HITL done path).
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE run SET status='cancelled', cancel_reason='goal_terminal' WHERE goal_id=? AND status='queued'`, rc.GoalID); err != nil {
+				return fmt.Errorf("cancel queued runs on auto-complete: %w", err)
+			}
+			doneSummary := ""
+			_ = tx.QueryRowContext(ctx,
+				`SELECT content FROM comment WHERE goal_id=? AND author_type='agent' ORDER BY created_at DESC LIMIT 1`,
+				rc.GoalID).Scan(&doneSummary)
+			pendingEvents = append(pendingEvents, events.Event{Topic: "goal:finished", Payload: map[string]any{
+				"goal_id": rc.GoalID, "status": "done", "summary": doneSummary,
+				"category": "hootl", "auto_approved": true,
+			}})
+			break
+		}
 		// A completed run that passed machine verification has reached the
 		// acceptance-judgment step (D2: inside this transaction). If the
 		// goal's domain has checkpoint gates, the goal parks in review and
@@ -1286,6 +1344,7 @@ func (s *GoalService) reconcileOnRunEndOnce(ctx context.Context, rc goalRunConte
 				"goal_id":      rc.GoalID,
 				"run_id":       rc.RunID,
 				"reason":       reason,
+				"category":     g.Category,
 				"auto_approve": IsAutoApproveGoal(ctx, tx, g.CreatedByType, g.CreatedByID),
 			}})
 			break

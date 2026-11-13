@@ -91,7 +91,7 @@ type FlowColor = (typeof FLOW_COLORS)[number];
 // chatter are not — they live in the comment feed.
 const FLOW_ACTIONS = new Set([
   "created", "handoff", "entered_review",
-  "reopened", "cancelled", "mention_cycle_failed",
+  "reopened", "cancelled", "mention_cycle_failed", "auto_completed",
 ]);
 const ACTION_LABEL: Record<string, string> = {
   created: "创建",
@@ -100,7 +100,21 @@ const ACTION_LABEL: Record<string, string> = {
   reopened: "重开",
   cancelled: "取消",
   mention_cycle_failed: "协作循环判死",
+  auto_completed: "HOOTL 自动完成",
 };
+
+// activity 的 detail 是 JSON 字符串：created 带 {"category":...}（schedule
+// 触发时还带 schedule_id），auto_completed 带
+// {"category":"hootl","gate_skipped":true}。
+function detailCategory(detail?: string): string {
+  if (!detail) return "";
+  try {
+    const v = JSON.parse(detail) as { category?: unknown };
+    return typeof v.category === "string" ? v.category : "";
+  } catch {
+    return "";
+  }
+}
 
 type FlowRow =
   | { kind: "bucket"; runs: TimelineItem[]; parallel: boolean; at: string }
@@ -343,6 +357,7 @@ function ActionTag({ it, nowMs, goalStatus }: { it: TimelineItem; nowMs: number;
   const decision = it.kind === "decision";
   const ok = it.decision === "approve";
   const waiting = goalStatus === "review" && !decision && it.action?.startsWith("entered_review");
+  const cat = detailCategory(it.detail);
   let label: string;
   let cls = "text-ink-3";
   if (decision) {
@@ -351,14 +366,18 @@ function ActionTag({ it, nowMs, goalStatus }: { it: TimelineItem; nowMs: number;
   } else if (it.action === "entered_review") {
     label = "等待审批"; cls = "text-amber-400";
   } else if (it.action === "created") {
-    label = "创建"; cls = "text-ink-3";
+    label = cat ? `创建 · ${cat === "hootl" ? "HOOTL 免复检" : "HITL 人工验收"}` : "创建";
+    cls = "text-ink-3";
+  } else if (it.action === "auto_completed") {
+    label = "HOOTL 自动完成（跳过人工审批）"; cls = "text-emerald-400";
   } else {
     label = ((ACTION_LABEL[it.action ?? ""] ?? "").replace(/^..\s*/, "")) || (it.action ?? "");
   }
   const pill = decision ? (ok ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30" : "bg-red-500/10 text-red-300 border-red-500/30")
     : it.action === "entered_review" ? "bg-amber-500/10 text-amber-300 border-amber-500/30"
+    : it.action === "auto_completed" ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
     : "bg-surface-0 text-ink-3 border-line";
-  const hasMore = it.reason || it.gate_rule;
+  const hasMore = it.reason || it.gate_rule || cat;
   const [open, setOpen] = useState(false);
   return (
     <div className="flex flex-col items-center">
@@ -371,8 +390,15 @@ function ActionTag({ it, nowMs, goalStatus }: { it: TimelineItem; nowMs: number;
         {decision && !!it.review_duration_s && it.review_duration_s > 0 && ` · ${dur(0, it.review_duration_s * 1000)}`}
         {waiting && ` · ${dur(Date.parse(it.at), nowMs)}`}
       </button>
-      {open && (it.reason || it.gate_rule) && (
+      {open && (it.reason || it.gate_rule || cat) && (
         <div className="w-[240px] rounded-lg border border-line bg-surface-1 shadow-md p-2.5 mt-1 mb-1 text-left space-y-1">
+          {cat && (
+            <div className="text-[10px] text-ink-3">
+              分类：<span className={cat === "hootl" ? "text-violet-300" : "text-sky-300"}>
+                {cat === "hootl" ? "HOOTL 免复检（完成即结束）" : "HITL 人工验收"}
+              </span>
+            </div>
+          )}
           {it.gate_rule && <div className="text-[10px] text-ink-3">规则：<code className="text-ink-3">{it.gate_rule}</code></div>}
           {it.reason && (
             <div className="text-[10px] text-ink-2">

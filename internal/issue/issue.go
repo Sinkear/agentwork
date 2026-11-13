@@ -200,6 +200,42 @@ func (c *Client) CreatePullComment(ctx context.Context, repo string, number int,
 	return c.CreateComment(ctx, repo, number, body)
 }
 
+// CreatePull opens a pull request against the repo (the skill sync PR
+// submission path). GitHub returns 201 with html_url + number.
+func (c *Client) CreatePull(ctx context.Context, repo, title, head, base, body string) (string, int, error) {
+	payload := map[string]any{"title": title, "head": head, "base": base, "body": body}
+	var out struct {
+		HTMLURL string `json:"html_url"`
+		Number  int    `json:"number"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/repos/"+repo+"/pulls", payload, &out); err != nil {
+		return "", 0, err
+	}
+	return out.HTMLURL, out.Number, nil
+}
+
+// CheckPushPermission reports the token identity (GET /user) and whether it
+// can push to the repo — permissions.push or permissions.admin. The identity
+// is returned even when the repo lookup fails, so a 403 can name the user.
+func (c *Client) CheckPushPermission(ctx context.Context, repo string) (string, bool, error) {
+	var user struct {
+		Login string `json:"login"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/user", nil, &user); err != nil {
+		return "", false, err
+	}
+	var r struct {
+		Permissions struct {
+			Push  bool `json:"push"`
+			Admin bool `json:"admin"`
+		} `json:"permissions"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/repos/"+repo, nil, &r); err != nil {
+		return user.Login, false, err
+	}
+	return user.Login, r.Permissions.Push || r.Permissions.Admin, nil
+}
+
 // ── Poller: open issues → goals ──
 
 // Poller turns a domain's open issues into goals (one goal per issue,

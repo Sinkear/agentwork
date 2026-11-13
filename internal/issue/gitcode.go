@@ -224,3 +224,67 @@ func (c *GitCodeClient) CreatePullComment(ctx context.Context, repo string, numb
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/comments", repo, number),
 		url.Values{"body": {body}}, nil)
 }
+
+// gitCodePermission is GitCode's repo permission object. The wire shape has
+// varied between revisions (permission vs permissions, bool-valued push),
+// so both wrappers are decoded and either is accepted.
+type gitCodePermission struct {
+	Push  bool `json:"push"`
+	Admin bool `json:"admin"`
+}
+
+func (p *gitCodePermission) allowsPush() bool { return p != nil && (p.Push || p.Admin) }
+
+// CreatePull opens a pull request against the repo (the skill sync PR
+// submission path). GitCode's response names the URL html_url or web_url
+// and the number number or iid — all tolerated.
+func (c *GitCodeClient) CreatePull(ctx context.Context, repo, title, head, base, body string) (string, int, error) {
+	form := url.Values{"title": {title}, "head": {head}, "base": {base}, "body": {body}}
+	var out struct {
+		HTMLURL string  `json:"html_url"`
+		WebURL  string  `json:"web_url"`
+		Number  flexInt `json:"number"`
+		IID     flexInt `json:"iid"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/repos/"+repo+"/pulls", form, &out); err != nil {
+		return "", 0, err
+	}
+	u := out.HTMLURL
+	if u == "" {
+		u = out.WebURL
+	}
+	n := int(out.Number)
+	if n == 0 {
+		n = int(out.IID)
+	}
+	return u, n, nil
+}
+
+// CheckPushPermission reports the token identity and whether it can push to
+// the repo. GitCode exposes the permission under "permission" or
+// "permissions" (push/admin true). identity is returned even when the repo
+// lookup fails.
+func (c *GitCodeClient) CheckPushPermission(ctx context.Context, repo string) (string, bool, error) {
+	var user struct {
+		Login    string `json:"login"`
+		Username string `json:"username"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/user", nil, &user); err != nil {
+		return "", false, err
+	}
+	identity := user.Login
+	if identity == "" {
+		identity = user.Username
+	}
+	var r struct {
+		Permission  *gitCodePermission `json:"permission"`
+		Permissions *gitCodePermission `json:"permissions"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/repos/"+repo, nil, &r); err != nil {
+		return identity, false, err
+	}
+	if r.Permission.allowsPush() || r.Permissions.allowsPush() {
+		return identity, true, nil
+	}
+	return identity, false, nil
+}

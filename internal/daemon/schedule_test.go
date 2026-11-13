@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func TestFireScheduleGoalInsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := insertFiredGoal(ctx, tx, goalID, "t", "d", domain.ID, "agent", agent.ID, scheduleID, ts); err != nil {
+	if err := insertFiredGoal(ctx, tx, goalID, "t", "d", domain.ID, "agent", agent.ID, "hitl", scheduleID, ts); err != nil {
 		t.Fatalf("insertFiredGoal: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -71,6 +72,9 @@ func TestFireScheduleGoalInsert(t *testing.T) {
 	}
 	if g.CreatedByID != scheduleID {
 		t.Fatalf("created_by_id should be the schedule id, got %q", g.CreatedByID)
+	}
+	if g.Category != "hitl" {
+		t.Fatalf("fired goal category = %q, want hitl", g.Category)
 	}
 
 	// And EnqueueForGoal must produce a run (the full dispatch entry).
@@ -312,5 +316,81 @@ func TestFireNowRunsOnNextTick(t *testing.T) {
 	if err := st.DB().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM goal WHERE created_by_id=?`, sched.ID).Scan(&goals); err != nil || goals != 1 {
 		t.Fatalf("second tick must not re-fire, got %d goal(s) (err %v)", goals, err)
+	}
+}
+
+// TestFiredGoalInheritsScheduleCategory: the daemon's dispatch SELECT must
+// carry the schedule's category through scheduleDueRow into insertFiredGoal,
+// and the fired goal's creation activity must record that category plus the
+// source schedule (the UI timeline reads activity_log for the HITL/HOOTL
+// badge — a fired goal bypasses GoalService.Create and would otherwise have
+// no category there).
+func TestFiredGoalInheritsScheduleCategory(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	bus := events.NewBus()
+
+	rt, err := service.NewRuntimeService(st).Create(ctx, service.Runtime{Name: "rt", MachineID: "m1"})
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	agent, err := service.NewAgentService(st, bus).Create(ctx, service.Agent{Name: "maintainer", RuntimeID: rt.ID})
+	if err != nil {
+		t.Fatalf("agent: %v", err)
+	}
+	domain, err := service.NewDomainService(st, bus).Create(ctx, service.Domain{Name: "d", GitURL: "https://example.com/d.git"})
+	if err != nil {
+		t.Fatalf("domain: %v", err)
+	}
+	sched, err := service.NewScheduleService(st, bus).Create(ctx, service.Schedule{
+		Name: "s", TitleTemplate: "t", Description: "d",
+		AssigneeType: "agent", AssigneeID: agent.ID, DomainID: domain.ID,
+		CronExpression: "*/1 * * * *", Timezone: "UTC",
+		Category: "hootl",
+	})
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	// Make the occurrence due within the miss grace so dispatchSchedules
+	// takes the normal firing path (not the missed-occurrence skip).
+	justNow := time.Now().UTC().Add(-3 * time.Second).Format(time.RFC3339Nano)
+	if _, err := st.DB().ExecContext(ctx, `UPDATE schedule SET next_run_at=? WHERE id=?`, justNow, sched.ID); err != nil {
+		t.Fatalf("age schedule: %v", err)
+	}
+	goalSvc := service.NewGoalService(st, bus)
+	runSvc := service.NewRunService(st, bus)
+	goalSvc.SetRunService(runSvc)
+	runSvc.SetGoalService(goalSvc)
+	d := &Daemon{st: st, bus: bus, goalSvc: goalSvc, runSvc: runSvc}
+
+	d.dispatchSchedules(ctx)
+
+	var goalID string
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT id FROM goal WHERE created_by_id=?`, sched.ID).Scan(&goalID); err != nil {
+		t.Fatalf("fired goal row: %v", err)
+	}
+	g, err := goalSvc.Get(ctx, goalID)
+	if err != nil {
+		t.Fatalf("get fired goal: %v", err)
+	}
+	if g.Category != "hootl" {
+		t.Fatalf("fired goal category = %q, want hootl (inherited from schedule)", g.Category)
+	}
+	var detail string
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT detail FROM activity_log WHERE goal_id=? AND action='created'`, goalID).Scan(&detail); err != nil {
+		t.Fatalf("fired goal created activity: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(detail), &got); err != nil {
+		t.Fatalf("parse created detail %q: %v", detail, err)
+	}
+	if got["category"] != "hootl" || got["schedule_id"] != sched.ID {
+		t.Fatalf("created activity detail mismatch: %q", detail)
 	}
 }

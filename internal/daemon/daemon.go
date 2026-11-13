@@ -1541,11 +1541,11 @@ func mustGitRun(ctx context.Context, dir string, args ...string) string {
 // mapping regressed twice (excess VALUES were silently accepted and wrote
 // 'active' into assignee_id with status left empty) — the regression test
 // calls THIS, not a copy.
-func insertFiredGoal(ctx context.Context, tx *sql.Tx, goalID, title, desc, domainID, assigneeType, assigneeID, scheduleID, ts string) error {
+func insertFiredGoal(ctx context.Context, tx *sql.Tx, goalID, title, desc, domainID, assigneeType, assigneeID, category, scheduleID, ts string) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO goal (id,title,description,domain_id,assignee_type,assignee_id,status,handoff_note,created_by_type,created_by_id,created_at)
-		 VALUES (?,?,?,?,?,?,'active','','system',?,?)`,
-		goalID, title, desc, domainID, assigneeType, assigneeID, scheduleID, ts)
+		`INSERT INTO goal (id,title,description,domain_id,assignee_type,assignee_id,status,category,handoff_note,created_by_type,created_by_id,created_at)
+		 VALUES (?,?,?,?,?,?,'active',?,'','system',?,?)`,
+		goalID, title, desc, domainID, assigneeType, assigneeID, category, scheduleID, ts)
 	return err
 }
 
@@ -2677,7 +2677,7 @@ func (d *Daemon) runBudgetSeconds(ctx context.Context, goalID, domainID string) 
 func (d *Daemon) dispatchSchedules(ctx context.Context) {
 	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
 	rows, err := d.st.DB().QueryContext(ctx,
-		`SELECT id, title_template, description, assignee_type, assignee_id, domain_id, cron_expression, timezone, next_run_at
+		`SELECT id, title_template, description, assignee_type, assignee_id, domain_id, category, cron_expression, timezone, next_run_at
 		 FROM schedule WHERE enabled=1 AND next_run_at != '' AND next_run_at <= ?`, nowStr)
 	if err != nil {
 		logging.Errorf("daemon: schedule query: %v", err)
@@ -2686,7 +2686,7 @@ func (d *Daemon) dispatchSchedules(ctx context.Context) {
 	var due []scheduleDueRow
 	for rows.Next() {
 		var r scheduleDueRow
-		if err := rows.Scan(&r.ScheduleID, &r.TitleTemplate, &r.Description, &r.AssigneeType, &r.AssigneeID, &r.DomainID, &r.CronExpression, &r.Timezone, &r.NextRunAt); err != nil {
+		if err := rows.Scan(&r.ScheduleID, &r.TitleTemplate, &r.Description, &r.AssigneeType, &r.AssigneeID, &r.DomainID, &r.Category, &r.CronExpression, &r.Timezone, &r.NextRunAt); err != nil {
 			rows.Close()
 			logging.Errorf("daemon: schedule scan: %v", err)
 			return
@@ -2747,7 +2747,7 @@ func (d *Daemon) skipMissedOccurrences(ctx context.Context, r scheduleDueRow) (i
 }
 
 type scheduleDueRow struct {
-	ScheduleID, TitleTemplate, Description, AssigneeType, AssigneeID, DomainID, CronExpression, Timezone, NextRunAt string
+	ScheduleID, TitleTemplate, Description, AssigneeType, AssigneeID, DomainID, Category, CronExpression, Timezone, NextRunAt string
 }
 
 func (d *Daemon) fireSchedule(ctx context.Context, r scheduleDueRow) {
@@ -2774,12 +2774,24 @@ func (d *Daemon) fireSchedule(ctx context.Context, r scheduleDueRow) {
 		return
 	}
 	defer tx.Rollback()
-	// 11 columns → exactly 11 values: id,title,description,domain_id,
-	// assignee_type,assignee_id as parameters; status='active',
+	// 12 columns → exactly 12 values: id,title,description,domain_id,
+	// assignee_type,assignee_id,category as parameters; status='active',
 	// handoff_note='', created_by_type='system' literal; created_by_id=
 	// schedule id, created_at=ts as parameters.
-	if err := insertFiredGoal(ctx, tx, goalID, r.TitleTemplate, r.Description, r.DomainID, assigneeType, assigneeID, r.ScheduleID, ts); err != nil {
+	if err := insertFiredGoal(ctx, tx, goalID, r.TitleTemplate, r.Description, r.DomainID, assigneeType, assigneeID, r.Category, r.ScheduleID, ts); err != nil {
 		logging.Infof("daemon: schedule %s insert goal: %v", r.ScheduleID, err)
+		return
+	}
+	// Creation activity: GoalService.Create records the same row, but a fired
+	// goal bypasses that service — the UI timeline reads activity_log to render
+	// the HITL/HOOTL badge and the schedule provenance, so without this row a
+	// fired goal has no category in its timeline. The detail carries the
+	// category AND the source schedule.
+	createdDetail, _ := json.Marshal(map[string]any{"category": r.Category, "schedule_id": r.ScheduleID})
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO activity_log (id,goal_id,actor_type,actor_id,action,detail,created_at) VALUES (?,?,?,?,'created',?,?)`,
+		uuid.NewString(), goalID, "system", r.ScheduleID, string(createdDetail), ts); err != nil {
+		logging.Infof("daemon: schedule %s insert creation activity: %v", r.ScheduleID, err)
 		return
 	}
 	// Creation comment: the @assignee mention + title (+description), same as

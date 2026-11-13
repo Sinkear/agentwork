@@ -62,6 +62,32 @@ export const createSkill = (body: { file: File }) => {
   return api<import("./types").Skill>("/skills", { method: "POST", body: fd });
 };
 export const deleteSkill = (id: string) => api<void>(`/skills/${id}`, { method: "DELETE" });
+
+// ── Skill remote source (Feature A) ──
+// Source config: PUT replaces the binding; an omitted/empty token keeps the
+// stored one (single-user convenience). DELETE clears the binding incl. token.
+export const configureSkillSource = (
+  id: string,
+  body: { repo_url: string; provider?: string; branch?: string; path?: string; token?: string }
+) => api<import("./types").Skill>(`/skills/${id}/source`, { method: "PUT", body: JSON.stringify(body) });
+export const clearSkillSource = (id: string) =>
+  api<import("./types").Skill>(`/skills/${id}/source`, { method: "DELETE" });
+// Read-only compare of the local skill dir vs the remote repo; also probes the
+// configured token's push/PR permission (can_push).
+export const compareSkillSync = (id: string) =>
+  api<import("./types").SyncResult>(`/skills/${id}/sync`);
+// pull replaces local files with the remote ones; push commits local files to
+// the configured branch. Both verify push permission server-side (403).
+export const runSkillSync = (id: string, direction: "pull" | "push") =>
+  api<import("./types").SyncResult>(`/skills/${id}/sync`, {
+    method: "POST",
+    body: JSON.stringify({ direction }),
+  });
+export const createSkillPullRequest = (id: string, body?: { title?: string; body?: string }) =>
+  api<import("./types").SkillPullRequestResult>(`/skills/${id}/pull-request`, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
 export const getRuntime = (id: string) => api<Runtime>(`/runtimes/${id}`);
 export const createRuntime = (body: Omit<Runtime, "id" | "created_at">) =>
   api<Runtime>("/runtimes", { method: "POST", body: JSON.stringify(body) });
@@ -102,6 +128,7 @@ export const createGoal = (body: {
   assignee_type?: string;
   assignee_id?: string;
   status?: string;
+  category?: string; // hitl | hootl（后端空值→hitl）
   handoff_note?: string;
   created_by_type?: string;
   created_by_id?: string;
@@ -349,6 +376,7 @@ export const createSchedule = (body: {
   domain_id: string;
   cron_expression: string;
   timezone?: string;
+  category?: string; // hitl | hootl
 }) => api<Schedule>("/schedules", { method: "POST", body: JSON.stringify(body) });
 export const updateSchedule = (id: string, body: {
   name: string;
@@ -359,6 +387,7 @@ export const updateSchedule = (id: string, body: {
   domain_id: string;
   cron_expression: string;
   timezone?: string;
+  category?: string; // hitl | hootl
 }) => api<Schedule>(`/schedules/${id}`, { method: "PUT", body: JSON.stringify(body) });
 export const deleteSchedule = (id: string) =>
   api<void>(`/schedules/${id}`, { method: "DELETE" });

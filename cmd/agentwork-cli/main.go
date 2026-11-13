@@ -155,8 +155,9 @@ Subcommands:
   goal cancel <id>                           cancel a goal
   goal reopen --goal <id> [--reason R]       reopen a finished/cancelled goal
   goal delete <id>                           delete a goal (comma-separated batch)
-  goal create --title T [--description D] [--assignee A] [--status S]
-                                             create a goal
+  goal create --title T [--description D] [--assignee A] [--status S] [--category hitl|hootl]
+                                             create a goal; --category hitl (default, human
+                                             recheck) | hootl (finish without human recheck)
   goal comment --text T [--role R]           post a comment on the current goal; --text may
                                              contain a structured mention [@Name](mention://agent/<id>)
                                              to enqueue a run on that agent
@@ -174,6 +175,9 @@ Subcommands:
   squad add-member --squad <name> --agent <id>       add member(s) to a squad
   squad remove-member --squad <name> --agent <id>    remove member(s) from a squad
   schedule list                              list all schedules (JSON)
+  create <kind> [flags]                      create goal/agent/squad/domain/schedule/team from
+                                             decisions (steward path); goal/schedule accept
+                                             --category hitl|hootl
   schedule stop <name>                       stop (disable) a schedule
   schedule enable <name>                     re-enable a stopped schedule
   schedule delete <name>                     delete a schedule (comma-separated batch)
@@ -362,6 +366,7 @@ func goalCreate(goalID, agentID string, args []string) {
 	// every agent-created goal a sub-goal that blocks its parent).
 	parent := fs.String("parent", "", "parent goal id (explicit sub-goal; NOT defaulted)")
 	status := fs.String("status", "active", "goal status")
+	category := fs.String("category", "", "hitl (default) | hootl (skip human recheck)")
 	fs.Parse(args)
 	if *title == "" {
 		fail("--title is required")
@@ -381,6 +386,9 @@ func goalCreate(goalID, agentID string, args []string) {
 		"status":          *status,
 		"created_by_type": "agent",
 		"created_by_id":   agentID,
+	}
+	if *category != "" {
+		body["category"] = *category
 	}
 	post(serverURL()+"/goals", body)
 }
@@ -982,7 +990,7 @@ func buildCreateAction(kind string, args []string) map[string]any {
 		fail("unknown create kind: %s (valid: goal, agent, squad, domain, schedule, team)", kind)
 	}
 	fs := flag.NewFlagSet("create "+kind, flag.ExitOnError)
-	var s1, s2, s3, s4, s5, s6, s7 string
+	var s1, s2, s3, s4, s5, s6, s7, s8 string
 
 	switch kind {
 	case "goal":
@@ -991,8 +999,9 @@ func buildCreateAction(kind string, args []string) map[string]any {
 		fs.StringVar(&s3, "assignee", "", "assignee agent/squad id or name")
 		fs.StringVar(&s4, "assignee_type", "", "agent (default) | squad")
 		fs.StringVar(&s5, "domain", "", "domain id or name (required)")
+		fs.StringVar(&s6, "category", "", "hitl (default) | hootl (skip human recheck)")
 		fs.Parse(args)
-		return map[string]any{"intent": intent, "goal": map[string]any{"title": s1, "description": s2, "assignee_id": s3, "assignee_type": s4, "domain_id": s5}}
+		return map[string]any{"intent": intent, "goal": map[string]any{"title": s1, "description": s2, "assignee_id": s3, "assignee_type": s4, "domain_id": s5, "category": s6}}
 	case "agent":
 		fs.StringVar(&s1, "name", "", "agent name (required)")
 		fs.StringVar(&s2, "runtime", "", "runtime id or name (required)")
@@ -1039,8 +1048,9 @@ func buildCreateAction(kind string, args []string) map[string]any {
 		fs.StringVar(&s5, "assignee", "", "assignee agent/squad id or name")
 		fs.StringVar(&s6, "assignee_type", "", "agent (default) | squad")
 		fs.StringVar(&s7, "domain", "", "domain id or name (required)")
+		fs.StringVar(&s8, "category", "", "hitl (default) | hootl (skip human recheck)")
 		fs.Parse(args)
-		return map[string]any{"intent": intent, "schedule": map[string]any{"name": s1, "title": s2, "description": s3, "cron": s4, "assignee_id": s5, "assignee_type": s6, "domain_id": s7}}
+		return map[string]any{"intent": intent, "schedule": map[string]any{"name": s1, "title": s2, "description": s3, "cron": s4, "assignee_id": s5, "assignee_type": s6, "domain_id": s7, "category": s8}}
 	case "team":
 		fs.StringVar(&s1, "url", "", "git repo URL (required)")
 		fs.StringVar(&s2, "branch", "", "branch (default: repo default)")

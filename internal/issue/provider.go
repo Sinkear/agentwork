@@ -48,6 +48,15 @@ type Provider interface {
 	ListPullComments(ctx context.Context, repo string, number int) ([]Comment, error)
 	// CreatePullComment posts a comment on the PR.
 	CreatePullComment(ctx context.Context, repo string, number int, body string) error
+
+	// ── Skill sync surface (remote skill source · Feature A) ──
+
+	// CreatePull opens a pull request and returns its web URL + number.
+	CreatePull(ctx context.Context, repo, title, head, base, body string) (url string, number int, err error)
+	// CheckPushPermission reports the token identity and whether it can
+	// push (directly or via PR) to the repo. identity is returned even when
+	// canPush is false so callers can explain the 403.
+	CheckPushPermission(ctx context.Context, repo string) (identity string, canPush bool, err error)
 }
 
 // NewProvider builds the provider named by the domain's issue_provider

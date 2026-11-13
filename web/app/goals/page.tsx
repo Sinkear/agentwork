@@ -8,6 +8,7 @@ import { Badge, AttentionChip, ReviewPhaseBadge, PageBody, PageHeader, SectionCa
 import { GoalStats } from "@/components/goal-stats";
 import { GoalBoard } from "@/components/goal-board";
 import { GoalBatchBar, GoalSelectCheckbox, CheckIcon } from "@/components/goal-batch-bar";
+import { CategoryBadge } from "@/components/category-badge";
 import { cn } from "@/lib/utils";
 import type { Goal, GoalStatus } from "@/lib/types";
 
@@ -216,6 +217,7 @@ function GoalsPageInner() {
                     </h3>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
+                    <CategoryBadge category={g.category} />
                     <AttentionChip attention={g.attention} />
                     {g.status === "review" ? (
                       <ReviewPhaseBadge phase={g.review_phase} className="shrink-0" />

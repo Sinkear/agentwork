@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,15 +25,63 @@ type Skill struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	CreatedAt   string `json:"created_at"`
+	// Source is the optional remote git repository binding (feature: remote
+	// skill source). nil = the skill is local-only. The repo token lives on
+	// Source but is never serialized (json:"-").
+	Source *SkillSource `json:"source,omitempty"`
+}
+
+// skillSelectColumns is the canonical skill-row projection. Every skill read
+// must use it so the remote-source columns are never forgotten.
+const skillSelectColumns = `id,name,description,created_at,repo_url,repo_provider,repo_branch,repo_path,repo_token,last_synced_at,last_sync_action,last_remote_sha`
+
+// skillRowScanner is satisfied by *sql.Row and *sql.Rows.
+type skillRowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanSkill reads one canonical skill row (skillSelectColumns order).
+func scanSkill(row skillRowScanner) (*Skill, error) {
+	var (
+		sk                                          Skill
+		repoURL, provider, branch, path, token      string
+		lastSyncedAt, lastSyncAction, lastRemoteSHA string
+	)
+	if err := row.Scan(&sk.ID, &sk.Name, &sk.Description, &sk.CreatedAt,
+		&repoURL, &provider, &branch, &path, &token,
+		&lastSyncedAt, &lastSyncAction, &lastRemoteSHA); err != nil {
+		return nil, err
+	}
+	sk.Source = newSkillSource(repoURL, provider, branch, path, token, lastSyncedAt, lastSyncAction, lastRemoteSHA)
+	return &sk, nil
 }
 
 // SkillService owns the skills library.
 type SkillService struct {
 	st *store.Store
+	// Remote-source support (skill_remote.go). Both are injectable so tests
+	// never touch the network or a real git binary.
+	pullProviderFactory func(provider, token string) (PullProvider, error)
+	git                 remoteGit
 }
 
 // NewSkillService wires the library.
-func NewSkillService(st *store.Store) *SkillService { return &SkillService{st: st} }
+func NewSkillService(st *store.Store) *SkillService {
+	return &SkillService{st: st, git: &gitCLI{}}
+}
+
+// Get returns one skill (with its remote source, token excluded from JSON).
+func (s *SkillService) Get(ctx context.Context, id string) (*Skill, error) {
+	sk, err := scanSkill(s.st.DB().QueryRowContext(ctx,
+		`SELECT `+skillSelectColumns+` FROM skill WHERE id=?`, id))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get skill: %w", err)
+	}
+	return sk, nil
+}
 
 // skillDir returns the on-disk root of one skill's files.
 func skillDir(skillID string) string {
@@ -305,18 +355,18 @@ func (s *SkillService) writeSkillFilesAndArchive(skillID string, files map[strin
 
 // List returns the library (oldest first).
 func (s *SkillService) List(ctx context.Context) ([]Skill, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT id,name,description,created_at FROM skill ORDER BY created_at`)
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT `+skillSelectColumns+` FROM skill ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []Skill{}
 	for rows.Next() {
-		var sk Skill
-		if err := rows.Scan(&sk.ID, &sk.Name, &sk.Description, &sk.CreatedAt); err != nil {
+		sk, err := scanSkill(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, sk)
+		out = append(out, *sk)
 	}
 	return out, rows.Err()
 }
