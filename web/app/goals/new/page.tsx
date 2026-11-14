@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, Check, Loader2, PenLine, Send, Sparkles, Trash2 } from "lucide-react";
+import { ArrowRight, Check, Loader2, PenLine, Send, Sparkles, Square, Trash2 } from "lucide-react";
 import { PageBody, PageHeader, SectionCard, Button, inputCls } from "@/components/ui";
 import { NewGoalForm } from "@/components/new-goal-form";
 import { AcpChatClient, AcpCloseInfo, ChatEvent, PermissionRequest, formatAcpClose } from "@/lib/acp";
@@ -280,6 +280,23 @@ export default function NewGoalPage() {
     void ask(last.say, last.first);
   }, [ask, disposeClient]);
 
+  // 停止：只中断当前这一轮（session/cancel）——连接和会话都保留，
+  // 改一句话就能接着继续，不用重来。握手阶段还没有会话可取消，
+  // 那就作废这次连接（下一句话会重新握手）。
+  const stop = useCallback(() => {
+    if (phase === "connecting") {
+      attemptRef.current += 1;
+      inFlightRef.current = false;
+      disposeClient();
+      setPhase("ready");
+      return;
+    }
+    const client = clientRef.current;
+    if (client && sessionRef.current) client.cancel(sessionRef.current);
+    // running 轮的 prompt 会以 cancelled 结束，ask 的收尾自然把 phase
+    // 拉回 ready；这里不抢跑，避免和迟到的轮询/收尾打架。
+  }, [phase, disposeClient]);
+
   // 守护：连接在、但 60s 没有任何进展 —— 提示可能是半死连接，别静默转圈。
   useEffect(() => {
     if (phase !== "running" && phase !== "connecting") {
@@ -518,13 +535,24 @@ export default function NewGoalPage() {
                     }}
                     disabled={busy || phase === "failed"}
                   />
-                  <Button
-                    onClick={() => void ask(followUp, false)}
-                    disabled={busy || phase === "failed" || !followUp.trim()}
-                    className="gap-1.5"
-                  >
-                    <Send className="h-3.5 w-3.5" /> 发送
-                  </Button>
+                  {busy ? (
+                    <Button
+                      variant="danger"
+                      onClick={stop}
+                      className="gap-1.5"
+                      title="中断当前这轮（连接保留，可以继续补充）"
+                    >
+                      <Square className="h-3.5 w-3.5 fill-current" /> 停止
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={() => void ask(followUp, false)}
+                      disabled={phase === "failed" || !followUp.trim()}
+                      className="gap-1.5"
+                    >
+                      <Send className="h-3.5 w-3.5" /> 发送
+                    </Button>
+                  )}
                 </div>
               )}
             </SectionCard>
