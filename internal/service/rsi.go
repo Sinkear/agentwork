@@ -237,8 +237,12 @@ func (s *RSIService) Retry(ctx context.Context, sessionID string) error {
 	if status != "failed" && status != "ready" && status != "waiting" {
 		return NewValidationError("session is not retryable (only waiting/failed/ready sessions can be re-analyzed)")
 	}
+	// Clear the previous round's headline numbers as well: while the new
+	// analysis runs, GetSession still returns the old report row, and stale
+	// node_count/speedup values leaked into the list/detail badges.
 	if _, err := s.st.DB().ExecContext(ctx,
-		`UPDATE training_session SET status='analyzing', error='', finished_at='' WHERE id=?`, sessionID); err != nil {
+		`UPDATE training_session SET status='analyzing', error='', finished_at='',
+		 node_count=0, critical_path_ms=0, parallel_speedup=0, finding_count=0 WHERE id=?`, sessionID); err != nil {
 		return err
 	}
 	go s.runAnalysis(sessionID)
