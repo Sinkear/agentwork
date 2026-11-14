@@ -283,6 +283,7 @@ CREATE TABLE IF NOT EXISTS sub_goal (
     execution_attempt INTEGER NOT NULL DEFAULT 0,
     quality_iteration INTEGER NOT NULL DEFAULT 0,
     depends_on        TEXT NOT NULL DEFAULT '[]', -- JSON array of sub_goal ids declared by the leader; '' edges are inferred at read time (workflow_edge)
+    dispatch_comment_id TEXT NOT NULL DEFAULT '', -- the leader's dispatch comment for THIS work item ('' on legacy rows): a run born LATER (wakeDependentsTx, after the deps verify) carries it as run.trigger_comment_id, so the assignee's report still threads to the dispatch even when the first run was gated
     created_at        TEXT NOT NULL
 );
 
@@ -629,11 +630,11 @@ CREATE TABLE IF NOT EXISTS rsi_round (
     id               TEXT PRIMARY KEY,
     session_id       TEXT NOT NULL REFERENCES training_session(id),
     goal_id          TEXT NOT NULL,
-    round_no         INTEGER NOT NULL,               -- 1-based, per session
+    round_no         INTEGER NOT NULL,               -- 1-based, per domain (not per session)
     trigger          TEXT NOT NULL DEFAULT 'terminal', -- terminal | manual_retry
     metrics_json     TEXT NOT NULL DEFAULT '{}',
     baseline_json    TEXT NOT NULL DEFAULT '{}',
-    delta_json       TEXT NOT NULL DEFAULT '{}',     -- {key:{from,to,pct}} vs round_no-1; '{}' for round 1
+    delta_json       TEXT NOT NULL DEFAULT '{}',     -- {key:{from,to,pct}} vs the previous round in the same domain; '{}' for the first
     finding_count    INTEGER NOT NULL DEFAULT 0,
     critical_count   INTEGER NOT NULL DEFAULT 0,     -- severity=critical findings
     top_category     TEXT NOT NULL DEFAULT '',

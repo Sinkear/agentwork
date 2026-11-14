@@ -18,6 +18,7 @@ import (
 // (P1, 决策 6-15⑦). The stamp is conditional and carries reason='runaway';
 // the goal stays active for the human (决策 2-6 semantics).
 func TestReapRunawayRun(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -114,6 +115,7 @@ func TestReapRunawayRun(t *testing.T) {
 // TestScratchDirNames: the scratch root is named by the SANITIZED domain
 // name — hostile names cannot escape the scratch root.
 func TestScratchDirNames(t *testing.T) {
+	t.Parallel()
 	if got := sanitizeDirName("../etc/passwd"); strings.Contains(got, "/") || strings.Contains(got, "..") {
 		t.Fatalf("sanitized name must not contain path separators: %q", got)
 	}
@@ -132,6 +134,7 @@ func TestScratchDirNames(t *testing.T) {
 // TestScratchDeliverSkipsGit: approving a scratch goal closes the loop
 // directly — no branch, no merge, MarkDelivered succeeds.
 func TestScratchDeliverSkipsGit(t *testing.T) {
+	t.Parallel()
 	d, st, gs, runSvc, _ := newSquadReviewDaemon(t)
 	ctx := context.Background()
 	agent := seedReviewAgent(t, st, "researcher")

@@ -246,7 +246,11 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 			logging.Infof("connect: upgrade: %v", err)
 			return
 		}
-		peer := link.NewPeer(conn)
+		// Handlers-first init: construct the peer UNSERVED, register every
+		// handler, then StartReadLoop — with the reader live from the start
+		// a machine's first register frame could race handler registration
+		// and be answered "method not found" (live flake under load).
+		peer := link.NewPeerUnserved(conn)
 		// The peer binds to its machine on register; on link death the
 		// daemon drops it (dispatches then fail-fast with "machine offline").
 		// The registered id is written by the register handler and read by
@@ -391,6 +395,8 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 			logging.Infof("connect: machine %s probe update: %d agent CLI(s)", p.MachineID, len(p.CLIs))
 			return link.RegisterResult{OK: true}, nil
 		})
+		// Every handler is registered — start consuming frames now.
+		peer.StartReadLoop()
 		peer.Wait()
 	})
 	// Chat keepalive: the ACP relay has no inherent traffic during an agent's
@@ -509,7 +515,10 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 			logging.Infof("rpc: upgrade: %v", err)
 			return
 		}
-		peer := link.NewPeer(conn)
+		// Handlers-first init (see /connect): an agent's one-shot rpc dials
+		// and calls immediately, so an already-running reader could dispatch
+		// the first frame before its handler exists.
+		peer := link.NewPeerUnserved(conn)
 		agentSvc := service.NewAgentService(s.st, s.bus)
 
 		resolve := func(raw json.RawMessage) (*service.RunIdentity, *link.RPCError) {
@@ -805,6 +814,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 			return map[string]any{"goal_total": len(all), "goal_by_status": counts}, nil
 		})
 
+		peer.StartReadLoop() // every handler registered — consume frames now
 		peer.Wait()
 	})
 

@@ -20,22 +20,26 @@ type Handler func(ctx context.Context, params json.RawMessage) (any, *RPCError)
 // back to the waiting Call; notifications (no id) are dispatched without
 // a reply. One JSON-RPC message per text frame.
 //
-// The reader loop starts inside NewPeer — a Peer left unserved must not
-// deadlock its own Call (live bug: register wrote the request, nobody read
-// the response, Ctrl+C could not even interrupt it). Wait blocks until the
-// connection dies.
+// Reader-loop startup is explicit in production: NewPeerUnserved → Handle… →
+// StartReadLoop. With the reader already running (NewPeer), the first inbound
+// frame can be dispatched before its handler is registered and is answered
+// "method not found" (live: the daemon's deliver-time verification flaked
+// under load). NewPeer is kept for call-only clients (the reader must start
+// before Call so a response can be routed) and for tests.
+// Wait blocks until the connection dies.
 type Peer struct {
-	conn     *websocket.Conn
-	writeMu  sync.Mutex
-	mu       sync.Mutex
-	nextID   atomic.Int64
-	pending  map[string]chan *wireResponse
-	handlers map[string]Handler
-	done     chan struct{}
-	exitErr  error
-	closeOne sync.Once
-	ctx      context.Context
-	cancel   context.CancelFunc
+	conn      *websocket.Conn
+	writeMu   sync.Mutex
+	mu        sync.Mutex
+	nextID    atomic.Int64
+	pending   map[string]chan *wireResponse
+	handlers  map[string]Handler
+	done      chan struct{}
+	exitErr   error
+	closeOne  sync.Once
+	startOnce sync.Once
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 // wireRequest / wireResponse are the raw message shapes on the frame.
@@ -57,10 +61,27 @@ type wireResponse struct {
 // write lock (and a Caller) forever.
 const writeTimeout = 10 * time.Second
 
-// NewPeer wraps a live WebSocket connection and starts its reader loop.
+// NewPeer wraps a live WebSocket connection and starts its reader loop
+// immediately. Call-only peers (the CLI's rpc client) need this: the reader
+// must be live before Call, or the response has nobody to route it.
+//
+// DEPRECATED for server-side peers that register handlers: use NewPeerUnserved
+// + Handle… + StartReadLoop, otherwise an inbound frame can arrive before its
+// handler is registered and be answered "method not found". Kept unchanged for
+// compatibility (tests and call-only clients rely on it).
 func NewPeer(conn *websocket.Conn) *Peer {
+	p := NewPeerUnserved(conn)
+	p.StartReadLoop()
+	return p
+}
+
+// NewPeerUnserved constructs a Peer WITHOUT starting its reader loop. Register
+// every handler first, then call StartReadLoop — the deterministic ordering
+// that closes the dispatch/handler-init race. A peer left unserved must not be
+// used for Call (no reader, no response routing) and must be Closed.
+func NewPeerUnserved(conn *websocket.Conn) *Peer {
 	ctx, cancel := context.WithCancel(context.Background())
-	p := &Peer{
+	return &Peer{
 		conn:     conn,
 		pending:  make(map[string]chan *wireResponse),
 		handlers: make(map[string]Handler),
@@ -68,9 +89,13 @@ func NewPeer(conn *websocket.Conn) *Peer {
 		ctx:      ctx,
 		cancel:   cancel,
 	}
-	go p.readLoop()
-	return p
 }
+
+// StartReadLoop launches the reader goroutine (companion of NewPeerUnserved).
+// Idempotent via startOnce: a second call is a no-op. Without that guard two
+// readers would share one WebSocket — gorilla allows a single concurrent
+// reader, so the second would corrupt/steal frames and kill the link.
+func (p *Peer) StartReadLoop() { p.startOnce.Do(func() { go p.readLoop() }) }
 
 // Handle registers the handler for a method (overwrites).
 func (p *Peer) Handle(method string, h Handler) {
@@ -147,7 +172,9 @@ func (p *Peer) write(msg any) error {
 }
 
 // Wait blocks until the link dies or Close is called, returning the exit
-// error (nil on clean close). The reader loop runs from NewPeer.
+// error (nil on clean close). The reader loop must have been started
+// (NewPeer, or NewPeerUnserved + StartReadLoop) — otherwise nothing ever
+// closes done and Wait hangs.
 func (p *Peer) Wait() error {
 	<-p.done
 	return p.exitErr

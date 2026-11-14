@@ -74,6 +74,7 @@ func (m *mapSettings) Delete(_ context.Context, key string) error {
 // through the goal layer — active goal created, first run enqueued. Missing
 // required fields produce user-facing messages, not crashes.
 func TestIntakeCreateGoal(t *testing.T) {
+	t.Parallel()
 	d, _ := newIntakeDaemon(t)
 	ctx := context.Background()
 	domID := firstID(t, ctx, d, `SELECT id FROM domain`)
@@ -113,6 +114,7 @@ func TestIntakeCreateGoal(t *testing.T) {
 // TestIntakeReviewListAndStatus: the review queue and the status query are
 // answered from the store, short ids accepted.
 func TestIntakeReviewListAndStatus(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	domID := firstID(t, ctx, d, `SELECT id FROM domain`)
@@ -144,6 +146,7 @@ func TestIntakeReviewListAndStatus(t *testing.T) {
 // action through the service layer (cron validated, next_run computed);
 // schedule_list and schedule_stop round-trip.
 func TestIntakeCreateSchedule(t *testing.T) {
+	t.Parallel()
 	d, _ := newIntakeDaemon(t)
 	ctx := context.Background()
 	domID := firstID(t, ctx, d, `SELECT id FROM domain`)
@@ -249,6 +252,7 @@ func domainSub(Name, Type, GitURL string) domainAction {
 // skills (skills_specified=false). The clarification draft completes the
 // agent on the owner's next reply.
 func TestIntakeCreateAgent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// --- No skills on the platform: created directly, no clarification. ---
@@ -374,6 +378,7 @@ func TestIntakeCreateAgent(t *testing.T) {
 // squad service (leader + optional members). Hallucinated leader/member ids
 // surface as failures, not crashes.
 func TestIntakeCreateSquad(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Bare squad (leader only) — the minimal viable squad.
@@ -466,6 +471,7 @@ func TestIntakeCreateSquad(t *testing.T) {
 // parallel structure to drift from — this test is now pure documentation
 // of the expected surface, not a sync guard.
 func TestIntakeRegistryIntents(t *testing.T) {
+	t.Parallel()
 	want := map[string]bool{
 		"create_goal": true, "goal_list": true, "goal_cancel": true, "goal_assign": true,
 		"goal_reopen": true, "goal_delete": true,
@@ -498,6 +504,7 @@ func TestIntakeRegistryIntents(t *testing.T) {
 // dispatch — an intent absent from the registry yields the fallback prompt,
 // not a panic or empty string.
 func TestIntakeDispatchUnknownReturnsFallback(t *testing.T) {
+	t.Parallel()
 	d, _ := newIntakeDaemon(t)
 	ctx := context.Background()
 	reply := intakeReg.dispatch(d, ctx, intakeAction{Intent: "totally_bogus"}).Message
@@ -508,6 +515,7 @@ func TestIntakeDispatchUnknownReturnsFallback(t *testing.T) {
 
 // TestIntakeSquadListDetail: list shows all squads; detail shows the roster.
 func TestIntakeSquadListDetail(t *testing.T) {
+	t.Parallel()
 	d, _ := newIntakeDaemon(t)
 	ctx := context.Background()
 
@@ -555,6 +563,7 @@ func TestIntakeSquadListDetail(t *testing.T) {
 
 // TestIntakeSquadUpdate: partial update changes only the specified field.
 func TestIntakeSquadUpdate(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	if _, err := st.DB().ExecContext(ctx,
@@ -590,6 +599,7 @@ func TestIntakeSquadUpdate(t *testing.T) {
 
 // TestIntakeSquadAddRemoveMember: add then remove a member from an existing squad.
 func TestIntakeSquadAddRemoveMember(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	if _, err := st.DB().ExecContext(ctx,
@@ -640,6 +650,7 @@ func TestIntakeSquadAddRemoveMember(t *testing.T) {
 
 // TestIntakeSquadDelete: delete removes the squad.
 func TestIntakeSquadDelete(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	d.intakeCreateSquad(ctx, intakeAction{Intent: "create_squad", Squad: squadSub(
@@ -666,6 +677,7 @@ func TestIntakeSquadDelete(t *testing.T) {
 // TestIntakeSquadDeleteBatch: comma-separated names delete individually with
 // per-item result + summary.
 func TestIntakeSquadDeleteBatch(t *testing.T) {
+	t.Parallel()
 	d, _ := newIntakeDaemon(t)
 	ctx := context.Background()
 	d.intakeCreateSquad(ctx, intakeAction{Intent: "create_squad", Squad: squadSub("组A", "a1", "", "", nil)})
@@ -686,6 +698,7 @@ func TestIntakeSquadDeleteBatch(t *testing.T) {
 // TestIntakeListGoals: empty list says so; populated list carries title,
 // short id, status, and assignee display name.
 func TestIntakeListGoals(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Empty.
@@ -710,6 +723,7 @@ func TestIntakeListGoals(t *testing.T) {
 // TestIntakeCancelGoal: cancel succeeds on an active goal; re-canceling a
 // cancelled goal fails; missing id asks for one; unknown id says not found.
 func TestIntakeCancelGoal(t *testing.T) {
+	t.Parallel()
 	d, _ := newIntakeDaemon(t)
 	ctx := context.Background()
 	domID := firstID(t, ctx, d, `SELECT id FROM domain`)
@@ -741,6 +755,7 @@ func TestIntakeCancelGoal(t *testing.T) {
 // TestIntakeAssignGoal: assign succeeds and changes the assignee; missing
 // assignee asks; hallucinated agent fails at the service layer.
 func TestIntakeAssignGoal(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	if _, err := st.DB().ExecContext(ctx,
@@ -786,6 +801,7 @@ func TestIntakeAssignGoal(t *testing.T) {
 // TestIntakeListAgents: empty list says so; populated list carries name and
 // description.
 func TestIntakeListAgents(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// The test daemon seeds a1/worker1, so list is non-empty by default.
@@ -799,6 +815,7 @@ func TestIntakeListAgents(t *testing.T) {
 // TestIntakeDeleteAgent: delete succeeds on a free agent; an agent with a
 // goal is guarded; non-existent name says not found.
 func TestIntakeDeleteAgent(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	if _, err := st.DB().ExecContext(ctx,
@@ -836,6 +853,7 @@ func TestIntakeDeleteAgent(t *testing.T) {
 // TestIntakeDeleteAgentBatch: comma-separated names delete individually with
 // per-item result; partial success + guarded failure + summary line.
 func TestIntakeDeleteAgentBatch(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	// Seed worker2, worker3 (worker1 is seeded by newIntakeDaemon).
@@ -880,6 +898,7 @@ func TestIntakeDeleteAgentBatch(t *testing.T) {
 // TestIntakeUpdateAgent: partial update changes only the specified field;
 // no changes asks what to change; non-existent name says not found.
 func TestIntakeUpdateAgent(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 
@@ -924,6 +943,7 @@ func TestIntakeUpdateAgent(t *testing.T) {
 // git_url; missing name asks; missing git_url asks; draft clarification
 // completes in two steps.
 func TestIntakeCreateDomain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Repo domain — full fields.
@@ -982,6 +1002,7 @@ func TestIntakeCreateDomain(t *testing.T) {
 
 // TestIntakeListDomains: the test daemon seeds d1, so list is non-empty.
 func TestIntakeListDomains(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	d, _ := newIntakeDaemon(t)
 	list := d.intakeListDomains(ctx).Message
@@ -996,6 +1017,7 @@ func TestIntakeListDomains(t *testing.T) {
 // TestIntakeReopenGoal: reopen succeeds on a cancelled goal; reopening an
 // active goal fails; missing id asks; unknown id says not found.
 func TestIntakeReopenGoal(t *testing.T) {
+	t.Parallel()
 	d, _ := newIntakeDaemon(t)
 	ctx := context.Background()
 	domID := firstID(t, ctx, d, `SELECT id FROM domain`)
@@ -1036,6 +1058,7 @@ func TestIntakeReopenGoal(t *testing.T) {
 // TestIntakeDeleteGoal: delete succeeds on a free goal; missing id asks;
 // unknown id says not found.
 func TestIntakeDeleteGoal(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	domID := firstID(t, ctx, d, `SELECT id FROM domain`)
@@ -1069,6 +1092,7 @@ func TestIntakeDeleteGoal(t *testing.T) {
 // enabling an already-enabled schedule says not found (among disabled);
 // recompute next_run_at puts it in the future.
 func TestIntakeScheduleEnable(t *testing.T) {
+	t.Parallel()
 	d, _ := newIntakeDaemon(t)
 	ctx := context.Background()
 	domID := firstID(t, ctx, d, `SELECT id FROM domain`)
@@ -1135,6 +1159,7 @@ func TestIntakeScheduleEnable(t *testing.T) {
 // TestIntakeScheduleDelete: delete removes the schedule (enabled or disabled);
 // non-existent says not found.
 func TestIntakeScheduleDelete(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	domID := firstID(t, ctx, d, `SELECT id FROM domain`)
@@ -1183,6 +1208,7 @@ func TestIntakeScheduleDelete(t *testing.T) {
 
 // TestIntakeListSkills: empty list says so; populated list carries name.
 func TestIntakeListSkills(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Empty.
@@ -1205,6 +1231,7 @@ func TestIntakeListSkills(t *testing.T) {
 // TestIntakeDeleteSkill: delete succeeds on a free skill; skill selected by
 // an agent is guarded; non-existent says not found.
 func TestIntakeDeleteSkill(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	if _, err := st.DB().ExecContext(ctx,
@@ -1245,6 +1272,7 @@ func TestIntakeDeleteSkill(t *testing.T) {
 
 // TestIntakeDeleteSkillBatch: comma-separated names delete individually.
 func TestIntakeDeleteSkillBatch(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	now := time.Now().Format(time.RFC3339Nano)
@@ -1276,6 +1304,7 @@ func TestIntakeDeleteSkillBatch(t *testing.T) {
 // TestIntakeDeleteDomain: delete succeeds on a free domain; domain with a
 // goal is guarded; non-existent says not found.
 func TestIntakeDeleteDomain(t *testing.T) {
+	t.Parallel()
 	d, st := newIntakeDaemon(t)
 	ctx := context.Background()
 	// Create an extra domain (d1 is seeded and has a goal in some tests).
@@ -1307,6 +1336,7 @@ func TestIntakeDeleteDomain(t *testing.T) {
 
 // TestIntakeDeleteDomainBatch: comma-separated names delete individually.
 func TestIntakeDeleteDomainBatch(t *testing.T) {
+	t.Parallel()
 	d, _ := newIntakeDaemon(t)
 	ctx := context.Background()
 	d.intakeCreateDomain(ctx, intakeAction{Intent: "domain_create", Domain: domainSub("repo-a", "repo", "https://e.com/a.git")})

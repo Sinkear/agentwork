@@ -91,40 +91,40 @@ type RsiOverview struct {
 // RsiTrendPoint is one insight-panel data point: a finished optimization
 // round, oldest first. Charts read this — no separate snapshot table.
 type RsiTrendPoint struct {
-	RoundID            string  `json:"round_id"`
-	SessionID          string  `json:"session_id"`
-	GoalID             string  `json:"goal_id"`
-	GoalTitle          string  `json:"goal_title"`
-	RoundNo            int     `json:"round_no"`
-	CreatedAt          string  `json:"created_at"`
-	ParallelSpeedup    float64 `json:"parallel_speedup"`
-	CriticalPathMS     int64   `json:"critical_path_ms"`
-	ReworkRatio        float64 `json:"rework_ratio"`
-	VerifyOverhead     float64 `json:"verify_overhead_ratio"`
-	SerializationLossMS int64  `json:"serialization_loss_ms"`
-	FindingCount       int     `json:"finding_count"`
+	RoundID             string  `json:"round_id"`
+	SessionID           string  `json:"session_id"`
+	GoalID              string  `json:"goal_id"`
+	GoalTitle           string  `json:"goal_title"`
+	RoundNo             int     `json:"round_no"`
+	CreatedAt           string  `json:"created_at"`
+	ParallelSpeedup     float64 `json:"parallel_speedup"`
+	CriticalPathMS      int64   `json:"critical_path_ms"`
+	ReworkRatio         float64 `json:"rework_ratio"`
+	VerifyOverhead      float64 `json:"verify_overhead_ratio"`
+	SerializationLossMS int64   `json:"serialization_loss_ms"`
+	FindingCount        int     `json:"finding_count"`
 }
 
 // RsiRound is one frozen optimization round in the ledger (rsi_round).
 // Metrics/baseline/findings are copies taken at round time; delta compares
 // this round against the previous one (empty for round 1).
 type RsiRound struct {
-	ID             string       `json:"id"`
-	SessionID      string       `json:"session_id"`
-	GoalID         string       `json:"goal_id"`
-	RoundNo        int          `json:"round_no"`
-	Trigger        string       `json:"trigger"` // terminal | manual_retry
-	Metrics        map[string]any `json:"metrics"`
-	Baseline       map[string]any `json:"baseline"`
-	Delta          map[string]any `json:"delta"`
-	FindingCount   int          `json:"finding_count"`
-	CriticalCount  int          `json:"critical_count"`
-	TopCategory    string       `json:"top_category"`
-	TopTitle       string       `json:"top_title"`
-	Findings       []RsiFinding `json:"findings"`
-	Summary        string       `json:"summary"`
-	Narrative      string       `json:"narrative"`
-	CreatedAt      string       `json:"created_at"`
+	ID            string         `json:"id"`
+	SessionID     string         `json:"session_id"`
+	GoalID        string         `json:"goal_id"`
+	RoundNo       int            `json:"round_no"`
+	Trigger       string         `json:"trigger"` // terminal | manual_retry
+	Metrics       map[string]any `json:"metrics"`
+	Baseline      map[string]any `json:"baseline"`
+	Delta         map[string]any `json:"delta"`
+	FindingCount  int            `json:"finding_count"`
+	CriticalCount int            `json:"critical_count"`
+	TopCategory   string         `json:"top_category"`
+	TopTitle      string         `json:"top_title"`
+	Findings      []RsiFinding   `json:"findings"`
+	Summary       string         `json:"summary"`
+	Narrative     string         `json:"narrative"`
+	CreatedAt     string         `json:"created_at"`
 }
 
 // RSIService owns training-session bookkeeping and the deterministic
@@ -237,8 +237,12 @@ func (s *RSIService) Retry(ctx context.Context, sessionID string) error {
 	if status != "failed" && status != "ready" && status != "waiting" {
 		return NewValidationError("session is not retryable (only waiting/failed/ready sessions can be re-analyzed)")
 	}
+	// Clear the previous round's headline numbers as well: while the new
+	// analysis runs, GetSession still returns the old report row, and stale
+	// node_count/speedup values leaked into the list/detail badges.
 	if _, err := s.st.DB().ExecContext(ctx,
-		`UPDATE training_session SET status='analyzing', error='', finished_at='' WHERE id=?`, sessionID); err != nil {
+		`UPDATE training_session SET status='analyzing', error='', finished_at='',
+		 node_count=0, critical_path_ms=0, parallel_speedup=0, finding_count=0 WHERE id=?`, sessionID); err != nil {
 		return err
 	}
 	go s.runAnalysis(sessionID)
@@ -308,6 +312,13 @@ func (s *RSIService) GetSession(ctx context.Context, id string) (*RsiSession, *R
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+	// Fill the list/detail headline finding here too. ListSessions did this
+	// per row, but GetSession never did — the detail page's top-finding block
+	// was permanently empty.
+	_ = s.st.DB().QueryRowContext(ctx,
+		`SELECT f.category,f.title FROM rsi_finding f JOIN rsi_report rp ON f.report_id=rp.id
+		 WHERE rp.session_id=? ORDER BY f.score DESC LIMIT 1`, id).
+		Scan(&x.TopCategory, &x.TopTitle)
 	var report *RsiReport
 	var frozen *WorkflowGraph
 	{

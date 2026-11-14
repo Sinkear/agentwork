@@ -1,14 +1,17 @@
 "use client";
 
-import { useId, useMemo } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import {
   Bot,
   Eye,
   GitMerge,
+  Maximize2,
   MessageSquare,
   ShieldCheck,
   Target,
   Waypoints,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { WorkflowEdge, WorkflowGraph, WorkflowNode } from "@/lib/types";
@@ -364,6 +367,7 @@ export function WorkflowGraphView({
   loading,
   error,
   metrics,
+  analyzing = false,
   heightClass = "min-h-[260px]",
   showMetrics = true,
 }: {
@@ -372,15 +376,31 @@ export function WorkflowGraphView({
   error?: string | null;
   /** 图不可用时（分析失败/无图）仍可展示报告里的 metrics。 */
   metrics?: Record<string, unknown> | null;
+  /** 分析进行中：此时图是实时图，分析完成后才冻结，文案不能写“已冻结”。 */
+  analyzing?: boolean;
   heightClass?: string;
   showMetrics?: boolean;
 }) {
   const uid = useId().replace(/[:]/g, "");
   const markerBase = `wf-arrow-${uid}`;
   const markerCritical = `wf-arrow-c-${uid}`;
+  // 30 节点链宽度可达 7.5k px，直接铺开会把整页撑爆：限制容器高度并允许双向滚动，
+  // 再提供缩放/适应宽度，默认 1×。
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const MIN_ZOOM = 0.15;
+  const MAX_ZOOM = 2;
 
   const layout = useMemo(() => (graph && (graph.nodes?.length ?? 0) > 0 ? computeLayout(graph) : null), [graph]);
   const graphMetrics = graph?.metrics ?? metrics ?? null;
+  const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
+  const zoomBy = (delta: number) => setZoom((z) => clampZoom(Number((z + delta).toFixed(2))));
+  const fitWidth = () => {
+    const el = scrollRef.current;
+    if (!el || !layout?.width) return;
+    // 留出左右 padding（px-4 = 16px × 2）和一点滚动条余量。
+    setZoom(clampZoom(Number(((el.clientWidth - 40) / layout.width).toFixed(2))));
+  };
 
   if (loading) {
     return (
@@ -418,7 +438,7 @@ export function WorkflowGraphView({
           <Waypoints className="h-5 w-5 text-ink-3" />
           <p className="text-sm text-ink-2">还没有可展示的编排图</p>
           <p className="max-w-md text-xs leading-relaxed text-ink-3">
-            训练会话进入分析（或任务已有子任务/验证记录）后，这里会展示冻结的编排 DAG；
+            训练会话进入分析、任务进入终态并完成分析后，这里会展示冻结的编排 DAG；
             分析失败或任务尚未拆解时为空。
           </p>
         </div>
@@ -439,8 +459,21 @@ export function WorkflowGraphView({
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 text-[11px] text-ink-3">
         <span className="inline-flex items-center gap-1 text-ink-2">
           <Waypoints className="h-3.5 w-3.5" />
-          {graph?.frozen ? "已冻结" : "实时"}编排图
+          {analyzing
+            ? graph?.frozen
+              ? "上次分析快照（分析中）"
+              : "实时编排图（分析中）"
+            : graph?.frozen
+              ? "已冻结编排图"
+              : "实时编排图"}
         </span>
+        {analyzing && (
+          <span className="text-ink-3">
+            {graph?.frozen
+              ? "重跑中，完成后更新为本次快照"
+              : "分析完成后才会冻结为只读快照"}
+          </span>
+        )}
         <span>
           节点 {fmtInt(layout.nodes.length)} · 边 {fmtInt((graph?.edges ?? []).length)} · 深度{" "}
           {fmtInt(layout.maxLayer + 1)}
@@ -463,13 +496,64 @@ export function WorkflowGraphView({
         {maxShare > 0 && (
           <span className="text-ink-3">节点右上角为耗时，关键路径节点显示占比</span>
         )}
+        <div className="ml-auto inline-flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => zoomBy(-0.25)}
+            disabled={zoom <= MIN_ZOOM}
+            title="缩小"
+            aria-label="缩小编排图"
+            className="inline-flex h-6 w-6 items-center justify-center rounded border border-line text-ink-3 transition-colors hover:text-ink-2 disabled:opacity-40"
+          >
+            <ZoomOut className="h-3.5 w-3.5" />
+          </button>
+          <span className="w-10 text-center font-mono tabular-nums text-ink-2">
+            {Math.round(zoom * 100)}%
+          </span>
+          <button
+            type="button"
+            onClick={() => zoomBy(0.25)}
+            disabled={zoom >= MAX_ZOOM}
+            title="放大"
+            aria-label="放大编排图"
+            className="inline-flex h-6 w-6 items-center justify-center rounded border border-line text-ink-3 transition-colors hover:text-ink-2 disabled:opacity-40"
+          >
+            <ZoomIn className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={fitWidth}
+            title="缩放到容器宽度"
+            className="inline-flex h-6 items-center gap-1 rounded border border-line px-1.5 text-ink-3 transition-colors hover:text-ink-2"
+          >
+            <Maximize2 className="h-3 w-3" />
+            适应宽度
+          </button>
+          <button
+            type="button"
+            onClick={() => setZoom(1)}
+            title="恢复 1:1"
+            className="h-6 rounded border border-line px-1.5 text-ink-3 transition-colors hover:text-ink-2"
+          >
+            1:1
+          </button>
+        </div>
       </div>
 
-      <div className="overflow-x-auto px-4 pb-1">
+      <div ref={scrollRef} className="max-h-[72vh] max-w-full overflow-auto px-4 pb-1">
         <div
           className="relative"
-          style={{ width: layout.width, height: layout.height, minWidth: layout.width }}
+          style={{ width: layout.width * zoom, height: layout.height * zoom }}
         >
+          <div
+            className="relative"
+            style={{
+              width: layout.width,
+              height: layout.height,
+              transform: `scale(${zoom})`,
+              transformOrigin: "top left",
+            }}
+          >
           <svg
             width={layout.width}
             height={layout.height}
@@ -532,6 +616,7 @@ export function WorkflowGraphView({
               />
             );
           })}
+          </div>
         </div>
       </div>
 

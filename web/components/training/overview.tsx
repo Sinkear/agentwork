@@ -3,7 +3,7 @@
 import { SectionCard, StatStrip } from "@/components/ui";
 import type { RsiDetail } from "@/lib/types";
 import { WorkflowMetricsRow } from "./workflow-graph";
-import { fmtInt, fmtMs, fmtSpeedup, metricNum } from "./format";
+import { fmtInt, fmtMs, fmtSpeedup, measured, metricNum } from "./format";
 
 // 没有 report 时的状态文案：会话状态机 → 人话。
 // 分析是异步的，用户停在详情页时轮询会把这行字换掉，不用手动刷新。
@@ -17,7 +17,7 @@ function pendingCopy(status: string): { title: string; desc: string } {
     case "analyzing":
       return {
         title: "正在分析编排图…",
-        desc: "编排图已冻结，正在计算关键路径/并行度/分派与信息流指标，通常几秒内出报告。",
+        desc: "正在读取当前编排图并计算关键路径/并行度/分派与信息流指标；分析完成后才会冻结为只读快照。重跑期间旧报告不展示。",
       };
     case "ready":
       return {
@@ -32,7 +32,7 @@ function pendingCopy(status: string): { title: string; desc: string } {
     case "failed":
       return {
         title: "分析失败",
-        desc: "报告生成失败，可点右上角「重跑分析」重试；错误信息见下方。",
+        desc: "报告生成失败，上一次的报告不再展示；可点右上角「重跑分析」重试，错误信息见下方。",
       };
     default:
       return { title: "等待分析", desc: "当前没有可展示的报告。" };
@@ -42,21 +42,18 @@ function pendingCopy(status: string): { title: string; desc: string } {
 export function TrainingOverview({ detail }: { detail: RsiDetail }) {
   const { session, report, findings, workflow } = detail;
 
-  if (!report) {
+  // 只有 ready 才展示报告。重跑会把 status 改回 analyzing，但旧的 report
+  // 仍会随响应返回——不能按 `!report` 判断，否则会把过期数字当成当前结果。
+  if (session.status !== "ready" || !report) {
     const copy = pendingCopy(session.status);
     return (
       <SectionCard title="分析状态">
         <div className="space-y-2 px-4 py-5">
           <p className="text-sm font-medium text-ink-2">{copy.title}</p>
           <p className="text-xs leading-relaxed text-ink-3">{copy.desc}</p>
-          {session.error && (
+          {session.status === "failed" && session.error && (
             <p className="rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2 font-mono text-[11px] leading-relaxed text-red-300">
               {session.error}
-            </p>
-          )}
-          {session.node_count > 0 && (
-            <p className="pt-1 font-mono text-[11px] text-ink-3">
-              已冻结 {fmtInt(session.node_count)} 个节点 · 关键路径 {fmtMs(session.critical_path_ms)}
             </p>
           )}
         </div>
@@ -71,8 +68,12 @@ export function TrainingOverview({ detail }: { detail: RsiDetail }) {
   const nodes = metricNum(sessionMetrics, "node_count");
   const cp = metricNum(sessionMetrics, "critical_path_ms", "critical_path");
   const speedup = metricNum(sessionMetrics, "parallel_speedup");
-  const baselineCp = metricNum(baseline, "critical_path_ms", "critical_path_ms_median");
-  const baselineSpeedup = metricNum(baseline, "parallel_speedup", "parallel_speedup_median");
+  // 报告与 session 列都可能缺值；0 表示“没测到”，逐级回退，最终显示「—」。
+  const displayNodes = measured(nodes) ?? measured(session.node_count);
+  const displayCp = measured(cp) ?? measured(session.critical_path_ms);
+  const displaySpeedup = measured(speedup) ?? measured(session.parallel_speedup);
+  const baselineCp = measured(metricNum(baseline, "critical_path_ms", "critical_path_ms_median"));
+  const baselineSpeedup = measured(metricNum(baseline, "parallel_speedup", "parallel_speedup_median"));
   const hasBaseline = baselineCp !== null || baselineSpeedup !== null;
 
   // 置信度分布：finding.confidence 是 L1/L2/L3（§4.3），未知值忽略。
@@ -136,19 +137,23 @@ export function TrainingOverview({ detail }: { detail: RsiDetail }) {
         items={[
           {
             label: "编排节点",
-            value: nodes !== null ? fmtInt(nodes) : fmtInt(session.node_count),
+            value: fmtInt(displayNodes),
             hint: "冻结 DAG 的节点数与边数",
           },
           {
             label: "关键路径",
-            value: cp !== null ? fmtMs(cp) : fmtMs(session.critical_path_ms),
+            value: fmtMs(displayCp),
             hint: "最长依赖链的忙碌时长",
           },
           {
             label: "并行加速",
-            value: fmtSpeedup(speedup ?? session.parallel_speedup),
+            value: fmtSpeedup(displaySpeedup),
             tone:
-              speedup !== null && speedup >= 1.5 ? "ok" : speedup !== null && speedup < 1.05 ? "warn" : "default",
+              displaySpeedup !== null && displaySpeedup >= 1.5
+                ? "ok"
+                : displaySpeedup !== null && displaySpeedup < 1.05
+                  ? "warn"
+                  : "default",
             hint: "总工作量 / 关键路径；1× = 完全串行",
           },
           {
@@ -170,8 +175,8 @@ export function TrainingOverview({ detail }: { detail: RsiDetail }) {
       {hasBaseline && (
         <div className="rounded-md border border-line bg-surface-2/30 px-3.5 py-2.5 text-xs leading-relaxed text-ink-3">
           <span className="text-ink-2">与历史就绪会话的中位数对比：</span>
-          关键路径 {fmtMs(baselineCp)} → {fmtMs(cp ?? session.critical_path_ms)} · 并行加速{" "}
-          {fmtSpeedup(baselineSpeedup)} → {fmtSpeedup(speedup ?? session.parallel_speedup)}
+          关键路径 {fmtMs(measured(baselineCp))} → {fmtMs(displayCp)} · 并行加速{" "}
+          {fmtSpeedup(measured(baselineSpeedup))} → {fmtSpeedup(displaySpeedup)}
         </div>
       )}
 

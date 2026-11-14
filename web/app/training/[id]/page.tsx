@@ -19,13 +19,24 @@ import { TrainingOverview } from "@/components/training/overview";
 import { TrainingFindings } from "@/components/training/findings";
 import { WorkflowGraphView } from "@/components/training/workflow-graph";
 import { TrainingInsights } from "@/components/training/insights";
-import { categoryLabel, fmtInt, fmtMs, fmtSpeedup, fmtTime } from "@/components/training/format";
+import {
+  categoryLabel,
+  fmtInt,
+  fmtMs,
+  fmtSpeedup,
+  fmtTime,
+  measured,
+} from "@/components/training/format";
 import { cn } from "@/lib/utils";
 
 type Tab = "overview" | "findings" | "workflow" | "insights";
 
-// 会话进行中不提供「重跑」：重跑是失败/跳过后的补救动作，
-// 分析没跑完时按钮没有意义，disabled 也能防止误触打乱状态机。
+// 重跑是失败/跳过后的补救动作，但后端 Retry 只接受 waiting/failed/ready
+// 三种状态（internal/service/rsi.go:226），对 skipped 会直接 400。
+// 所以按钮可见性必须严格按状态来，不能“没在跑就显示”。
+const RETRYABLE = ["waiting", "failed", "ready"];
+
+// 分析进行中页面靠轮询刷新；这里只用于文案。
 const IN_FLIGHT = ["waiting", "analyzing"];
 
 export default function TrainingDetailPage() {
@@ -74,9 +85,33 @@ export default function TrainingDetailPage() {
   }
 
   const { session, findings, workflow, report } = detail;
+  const status = session.status;
   const findingCount = findings?.length ?? 0;
-  const nodeCount = workflow?.nodes?.length ?? session.node_count ?? 0;
-  const inFlight = IN_FLIGHT.includes(session.status);
+  // 只有 ready 才算“当前报告已就绪”：analyzing 会返回旧 report，
+  // 不能拿它当数字来源（否则重跑期间会显示过期指标）。
+  const ready = status === "ready" && report != null;
+  // 0 表示“还没测到”，统一显示「—」而不是真实的 0；非 ready 状态下
+  // training_session 里可能残留上一次分析的列值，也不当作当前结果展示。
+  const displayNodeCount = ready ? workflow?.nodes?.length ?? measured(session.node_count) : null;
+  const displayFindingCount = ready ? findingCount : null;
+  const findingText =
+    displayFindingCount === null ? "尚无数据" : `${fmtInt(displayFindingCount)} 条`;
+  const displayCp = ready ? measured(session.critical_path_ms) : null;
+  const displaySpeedup = ready ? measured(session.parallel_speedup) : null;
+  const canRetry = RETRYABLE.includes(status);
+  const inFlight = IN_FLIGHT.includes(status);
+
+  // 后端 GetSession 现在会回填 top_category/top_title；findings 最高分的兜底
+  // 仍然保留，用于旧数据或两者不一致时。
+  const topFinding = [...(findings ?? [])].sort((a, b) => {
+    const sa = typeof a.score === "number" && Number.isFinite(a.score) ? a.score : -Infinity;
+    const sb = typeof b.score === "number" && Number.isFinite(b.score) ? b.score : -Infinity;
+    if (sb !== sa) return sb - sa;
+    return a.id.localeCompare(b.id);
+  })[0];
+  const topCategory = session.top_category || (ready ? topFinding?.category : "") || "";
+  const topTitle =
+    session.top_title || (ready && topCategory === topFinding?.category ? topFinding?.title : "");
 
   const onRetry = () => {
     setRetryErr("");
@@ -93,28 +128,36 @@ export default function TrainingDetailPage() {
         action={
           <div className="flex items-center gap-3">
             {back}
-            <Button variant="outline" onClick={onRetry} disabled={retry.isPending || inFlight}>
-              <RefreshCw
-                className={cn("mr-1 h-3.5 w-3.5", retry.isPending && "animate-spin")}
-              />
-              {retry.isPending ? "重跑中…" : "重跑分析"}
-            </Button>
+            {canRetry ? (
+              <Button
+                variant="outline"
+                onClick={onRetry}
+                disabled={retry.isPending}
+              >
+                <RefreshCw
+                  className={cn("mr-1 h-3.5 w-3.5", retry.isPending && "animate-spin")}
+                />
+                {retry.isPending ? "重跑中…" : "重跑分析"}
+              </Button>
+            ) : (
+              <span className="text-[11px] text-ink-3">
+                {status === "analyzing" ? "分析中，完成后可重跑" : "已跳过，无法重跑"}
+              </span>
+            )}
           </div>
         }
       />
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-ink-3">
-        <Badge status={session.status} />
+        <Badge status={status} />
         <span>开始 {fmtTime(session.started_at)}</span>
         <span>结束 {session.finished_at ? fmtTime(session.finished_at) : "—"}</span>
-        <span>{fmtInt(nodeCount)} 节点</span>
-        <span>关键路径 {fmtMs(session.critical_path_ms)}</span>
-        <span>并行加速 {fmtSpeedup(session.parallel_speedup)}</span>
-        <span>发现 {fmtInt(session.finding_count)} 条</span>
-        {session.top_category && (
-          <span>
-            主瓶颈 {session.top_title || categoryLabel(session.top_category)}
-          </span>
+        <span>{fmtInt(displayNodeCount)} 节点</span>
+        <span>关键路径 {fmtMs(displayCp)}</span>
+        <span>并行加速 {fmtSpeedup(displaySpeedup)}</span>
+        <span>发现 {findingText}</span>
+        {topCategory && (
+          <span>主瓶颈 {topTitle || categoryLabel(topCategory)}</span>
         )}
         {session.goal_id && (
           <Link
@@ -127,9 +170,26 @@ export default function TrainingDetailPage() {
         )}
       </div>
 
-      {(session.error || retryErr) && (
+      {status === "skipped" && (
+        <p className="rounded-md border border-line bg-surface-2 px-3 py-2 text-[11px] leading-relaxed text-ink-3">
+          本次会话被跳过：运行模式为推理（infer），或采样未命中（会话采样率
+          {session.sample_rate === 1 ? "100%" : `${Math.round(session.sample_rate * 100)}%`}
+          ），没有执行训练分析，因此没有报告与图快照。重跑只对 waiting / failed / ready
+          开放，跳过会话不可重跑。
+        </p>
+      )}
+
+      {status === "failed" && (
         <p className="rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2 font-mono text-[11px] leading-relaxed text-red-300">
-          {retryErr ? `重跑失败：${retryErr}` : `会话错误：${session.error}`}
+          {retryErr
+            ? `重跑失败：${retryErr}`
+            : `分析失败：${session.error || "后端未返回错误原因"}。旧报告已隐藏，可点「重跑分析」重试。`}
+        </p>
+      )}
+
+      {retryErr && status !== "failed" && (
+        <p className="rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2 font-mono text-[11px] leading-relaxed text-red-300">
+          重跑失败：{retryErr}
         </p>
       )}
 
@@ -139,8 +199,8 @@ export default function TrainingDetailPage() {
           onChange={setTab}
           options={[
             { value: "overview", label: "概览" },
-            { value: "findings", label: `发现${findingCount ? ` ${findingCount}` : ""}` },
-            { value: "workflow", label: `编排${nodeCount ? ` ${nodeCount}` : ""}` },
+            { value: "findings", label: `发现${displayFindingCount ? ` ${displayFindingCount}` : ""}` },
+            { value: "workflow", label: `编排${displayNodeCount ? ` ${displayNodeCount}` : ""}` },
             { value: "insights", label: "洞察" },
           ]}
         />
@@ -158,26 +218,36 @@ export default function TrainingDetailPage() {
       {tab === "workflow" && (
         <SectionCard
           title="编排图"
-          count={nodeCount || undefined}
+          count={displayNodeCount || undefined}
           desc={
-            workflow?.frozen
-              ? "任务终态时冻结的只读 DAG；关键路径节点高亮，绿色连线为关键路径"
-              : "实时编排图；任务终态后冻结并用于训练分析"
+            status === "analyzing"
+              ? workflow?.frozen
+                ? "重跑分析中；下方是上一次分析冻结的快照，完成后才会更新为本次快照，旧报告指标暂不展示"
+                : "当前实时编排图；分析完成后才会冻结为只读快照，分析期间不展示报告指标"
+              : status === "waiting"
+                ? "任务进入终态后会冻结编排图并用于训练分析"
+                : status === "failed"
+                  ? "分析失败；下方图仅用于查看编排结构，旧报告指标已隐藏"
+                  : workflow?.frozen
+                    ? "任务终态时冻结的只读 DAG；关键路径节点高亮，绿色连线为关键路径"
+                    : "实时编排图；任务终态后冻结并用于训练分析"
           }
           bodyClassName="p-0"
         >
-          {!workflow && session.status === "skipped" ? (
+          {!workflow && status === "skipped" ? (
             <Empty>
               本次会话被采样跳过或运行模式为推理，没有冻结编排图。
             </Empty>
-          ) : !workflow && session.status === "failed" ? (
+          ) : !workflow && status === "failed" ? (
             <Empty>
               分析失败，没有可用编排图；可点「重跑分析」重试，或查看错误信息。
             </Empty>
           ) : (
             <WorkflowGraphView
               graph={workflow}
-              metrics={report?.metrics ?? null}
+              metrics={ready ? report?.metrics ?? null : null}
+              analyzing={status === "analyzing"}
+              showMetrics={ready}
               heightClass="min-h-[240px]"
             />
           )}

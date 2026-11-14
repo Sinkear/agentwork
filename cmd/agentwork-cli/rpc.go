@@ -42,8 +42,11 @@ func rpcCall(method string, params any, out any) error {
 	if err != nil {
 		return fmt.Errorf("dial rpc: %w", err)
 	}
-	peer := link.NewPeer(conn)
+	// Call-only peer: no handlers to register, but the reader must be live
+	// before the request is written (it routes the response to Call).
+	peer := link.NewPeerUnserved(conn)
 	defer peer.Close()
+	peer.StartReadLoop()
 	if err := peer.Call(ctx, method, params, out); err != nil {
 		return fmt.Errorf("%s: %w", method, err)
 	}
