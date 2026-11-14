@@ -593,3 +593,124 @@ func TestReconcileVerifyRunVerdictPresentNoAction(t *testing.T) {
 		t.Fatalf("verdict-present reconcile must leave the goal active, got %q", goalStatus)
 	}
 }
+
+// TestHealVerifyWaitRescopesAfterRejectedRound (review §M1): a rejected
+// verdict starts a rework round, and the round re-enters verifying with a
+// FRESH attempt budget. A no-verdict completion in round 2+ must heal (one
+// re-dispatch, then a human park) — the lifetime-scoped counts used to see
+// the round-1 rejected verdict forever and silently no-oped, stranding the
+// sub-goal in verifying while the goal could never finalize.
+func TestHealVerifyWaitRescopesAfterRejectedRound(t *testing.T) {
+	f := newVerifyFixture(t)
+	// Round 1: the verifier rejects while its run is live.
+	if _, err := f.st.DB().Exec(
+		`UPDATE run SET status='running' WHERE id=?`, f.verifyRunID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.gs.VerifySubGoal(f.ctx, f.verifyRunID, "rejected", "needs work", ""); err != nil {
+		t.Fatalf("rejected verdict: %v", err)
+	}
+	// The verifier's run ends after giving its verdict (no-op heal: the
+	// sub-goal is back in running).
+	if err := f.rs.Finish(f.ctx, f.verifyRunID, "completed", "rejected verdict given"); err != nil {
+		t.Fatalf("finish round-1 verify run: %v", err)
+	}
+	// The rework run completes → verifying again, a NEW verify run is born.
+	var reworkRun string
+	if err := f.st.DB().QueryRow(
+		`SELECT id FROM run WHERE sub_goal_id=? AND role='subgoal' ORDER BY rowid DESC LIMIT 1`,
+		f.subGoal.ID).Scan(&reworkRun); err != nil {
+		t.Fatalf("load rework run: %v", err)
+	}
+	if err := f.rs.Finish(f.ctx, reworkRun, "completed", "reworked"); err != nil {
+		t.Fatalf("finish rework run: %v", err)
+	}
+	if sg, _ := f.gs.GetSubGoal(f.ctx, f.subGoal.ID); sg.Status != "verifying" {
+		t.Fatalf("rework completion must re-enter verifying, got %q", sg.Status)
+	}
+	runs := verifyRunIDs(t, f.st, f.subGoal.ID)
+	if len(runs) != 2 {
+		t.Fatalf("rework round must enqueue a new verify run, runs=%v", runs)
+	}
+	verify2 := runs[1]
+	// Round 2: the verify run ends WITHOUT a verdict → the heal must
+	// re-dispatch (attempt 2 of THIS wait), not no-op on the round-1 verdict.
+	if err := f.rs.Finish(f.ctx, verify2, "completed", "ended without verdict"); err != nil {
+		t.Fatalf("finish round-2 verify run: %v", err)
+	}
+	runs = verifyRunIDs(t, f.st, f.subGoal.ID)
+	if len(runs) != 3 {
+		t.Fatalf("round-2 no-verdict must re-dispatch exactly once, runs=%v", runs)
+	}
+	if got := runStatusOf(t, f.st, runs[2]); got != "queued" {
+		t.Fatalf("round-2 re-dispatch must be queued, got %q", got)
+	}
+	if sg, _ := f.gs.GetSubGoal(f.ctx, f.subGoal.ID); sg.Status != "verifying" {
+		t.Fatalf("requeued sub-goal must stay verifying, got %q", sg.Status)
+	}
+	var goalStatus string
+	if err := f.st.DB().QueryRow(`SELECT status FROM goal WHERE id=?`, f.goal.ID).Scan(&goalStatus); err != nil {
+		t.Fatal(err)
+	}
+	if goalStatus != "active" {
+		t.Fatalf("round-2 requeue must not park the goal, got %q", goalStatus)
+	}
+	// Attempt 2 of wait 2 also ends without a verdict → park for a human
+	// (fresh budget per wait, not per sub-goal lifetime).
+	if err := f.rs.Finish(f.ctx, runs[2], "completed", "ended without verdict again"); err != nil {
+		t.Fatalf("finish round-2 attempt-2 verify run: %v", err)
+	}
+	var reviewRequest string
+	if err := f.st.DB().QueryRow(
+		`SELECT status, COALESCE(review_request,'') FROM goal WHERE id=?`, f.goal.ID).Scan(&goalStatus, &reviewRequest); err != nil {
+		t.Fatal(err)
+	}
+	if goalStatus != "review" || reviewRequest != "verify_no_verdict: work item" {
+		t.Fatalf("second round-2 no-verdict must park, got (%q,%q)", goalStatus, reviewRequest)
+	}
+	if got := verifyRunIDs(t, f.st, f.subGoal.ID); len(got) != 3 {
+		t.Fatalf("park must not re-dispatch, runs=%v", got)
+	}
+}
+
+// TestHealVerifyNoParkWhileRedispatchQueued (review §m1): the sweeper and the
+// run-end reconcile race. The first healer re-dispatches (attempt 2 queued);
+// the second healer arriving for the same ended run must NO-OP — never park
+// the goal on top of the queued attempt.
+func TestHealVerifyNoParkWhileRedispatchQueued(t *testing.T) {
+	f := newVerifyFixture(t)
+	// The daemon crashed after stamping the run terminal; the sweeper wins
+	// the race and re-dispatches.
+	stampFinished(t, f.st, f.verifyRunID, "completed", now())
+	if _, _, _, err := f.gs.SweepVerifying(f.ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	runs := verifyRunIDs(t, f.st, f.subGoal.ID)
+	if len(runs) != 2 || runStatusOf(t, f.st, runs[1]) != "queued" {
+		t.Fatalf("sweep must leave a queued attempt 2, runs=%v", runs)
+	}
+	// The run-end reconcile now arrives late for the same ended run.
+	out, err := f.gs.healVerifyingSubGoal(f.ctx, f.subGoal.ID, f.verifyRunID, "completed")
+	if err != nil {
+		t.Fatalf("late heal: %v", err)
+	}
+	if out.parked || out.requeued {
+		t.Fatalf("late healer must no-op on a queued re-dispatch, got %+v", out)
+	}
+	var goalStatus string
+	if err := f.st.DB().QueryRow(`SELECT status FROM goal WHERE id=?`, f.goal.ID).Scan(&goalStatus); err != nil {
+		t.Fatal(err)
+	}
+	if goalStatus != "active" {
+		t.Fatalf("late healer must not park the goal, got %q", goalStatus)
+	}
+	if got := verifyRunIDs(t, f.st, f.subGoal.ID); len(got) != 2 {
+		t.Fatalf("late healer must not re-dispatch again, runs=%v", got)
+	}
+	if countCommentPrefix(systemComments(t, f.st, f.goal.ID), "Verifier run ended without a verdict") != 1 {
+		t.Fatalf("requeue comment must not be duplicated: %v", systemComments(t, f.st, f.goal.ID))
+	}
+	if countCommentPrefix(systemComments(t, f.st, f.goal.ID), "Verification produced no verdict") != 0 {
+		t.Fatalf("no park comment may appear: %v", systemComments(t, f.st, f.goal.ID))
+	}
+}

@@ -726,9 +726,10 @@ func (s *GoalService) healVerifyingSubGoal(ctx context.Context, subGoalID, runID
 // §W6, contract 7.2/7.3). Called INSIDE the caller's transaction, after the
 // run's reconciled_at stamp:
 //
-//	still verifying, no verdict, completed FIRST attempt → re-dispatch the
-//	  verifier exactly once (attempt 2; the attempt count and a pending-run
-//	  check are the double-requeue guard);
+//	still verifying, no verdict in the CURRENT verify wait, completed FIRST
+//	  attempt of that wait → re-dispatch the verifier exactly once (attempt
+//	  2; the per-wait attempt count and a pending-run check are the
+//	  double-requeue guard);
 //	otherwise (failed/cancelled, or already re-dispatched) → park the goal in
 //	  review with review_request "verify_no_verdict: <title>", so a human
 //	  decides retry/abort (handoff-park precedent: all side effects are
@@ -755,34 +756,57 @@ func (s *GoalService) healVerifyingSubGoalTx(ctx context.Context, tx *sql.Tx, su
 	if status != "verifying" {
 		return out, nil
 	}
+	// Scope every guard to the CURRENT verify wait (review §M1): a rejected
+	// verdict starts a rework round, and every round re-enters verifying
+	// with a FRESH attempt budget. The wait begins at the latest
+	// subgoal-role (assignee/rework) run — verify runs and verdicts created
+	// after that point belong to this round. Lifetime counts strand round-2+
+	// no-verdict runs: the round-1 rejected verdict made `verdicts > 0` true
+	// forever and the attempts gate unreachable, so the sub-goal sat
+	// verifying while the goal could never finalize. (An empty boundary —
+	// legacy rows with no subgoal-role run — degrades to the old lifetime
+	// counts.)
+	var waitStart string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(created_at), '') FROM run WHERE sub_goal_id=? AND role='subgoal'`, subGoalID).
+		Scan(&waitStart); err != nil {
+		return out, fmt.Errorf("load verify-wait boundary: %w", err)
+	}
 	var verdicts int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM verification_result WHERE sub_goal_id=?`, subGoalID).Scan(&verdicts); err != nil {
+		`SELECT COUNT(*) FROM verification_result WHERE sub_goal_id=?
+		  AND (verifier_run_id IN (SELECT id FROM run WHERE sub_goal_id=? AND role='verify' AND created_at > ?)
+		       OR (verifier_run_id='' AND created_at > ?))`,
+		subGoalID, subGoalID, waitStart, waitStart).Scan(&verdicts); err != nil {
 		return out, fmt.Errorf("count verdicts: %w", err)
 	}
 	if verdicts > 0 {
-		return out, nil // the verdict landed normally
+		return out, nil // the verdict landed normally in this wait
 	}
 	var attempts int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM run WHERE sub_goal_id=? AND role='verify'`, subGoalID).Scan(&attempts); err != nil {
+		`SELECT COUNT(*) FROM run WHERE sub_goal_id=? AND role='verify' AND created_at > ?`,
+		subGoalID, waitStart).Scan(&attempts); err != nil {
 		return out, fmt.Errorf("count verify runs: %w", err)
+	}
+	// A queued/running verify run means a concurrent healer already acted
+	// (the sweeper raced the run-end reconcile): the re-dispatch happened —
+	// never park or requeue on top of it (review §m1: the old placement let
+	// the park branch fire while the re-dispatched attempt was still
+	// queued).
+	var pending int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run WHERE sub_goal_id=? AND role='verify' AND status IN ('queued','running')`,
+		subGoalID).Scan(&pending); err != nil {
+		return out, fmt.Errorf("check pending verifier run: %w", err)
+	}
+	if pending > 0 {
+		return out, nil
 	}
 	ts := now()
 	// Re-dispatch only when a NAMED agent verifier exists (legacy verifying
 	// rows with a machine verifier have no agent to wake — park them).
 	if runStatus == "completed" && attempts == 1 && verifierID != "" {
-		// A pending verify run already exists (a concurrent healer won the
-		// race) — the re-dispatch happened; do not duplicate the audit rows.
-		var pending int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM run WHERE sub_goal_id=? AND role='verify' AND status IN ('queued','running')`,
-			subGoalID).Scan(&pending); err != nil {
-			return out, fmt.Errorf("check pending verifier run: %w", err)
-		}
-		if pending > 0 {
-			return out, nil
-		}
 		if s.runSvc == nil {
 			return out, errors.New("goalSvc.runSvc not wired")
 		}
@@ -862,8 +886,8 @@ func (s *GoalService) healVerifyingSubGoalTx(ctx context.Context, tx *sql.Tx, su
 // latest verify run is terminal without a verdict (same policy as the
 // run-end reconcile), or raise ONE stale alarm after an hour with no
 // verdict. Safe to run concurrently with the run-end reconcile: every
-// transition is conditional and the verify-attempt count is the
-// double-requeue guard.
+// transition is conditional, and the pending-run check plus the per-wait
+// verify-attempt count are the double-requeue/double-park guards.
 //
 // Receiver note: the v2 sub-goal layer lives on GoalService (there is no
 // SubGoalService type), so SweepVerifying is a GoalService method; the

@@ -190,6 +190,57 @@ func TestPushAgentSkillsRefusesEmptyPush(t *testing.T) {
 	}
 }
 
+// TestPushAgentSkillsRefusesPartialPush (review §M1): a push missing ONE of
+// the selected archives must be refused wholesale — the machine wipes its
+// staging dir before extracting, so a subset push destroys the failed
+// skill's last good staging copy (and the subset success then refreshes live
+// chat copies with wipe=true). The content exists nowhere else: the skill
+// table is metadata-only.
+func TestPushAgentSkillsRefusesPartialPush(t *testing.T) {
+	d, skillSvc, agentSvc := newSkillPushDaemon(t)
+	ctx := context.Background()
+	good, err := skillSvc.Create(ctx, map[string]string{
+		"SKILL.md": "---\nname: good-skill\ndescription: demo\n---\nbody\n",
+	})
+	if err != nil {
+		t.Fatalf("create good skill: %v", err)
+	}
+	broken, err := skillSvc.Create(ctx, map[string]string{
+		"SKILL.md": "---\nname: broken-skill\ndescription: demo\n---\nbody\n",
+	})
+	if err != nil {
+		t.Fatalf("create broken skill: %v", err)
+	}
+	rt, err := service.NewRuntimeService(d.st).Create(ctx, service.Runtime{Name: "opencode@m1", MachineID: "m1"})
+	if err != nil {
+		t.Fatalf("create runtime: %v", err)
+	}
+	ag, err := agentSvc.Create(ctx, service.Agent{Name: "partial-push-agent", RuntimeID: rt.ID, Skills: []string{good.ID, broken.ID}})
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	pushes := fakeMachinePeer(t, d, "m1")
+
+	// Baseline: both archives load — the machine staging holds both.
+	d.PushAgentSkills(ctx, ag.ID)
+	first := waitPush(t, pushes)
+	if len(first.Skills) != 2 {
+		t.Fatalf("baseline push must carry both skills, got %+v", first.Skills)
+	}
+
+	// One skill dir disappears (old sweep bug / copied DB): the partial push
+	// must be refused — a subset would wipe the machine's copy of BOTH.
+	if err := os.RemoveAll(filepath.Join(os.Getenv("AGENTWORK_HOME"), "runs", "skills", broken.ID)); err != nil {
+		t.Fatalf("remove skill dir: %v", err)
+	}
+	d.PushAgentSkills(ctx, ag.ID)
+	select {
+	case params := <-pushes:
+		t.Fatalf("partial push must be refused, machine received %d skill(s): %+v", len(params.Skills), params.Skills)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 func waitPush(t *testing.T, pushes <-chan link.ConfigPushParams) link.ConfigPushParams {
 	t.Helper()
 	select {

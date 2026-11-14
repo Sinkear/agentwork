@@ -366,21 +366,20 @@ function DeleteAgentDialog({
           <div className="space-y-1">
             <p className="text-xs font-medium text-amber-300">暂时不能删除：</p>
             <ul className="list-disc space-y-0.5 pl-4 text-xs text-ink-3">
-              {impact.blockers.length > 0 ? (
-                impact.blockers.map((b) => (
-                  // 后端的 message 是英文诊断句；两类已知 blocker 用中文
-                  // 说清楚"先做什么"，未知类型才回退到原始 message。
-                  <li key={b.kind}>
-                    {b.kind === "active_runs"
-                      ? `还有 ${b.count} 个排队/运行中的 run，请先等它们结束或取消`
-                      : b.kind === "active_goals"
-                        ? `还有 ${b.count} 个进行中的 goal，请先完成、取消或改派`
-                        : b.message}
-                  </li>
-                ))
-              ) : (
-                <li>该 agent 仍在使用中（活跃运行 / 活跃任务）。</li>
-              )}
+            {/* 后端不变量: can_delete === (blockers.length === 0)，所以走到
+                blocked 分支时 blockers 必非空，直接渲染即可（原先的
+                "该 agent 仍在使用中"回退句在这个不变量下永不可达）。 */}
+              {impact.blockers.map((b) => (
+                // 后端的 message 是英文诊断句；两类已知 blocker 用中文
+                // 说清楚"先做什么"，未知类型才回退到原始 message。
+                <li key={b.kind}>
+                  {b.kind === "active_runs"
+                    ? `还有 ${b.count} 个排队/运行中的 run，请先等它们结束或取消`
+                    : b.kind === "active_goals"
+                      ? `还有 ${b.count} 个进行中的 goal，请先完成、取消或改派`
+                      : b.message}
+                </li>
+              ))}
             </ul>
             {impact.active_runs > 0 && (
               <p className="text-[11px] text-ink-3">
@@ -394,7 +393,9 @@ function DeleteAgentDialog({
               将删除 {impact.schedules} 个调度（含 {impact.enabled_schedules} 个启用）、
               {impact.runs} 条运行记录；{impact.terminal_goals} 条历史任务将保留（归属显示为已删除 agent）。
             </p>
-            {impact.sub_goals > 0 && <p>{impact.sub_goals} 条子任务记录将保留。</p>}
+            {/* agent 删除会把该 agent 名下非终态的子任务一并取消
+                （agent.go Delete: UPDATE sub_goal SET status='cancelled'…）。 */}
+            {impact.sub_goals > 0 && <p>{impact.sub_goals} 条未完结子任务将一并取消。</p>}
           </div>
         )
       ) : null}

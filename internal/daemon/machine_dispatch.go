@@ -656,6 +656,12 @@ func (d *Daemon) lastRunActivity(ctx context.Context, runID string) runActivity 
 				return out
 			}
 		}
+		// A mid-iteration driver error must not masquerade as "no rows
+		// read": lastEvent would stay zero and the watchdog would fall
+		// through to the in-memory fallback with a stale timestamp.
+		if err := rows.Err(); err != nil {
+			return out
+		}
 	}
 	if out.lastEvent.IsZero() {
 		d.machineLastEventMu.Lock()
@@ -1018,18 +1024,18 @@ func (d *Daemon) PushAgentSkills(ctx context.Context, agentID string) {
 		}
 		pushes = append(pushes, link.SkillPush{Name: name, Archive: archive})
 	}
-	// A push whose every selected archive failed to load is NOT "the agent now
-	// has zero skills": the machine's config.push wipes its staging dir before
-	// extracting, so sending an empty set destroys the last good copy (live
-	// bug: one unreadable skill dir → "0 skill(s) installed" → the machine
-	// kept its stale workdir copies forever). Refuse and leave staging intact;
-	// the next successful push replaces it.
-	if len(skillIDs) > 0 && len(pushes) == 0 {
-		logging.Infof("machine: config.push %s: refusing empty skill push — all %d selected archive(s) unavailable; machine staging left untouched", agentID, len(skillIDs))
-		return
-	}
+	// A push with ANY failed archive is refused wholesale (review §M1): the
+	// machine's config.push wipes its staging dir before extracting, so a
+	// partial push destroys the failed skill's last good staging copy — and
+	// the machine reports success for the subset, which makes the machine
+	// refresh live chat copies with wipe=true too. The skill's file content
+	// exists nowhere else (the skill table is metadata-only; a skill without
+	// a remote source cannot be pulled back). Only a genuinely empty
+	// selection (the agent has no skills) still sends, to clear stale
+	// staging.
 	if len(pushes) < len(skillIDs) {
-		logging.Infof("machine: config.push %s: %d of %d selected skill(s) unavailable — pushing the remaining %d", agentID, len(skillIDs)-len(pushes), len(skillIDs), len(pushes))
+		logging.Infof("machine: config.push %s: refusing partial skill push — %d of %d selected archive(s) unavailable; machine staging left untouched", agentID, len(skillIDs)-len(pushes), len(skillIDs))
+		return
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -1091,10 +1097,11 @@ func (d *Daemon) AgentMachineID(ctx context.Context, agentID string) string {
 
 // SkillAgents returns the agents that have the skill selected (their
 // machines get a re-push after a library deletion so the skill's directory
-// is cleaned up).
+// is cleaned up). Same predicate as SkillService.Delete's usage check
+// (INSTR + quoted id) so both sides agree on what "selected" means.
 func (d *Daemon) SkillAgents(ctx context.Context, skillID string) []string {
 	rows, err := d.st.DB().QueryContext(ctx,
-		`SELECT id FROM agent WHERE skills LIKE ?`, `%"`+skillID+`"%`)
+		`SELECT id FROM agent WHERE INSTR(skills, ?) > 0`, `"`+skillID+`"`)
 	if err != nil {
 		return nil
 	}

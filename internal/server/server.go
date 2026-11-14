@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -465,8 +466,18 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 				time.Now().Add(chatWriteWait))
 			return
 		}
+		// gorilla permits ONE concurrent writer: the sink pump and this
+		// handler's read loop both write messages (frames vs. the JSON-RPC
+		// error reply), so every WriteMessage goes through one mutex.
+		// (WriteControl — ping and close frames — is safe concurrently by
+		// the library's contract and stays outside it.)
+		var chatWriteMu sync.Mutex
 		entry := s.d.BindChatSink(chatID,
-			func(b []byte) error { return conn.WriteMessage(websocket.TextMessage, b) },
+			func(b []byte) error {
+				chatWriteMu.Lock()
+				defer chatWriteMu.Unlock()
+				return conn.WriteMessage(websocket.TextMessage, b)
+			},
 			func() {
 				// The machine side ended the chat (CLI exited) or the machine
 				// link dropped. Send a real 1011 close frame with a reason the
@@ -502,7 +513,9 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 						"id":      id,
 						"error":   map[string]any{"code": -32000, "message": err.Error()},
 					})
+					chatWriteMu.Lock()
 					_ = conn.WriteMessage(websocket.TextMessage, errMsg)
+					chatWriteMu.Unlock()
 				}
 				logging.Infof("chat: %s web→machine: %v", chatID, err)
 				// Also send a close frame with the real cause: the JSON-RPC

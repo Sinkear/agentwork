@@ -13,8 +13,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,9 +99,8 @@ func (b *chatBridge) refreshAgentSkillCopies(agentID string) {
 	}
 	empty := false
 	entries, err := os.ReadDir(machineSkillRoot(agentID))
-	if err != nil {
-		empty = true
-	} else {
+	switch {
+	case err == nil:
 		dirs := 0
 		for _, ent := range entries {
 			if ent.IsDir() {
@@ -107,6 +108,17 @@ func (b *chatBridge) refreshAgentSkillCopies(agentID string) {
 			}
 		}
 		empty = dirs == 0
+	case errors.Is(err, fs.ErrNotExist):
+		// The agent genuinely has no staging dir → no skills. Clear the
+		// live copies explicitly: copyAgentSkills early-returns on the
+		// missing root and would leave the old files behind.
+		empty = true
+	default:
+		// EACCES/EIO etc.: treat as UNKNOWN, not empty. Clearing live
+		// chat copies on a transient read error would delete the only
+		// remaining skill files (chat cwd is the last readable copy).
+		cliLogf("chat: refresh skills for agent=%s: staging unreadable: %v — live chat copies left as-is", agentID, err)
+		return
 	}
 	for _, t := range targets {
 		if empty {

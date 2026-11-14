@@ -374,13 +374,11 @@ func (s *SkillService) List(ctx context.Context) ([]Skill, error) {
 // Delete removes a skill from the library and its files.
 func (s *SkillService) Delete(ctx context.Context, id string) error {
 	var n int
-	// INSTR (not LIKE) for the usage check: LIKE '%"id"%' fails to match the
-	// skills JSON written by the service layer under modernc.org/sqlite
-	// (the param-bound pattern with embedded quotes does not match), so a
-	// skill selected by an agent could be silently deleted, leaving a
-	// dangling id in the agent's skills array. INSTR is a pure substring
-	// test with no wildcard semantics, and the surrounding quotes anchor
-	// the id to avoid prefix/suffix collisions (id "ab" won't match "abc").
+	// INSTR + a quoted id for the usage check: a pure substring test with no
+	// wildcard semantics (LIKE also works on the pinned modernc.org/sqlite,
+	// but a skill id ever containing % or _ would silently change LIKE's
+	// meaning), and the surrounding quotes anchor the id so id "ab" cannot
+	// match "abc". Daemon-side SkillAgents uses the same predicate.
 	if err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM agent WHERE INSTR(skills, ?) > 0`, `"`+id+`"`).Scan(&n); err != nil {
 		return fmt.Errorf("check skill usage: %w", err)
 	}
