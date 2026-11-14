@@ -1782,10 +1782,16 @@ func (d *Daemon) runTask(ctx context.Context, q *service.ClaimedRow) {
 	goalDesc := desc
 	// A sub-goal run's task is the WORK ITEM, not the goal (the goal's
 	// description would re-execute the whole goal).
+	assigneeName := ""
 	if subGoalRun || verifyRun {
 		var sgTitle, sgDesc string
+		// 指令归属 (F2): the work item belongs to its ASSIGNEE — a verify
+		// run reads it as judgment criteria, so the wake line needs the
+		// assignee's NAME to label whose task the description is.
 		if err := d.st.DB().QueryRowContext(ctx,
-			`SELECT title, description FROM sub_goal WHERE id=?`, subGoalID).Scan(&sgTitle, &sgDesc); err != nil {
+			`SELECT sg.title, sg.description, COALESCE(aa.name, '')
+			  FROM sub_goal sg LEFT JOIN agent aa ON aa.id = sg.assignee_id
+			 WHERE sg.id=?`, subGoalID).Scan(&sgTitle, &sgDesc, &assigneeName); err != nil {
 			d.failRun(ctx, q, fmt.Sprintf("load sub-goal: %v", err))
 			return
 		}
@@ -1903,7 +1909,8 @@ func (d *Daemon) runTask(ctx context.Context, q *service.ClaimedRow) {
 			triggerCommentID: triggerCommentID, triggerAuthor: triggerAuthor, triggerAuthorName: triggerAuthorName,
 			triggerCommentContent: triggerCommentContent, title: title, desc: desc, handoff: handoff,
 			wakeNote: wakeNote, wakeAnchorID: wakeAnchorID, subGoalID: subGoalID,
-			consultRun: consultRun, reviewRun: reviewRun, verifyRun: verifyRun, subGoalRun: subGoalRun,
+			assigneeName: assigneeName,
+			consultRun:   consultRun, reviewRun: reviewRun, verifyRun: verifyRun, subGoalRun: subGoalRun,
 		})
 		// The stored prompt is the TASK message only — the fixed block and
 		// the team ride the workdir's AGENTS.md (buildRunProfile).
@@ -2924,6 +2931,7 @@ type promptInputs struct {
 	agentName, systemPrompt, runRole, goalTitle, policyText, domainType, domainName string
 	triggerCommentID, triggerAuthor, triggerAuthorName, triggerCommentContent       string
 	title, desc, handoff, wakeNote, wakeAnchorID, subGoalID                         string
+	assigneeName                                                                    string
 	consultRun, reviewRun, verifyRun, subGoalRun                                    bool
 }
 
@@ -2987,7 +2995,25 @@ func (d *Daemon) assemblePrompt(ctx context.Context, q *service.ClaimedRow, in p
 		wakeContent = "Review the goal's outcome — inspect the diff and the feed."
 	case in.verifyRun:
 		wakeWho = "the platform"
-		wakeContent = "Verify this work item: " + in.title + "\n" + in.desc
+		// 指令归属 (F2): the verifier READS the work item — it is addressed
+		// to the ASSIGNEE, not to the verifier. The old bare imperative
+		// ("Verify this work item: <title>\n<desc>") let the assignee's task
+		// description read as a command; label it so it reads as the criteria
+		// the verifier judges against. The verifier's own task line (judge,
+		// verdict ONCE) comes from its role contract.
+		assignee := in.assigneeName
+		if assignee == "" {
+			assignee = "the assignee"
+		}
+		item := "  " + in.title + "\n"
+		if s := strings.TrimSpace(in.desc); s != "" {
+			item += "  " + strings.ReplaceAll(s, "\n", "\n  ") + "\n"
+		}
+		wakeContent = "Verify the work item below — judge it against its acceptance criteria, then issue your verdict ONCE.\n\n" +
+			"Work item (addressed to " + assignee + ", not to you):\n" +
+			item +
+			"  ↑ This describes the ASSIGNEE's task. Use it as the criteria/context\n" +
+			"    for your own job; do not perform it yourself."
 	case in.subGoalRun:
 		wakeWho = in.triggerAuthorName // the dispatcher (dispatch comment's author)
 		if wakeWho == "" {

@@ -161,6 +161,7 @@ agentwork stats                 #   或设 AGENTWORK_SERVER_URL）
 
 - [路径与数据布局](docs/PATHS.md) — 每个目录/环境变量，以及升级时哪些必须保留
 - [保留数据的升级](docs/UPGRADE.md) — stop → 备份 → 只换 bin/web → start，含 JEM 方案
+- [Run 身份与指令归属](docs/IDENTITY.md) — run 的身份只由本次 run 定义：共用 workdir 身份劫持复盘与三层修复
 - [把最佳实践做成模板](docs/TEMPLATES.md) — 用 `agentwork-daemon export-template` 导出并复用
 - [制品替换 skill](skills/agentwork-artifact-swap/SKILL.md) — 同一套“不丢数据”流程，可拷到目标机器直接用
 

@@ -189,6 +189,7 @@ agentwork stats                 #   or set AGENTWORK_SERVER_URL)
 
 - [Paths and data layout](docs/PATHS.md) — every directory/env var, and what must survive an upgrade
 - [Upgrade without losing data](docs/UPGRADE.md) — stop → backup → replace only bin/web → start, including JEM
+- [Run identity & instruction ownership](docs/IDENTITY.md) — a run's identity comes from THIS run alone: the shared-workdir hijack postmortem and the three-layer fix
 - [Turn your workflow into a template](docs/TEMPLATES.md) — export with `agentwork-daemon export-template`
 - [Artifact-swap skill](skills/agentwork-artifact-swap/SKILL.md) — the same data-safe flow, portable to the target host
 
