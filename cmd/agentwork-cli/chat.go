@@ -44,6 +44,12 @@ type chatBridge struct {
 	// frame — chat has no run dispatch, so this is the injection point the run
 	// path doesn't need.
 	mcpServers map[string][]acp.McpServer
+	// sessions maps chatID → what the chat was staged with (agent + cwd +
+	// project skills subdir). config.push refreshes the files in these cwds
+	// after a skill sync/update so the agent's NEXT session reads the new
+	// skill without restarting the chat process — the chat cwd is a
+	// platform-owned projection of the machine staging dir.
+	sessions map[string]chatSession
 	// seq is a MONOTONIC chat id counter — ids are never reused. A reused
 	// id let a late chat.close (the ghost StrictMode connection's teardown,
 	// delivered asynchronously) kill the REPLACEMENT process registered
@@ -52,12 +58,64 @@ type chatBridge struct {
 	seq int
 }
 
+// chatSession is one live chat's staging identity: which agent it belongs to,
+// the stable chat cwd, and the project-level skills subdir used there.
+type chatSession struct {
+	agentID string
+	cwd     string
+	subdir  string
+}
+
 func newChatBridge() *chatBridge {
 	return &chatBridge{
 		writer:     map[string]io.Writer{},
 		closeFn:    map[string]func() error{},
 		writeMu:    map[string]*sync.Mutex{},
 		mcpServers: map[string][]acp.McpServer{},
+		sessions:   map[string]chatSession{},
+	}
+}
+
+// refreshAgentSkillCopies re-stages the agent's skill files into every LIVE
+// chat cwd of that agent. Called by the config.push handler after the machine
+// staging dir was rewritten by a skill sync/update: the chat cwd holds a copy
+// made at chat.open, so without this a session opened before the push keeps
+// loading the old skill until the chat is restarted. An empty staging dir
+// (agent no longer has skills) clears the copy explicitly — copyAgentSkills
+// would early-return on the missing root and leave the old files behind.
+func (b *chatBridge) refreshAgentSkillCopies(agentID string) {
+	b.mu.Lock()
+	targets := make([]chatSession, 0, len(b.sessions))
+	for _, s := range b.sessions {
+		if s.agentID == agentID {
+			targets = append(targets, s)
+		}
+	}
+	b.mu.Unlock()
+	if len(targets) == 0 {
+		return
+	}
+	empty := false
+	entries, err := os.ReadDir(machineSkillRoot(agentID))
+	if err != nil {
+		empty = true
+	} else {
+		dirs := 0
+		for _, ent := range entries {
+			if ent.IsDir() {
+				dirs++
+			}
+		}
+		empty = dirs == 0
+	}
+	for _, t := range targets {
+		if empty {
+			_ = os.RemoveAll(filepath.Join(t.cwd, t.subdir))
+			cliLogf("chat: refreshed skills for live chat agent=%s cwd=%s → cleared (no skills staged)", agentID, t.cwd)
+			continue
+		}
+		copyAgentSkills(agentID, t.cwd, t.subdir, true)
+		cliLogf("chat: refreshed skills for live chat agent=%s cwd=%s (next session sees the new skill files)", agentID, t.cwd)
 	}
 }
 
@@ -209,6 +267,7 @@ func (b *chatBridge) handleChatOpen(ctx context.Context, raw json.RawMessage, pe
 	b.writer[chatID] = conn.W
 	b.closeFn[chatID] = conn.Close
 	b.writeMu[chatID] = &sync.Mutex{}
+	b.sessions[chatID] = chatSession{agentID: p.AgentID, cwd: p.Cwd, subdir: subdir}
 	if len(p.McpServers) > 0 {
 		b.mcpServers[chatID] = p.McpServers
 	}
@@ -367,6 +426,7 @@ func (b *chatBridge) cleanup(chatID string) {
 	delete(b.closeFn, chatID)
 	delete(b.mcpServers, chatID)
 	delete(b.writeMu, chatID)
+	delete(b.sessions, chatID)
 	b.mu.Unlock()
 	if closeFn == nil {
 		return

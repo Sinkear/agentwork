@@ -234,6 +234,16 @@ func runLink(ctx context.Context, wsURL string, st cliState, name, hostname stri
 			res.Written = append(res.Written, sk.Name)
 		}
 		cliLogf("config.push: agent %s skills → %d installed, %d error(s) into %s", p.AgentID, len(res.Written), len(res.Errors), root)
+		// Push the refreshed staging into the agent's LIVE chat cwds: their
+		// copies were made at chat.open, so without this a chat opened before
+		// the sync keeps loading the old skill until it is restarted. Only
+		// when every selected archive installed cleanly — a partial push must
+		// not delete skills from a live cwd.
+		if len(res.Errors) == 0 {
+			chat.refreshAgentSkillCopies(p.AgentID)
+		} else {
+			cliLogf("config.push: agent %s: %d error(s) — live chat skill copies left as-is", p.AgentID, len(res.Errors))
+		}
 		return res, nil
 	})
 

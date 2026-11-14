@@ -35,7 +35,12 @@ state, in-process event bus, Go daemon + Next.js web UI.
 - **Remote skill sources** — attach a GitHub/GitCode repository (branch, path,
   token) to a skill, compare local vs remote, pull remote updates, push local
   edits, or submit a pull request; sync and PR require the token to actually
-  hold push permission, verified against the provider API
+  hold push permission, verified against the provider API. A pull immediately
+  refreshes the skill copies of that agent's LIVE sessions (the machine re-stages
+  every open chat cwd), so the next session uses the new skill without an agent
+  restart; if an archive is unavailable the push is refused instead of wiping
+  the machine's staging dir, and a skill whose local files are gone reports
+  `local_missing` so a pull can restore them
 - **Feishu notifications** — approval cards (approve/reject right in IM),
   completion/failure pushes, a daily digest
 - **Real-time web UI** — live event stream, execution timeline, sub-goal /

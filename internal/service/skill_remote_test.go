@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -627,5 +628,45 @@ func TestGitCLIErrorRedactsToken(t *testing.T) {
 	}
 	if !strings.Contains(msg, "127.0.0.1:1/skills") {
 		t.Fatalf("sanitised error should keep the repo URL: %s", msg)
+	}
+}
+
+// TestSkillCompareToleratesMissingLocalFiles: a skill row can outlive its
+// files (runs/skills wiped or a DB restored without runs/). The compare must
+// still show the remote diff — flagged local_missing — so the UI can offer the
+// pull that restores the local copy, instead of failing with "load local skill
+// files: lstat ...: no such file".
+func TestSkillCompareToleratesMissingLocalFiles(t *testing.T) {
+	const skillMD = "---\nname: restore-skill\ndescription: demo\n---\nbody\n"
+	ctx := context.Background()
+	svc, sk, git, prov := remoteTestHarness(t, map[string]string{"SKILL.md": skillMD})
+	git.files = map[string]string{"SKILL.md": skillMD, "helper.md": "helper\n"}
+	mustSetSource(t, svc, sk.ID, SkillSourceInput{RepoURL: "https://github.com/acme/skills", Token: "tok"})
+	prov.canPush = true
+
+	if err := os.RemoveAll(skillDir(sk.ID)); err != nil {
+		t.Fatalf("remove local skill dir: %v", err)
+	}
+
+	cmp, err := svc.Compare(ctx, sk.ID)
+	if err != nil {
+		t.Fatalf("Compare with missing local files must not fail: %v", err)
+	}
+	if !cmp.LocalMissing {
+		t.Fatalf("LocalMissing = false, want true (%+v)", cmp)
+	}
+	if cmp.State != "remote_ahead" || cmp.Counts.Added != 2 || cmp.Counts.Removed != 0 {
+		t.Fatalf("state/counts = %q %+v, want remote_ahead added=2", cmp.State, cmp.Counts)
+	}
+
+	if _, err := svc.Sync(ctx, sk.ID, "pull"); err != nil {
+		t.Fatalf("pull must restore missing local files: %v", err)
+	}
+	cmp, err = svc.Compare(ctx, sk.ID)
+	if err != nil {
+		t.Fatalf("Compare after restore: %v", err)
+	}
+	if cmp.LocalMissing || cmp.State != "in_sync" {
+		t.Fatalf("after pull: local_missing=%v state=%q, want in_sync", cmp.LocalMissing, cmp.State)
 	}
 }

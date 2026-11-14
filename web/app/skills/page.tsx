@@ -616,6 +616,12 @@ function SkillSyncDialog({ skill, onClose }: { skill: Skill; onClose: () => void
               )}
             </div>
 
+            {data?.local_missing && (
+              <p className="text-[11px] text-amber-300">
+                本地技能文件缺失（runs/skills 被清理或数据目录不完整）。拉取远端可恢复；推送与提交 PR 暂不可用。
+              </p>
+            )}
+
             {counts && (
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
                 <span className="text-emerald-300">远端新增 {counts.added}</span>

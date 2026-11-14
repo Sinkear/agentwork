@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -359,7 +360,11 @@ type SyncCompare struct {
 	RemoteSHA  string      `json:"remote_sha"`
 	Entries    []SyncEntry `json:"entries"`
 	Counts     SyncCounts  `json:"counts"`
-	CheckedAt  string      `json:"checked_at"`
+	// LocalMissing means the skill's local files are gone (a skill row can
+	// outlive runs/skills after a partial restore). A pull restores them;
+	// push/PR stay blocked because there is nothing local to submit.
+	LocalMissing bool   `json:"local_missing,omitempty"`
+	CheckedAt    string `json:"checked_at"`
 }
 
 // SyncResult is the POST /skills/{id}/sync response (pull or push).
@@ -394,9 +399,9 @@ func (s *SkillService) Compare(ctx context.Context, id string) (*SyncCompare, er
 	if err != nil {
 		return nil, err
 	}
-	local, err := s.localSkillFiles(ctx, id)
+	local, localMissing, err := s.localSkillFilesOrEmpty(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("load local skill files: %w", err)
+		return nil, err
 	}
 	rs, err := s.git.Fetch(ctx, cfg)
 	if err != nil {
@@ -409,15 +414,16 @@ func (s *SkillService) Compare(ctx context.Context, id string) (*SyncCompare, er
 	entries, counts := diffSkillFiles(local, remote)
 	identity, canPush := s.probePush(ctx, cfg)
 	return &SyncCompare{
-		SkillID:    sk.ID,
-		Identity:   identity,
-		CanPush:    canPush,
-		State:      syncState(counts),
-		BaseBranch: cfg.Branch,
-		RemoteSHA:  rs.SHA,
-		Entries:    entries,
-		Counts:     counts,
-		CheckedAt:  now(),
+		LocalMissing: localMissing,
+		SkillID:      sk.ID,
+		Identity:     identity,
+		CanPush:      canPush,
+		State:        syncState(counts),
+		BaseBranch:   cfg.Branch,
+		RemoteSHA:    rs.SHA,
+		Entries:      entries,
+		Counts:       counts,
+		CheckedAt:    now(),
 	}, nil
 }
 
@@ -601,6 +607,20 @@ func (s *SkillService) localSkillFiles(ctx context.Context, id string) (map[stri
 		out[rel] = content
 	}
 	return out, nil
+}
+
+// localSkillFilesOrEmpty is localSkillFiles but tolerates a skill whose files
+// have disappeared: compare still shows the remote diff so the UI can offer a
+// pull that restores them, instead of dead-ending on "load local skill files".
+func (s *SkillService) localSkillFilesOrEmpty(ctx context.Context, id string) (map[string]string, bool, error) {
+	files, err := s.localSkillFiles(ctx, id)
+	if err == nil {
+		return files, false, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, ErrNotFound) {
+		return map[string]string{}, true, nil
+	}
+	return nil, false, fmt.Errorf("load local skill files: %w", err)
 }
 
 // ignoredSkillFile: local build artifacts (package.zip, Python bytecode

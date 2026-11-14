@@ -61,6 +61,9 @@ export interface SyncResult {
   entries?: SyncEntry[];
   counts?: SyncCounts;
   checked_at?: string;
+  // local_missing: the skill's local files are gone (runs/skills wiped, or a
+  // DB restored without runs/). A pull restores them; push/PR stay blocked.
+  local_missing?: boolean;
   // mutation extras
   action?: string; // pulled | pushed
   branch?: string;

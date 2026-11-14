@@ -915,6 +915,19 @@ func (d *Daemon) PushAgentSkills(ctx context.Context, agentID string) {
 		}
 		pushes = append(pushes, link.SkillPush{Name: name, Archive: archive})
 	}
+	// A push whose every selected archive failed to load is NOT "the agent now
+	// has zero skills": the machine's config.push wipes its staging dir before
+	// extracting, so sending an empty set destroys the last good copy (live
+	// bug: one unreadable skill dir → "0 skill(s) installed" → the machine
+	// kept its stale workdir copies forever). Refuse and leave staging intact;
+	// the next successful push replaces it.
+	if len(skillIDs) > 0 && len(pushes) == 0 {
+		logging.Infof("machine: config.push %s: refusing empty skill push — all %d selected archive(s) unavailable; machine staging left untouched", agentID, len(skillIDs))
+		return
+	}
+	if len(pushes) < len(skillIDs) {
+		logging.Infof("machine: config.push %s: %d of %d selected skill(s) unavailable — pushing the remaining %d", agentID, len(skillIDs)-len(pushes), len(skillIDs), len(pushes))
+	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	promptLen := len(systemPrompt)
