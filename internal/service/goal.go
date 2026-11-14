@@ -23,13 +23,18 @@ import (
 // checks whether the reporting run still belongs to the current assignee
 // before touching status. See DESIGN.md §9.
 type Goal struct {
-	ID              string `json:"id"`
-	Title           string `json:"title"`
-	Description     string `json:"description"`
-	DomainID        string `json:"domain_id"`     // owning domain (required for agent/squad goals — v2)
-	AssigneeType    string `json:"assignee_type"` // agent | squad | human
-	AssigneeID      string `json:"assignee_id"`
-	Status          string `json:"status"` // backlog|active|done|failed|review|cancelled
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Description  string `json:"description"`
+	DomainID     string `json:"domain_id"`     // owning domain (required for agent/squad goals — v2)
+	AssigneeType string `json:"assignee_type"` // agent | squad | human
+	AssigneeID   string `json:"assignee_id"`
+	Status       string `json:"status"` // backlog|active|done|failed|review|cancelled
+	// Category is the human-in-the-loop mode (v3): "hitl" (default — acceptance
+	// checkpoint gates park a completed goal in review) | "hootl" (human out of
+	// the loop — a completed run whose finalization guard passed promotes to
+	// done WITHOUT evaluating the gates; the skip is logged as auto_completed).
+	Category        string `json:"category"`
 	HandoffNote     string `json:"handoff_note"`
 	ReviewRequest   string `json:"review_request"`   // gate trigger reason / deliver-failure note
 	HumanIterations int    `json:"human_iterations"` // reject iterations (separate from run.attempt)
@@ -247,6 +252,16 @@ func (s *GoalService) Create(ctx context.Context, g Goal) (*Goal, error) {
 	if g.CreatedByType == "" {
 		g.CreatedByType = "human"
 	}
+	// v3 HITL/HOOTL: an empty category means the default human-in-the-loop
+	// mode; any other value is a client bug and must be rejected rather than
+	// silently treated as hitl (it would park/goal-done the wrong way).
+	switch g.Category {
+	case "":
+		g.Category = "hitl"
+	case "hitl", "hootl":
+	default:
+		return nil, NewValidationError("category must be hitl or hootl")
+	}
 	// Note: review is a transitive status (the checkpoint gate) — reject it at
 	// creation so callers can't plant a goal in a waiting state. (blocked was
 	// retired with the wait-children model, 决策 6-10; the check stays as a
@@ -328,14 +343,18 @@ func (s *GoalService) Create(ctx context.Context, g Goal) (*Goal, error) {
 		domainID = g.DomainID
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO goal (id,title,description,domain_id,assignee_type,assignee_id,status,handoff_note,created_by_type,created_by_id,created_at,source_ref,connection_id,execution_mode,content_capture,budget_usd,sample_rate)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		g.ID, g.Title, g.Description, domainID, g.AssigneeType, g.AssigneeID, g.Status, g.HandoffNote, g.CreatedByType, g.CreatedByID, g.CreatedAt, g.SourceRef, g.ConnectionID, g.ExecutionMode, g.ContentCapture, g.BudgetUSD, g.SampleRate); err != nil {
+		`INSERT INTO goal (id,title,description,domain_id,assignee_type,assignee_id,status,category,handoff_note,created_by_type,created_by_id,created_at,source_ref,connection_id,execution_mode,content_capture,budget_usd,sample_rate)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		g.ID, g.Title, g.Description, domainID, g.AssigneeType, g.AssigneeID, g.Status, g.Category, g.HandoffNote, g.CreatedByType, g.CreatedByID, g.CreatedAt, g.SourceRef, g.ConnectionID, g.ExecutionMode, g.ContentCapture, g.BudgetUSD, g.SampleRate); err != nil {
 		return nil, fmt.Errorf("insert goal: %w", err)
 	}
+	// The creation activity carries the category: the UI timeline reads this
+	// row to render the HITL/HOOTL badge for goals whose mode changed later
+	// (and for schedule-fired goals, whose creation bypasses GoalService).
+	createdDetail, _ := json.Marshal(map[string]string{"category": g.Category})
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO activity_log (id,goal_id,actor_type,actor_id,action,detail,created_at) VALUES (?,?,?,?,?,?,?)`,
-		newID(), g.ID, g.CreatedByType, g.CreatedByID, "created", "{}", g.CreatedAt); err != nil {
+		newID(), g.ID, g.CreatedByType, g.CreatedByID, "created", string(createdDetail), g.CreatedAt); err != nil {
 		return nil, fmt.Errorf("insert activity: %w", err)
 	}
 	// The creation instruction lands in the comment feed AS A MENTION — the
@@ -402,7 +421,7 @@ func (s *GoalService) Create(ctx context.Context, g Goal) (*Goal, error) {
 
 func (s *GoalService) List(ctx context.Context) ([]Goal, error) {
 	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.connection_id,g.attention,g.execution_mode,g.content_capture,g.budget_usd,g.sample_rate,
+		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.category,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.connection_id,g.attention,g.execution_mode,g.content_capture,g.budget_usd,g.sample_rate,
 		        (SELECT r.agent_id FROM run r WHERE r.goal_id = g.id AND r.status IN ('running','queued') ORDER BY r.created_at DESC LIMIT 1),
 		        CASE WHEN g.status != 'review' THEN ''
 		     WHEN (SELECT COUNT(*) FROM run r WHERE r.goal_id=g.id AND r.role='review' AND r.status IN ('queued','running')) = 0 THEN 'awaiting_approval'
@@ -417,7 +436,7 @@ func (s *GoalService) List(ctx context.Context) ([]Goal, error) {
 	for rows.Next() {
 		var g Goal
 		var domainID, currentAgent sql.NullString
-		if err := rows.Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.ConnectionID, &g.Attention, &g.ExecutionMode, &g.ContentCapture, &g.BudgetUSD, &g.SampleRate, &currentAgent, &g.ReviewPhase); err != nil {
+		if err := rows.Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.Category, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.ConnectionID, &g.Attention, &g.ExecutionMode, &g.ContentCapture, &g.BudgetUSD, &g.SampleRate, &currentAgent, &g.ReviewPhase); err != nil {
 			return nil, err
 		}
 		g.DomainID = domainID.String
@@ -573,14 +592,14 @@ func (s *GoalService) Get(ctx context.Context, id string) (*Goal, error) {
 	var g Goal
 	var domainID, currentAgent sql.NullString
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.connection_id,g.attention,g.execution_mode,g.content_capture,g.budget_usd,g.sample_rate,
+		`SELECT g.id,g.title,g.description,g.domain_id,g.assignee_type,g.assignee_id,g.status,g.category,g.handoff_note,g.review_request,g.human_iterations,g.created_by_type,g.created_by_id,g.created_at,g.source_ref,g.connection_id,g.attention,g.execution_mode,g.content_capture,g.budget_usd,g.sample_rate,
 		        (SELECT r.agent_id FROM run r WHERE r.goal_id = g.id AND r.status IN ('running','queued') ORDER BY r.created_at DESC LIMIT 1),
 		        CASE WHEN g.status != 'review' THEN ''
 		     WHEN (SELECT COUNT(*) FROM run r WHERE r.goal_id=g.id AND r.role='review' AND r.status IN ('queued','running')) = 0 THEN 'awaiting_approval'
 		     WHEN (SELECT COUNT(*) FROM run r WHERE r.goal_id=g.id AND r.role='review' AND r.status='running') > 0 THEN 'reviewing'
 		     ELSE 'awaiting_review' END
 		 FROM goal g WHERE g.id=?`, id).
-		Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.ConnectionID, &g.Attention, &g.ExecutionMode, &g.ContentCapture, &g.BudgetUSD, &g.SampleRate, &currentAgent, &g.ReviewPhase)
+		Scan(&g.ID, &g.Title, &g.Description, &domainID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.Category, &g.HandoffNote, &g.ReviewRequest, &g.HumanIterations, &g.CreatedByType, &g.CreatedByID, &g.CreatedAt, &g.SourceRef, &g.ConnectionID, &g.Attention, &g.ExecutionMode, &g.ContentCapture, &g.BudgetUSD, &g.SampleRate, &currentAgent, &g.ReviewPhase)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -875,6 +894,82 @@ func (s *GoalService) Cancel(ctx context.Context, goalID string) (*Goal, error) 
 	return s.Get(ctx, goalID)
 }
 
+// SubmitForReview moves an ACTIVE goal into review on the owner's explicit
+// request (task 8.2) — the positive counterpart of the automatic gate park.
+// It is the way an owner closes out a goal whose work lives in the feed
+// instead of in merges: no verified sub-goal and no ready change means the
+// automatic wrapup channel may never fire, and an active goal would otherwise
+// stay active forever.
+//
+// Refusals are ValidationErrors (the HTTP layer maps them to 400):
+//   - the goal is not active (already in review/terminal — the explicit
+//     submit is a one-way active → review transition);
+//   - a run is queued/running (submitting under live work would freeze the
+//     goal around runs that still mutate it; the owner must stop them first).
+func (s *GoalService) SubmitForReview(ctx context.Context, goalID, reason string) (*Goal, error) {
+	// Serialize with reconcile so no owner run can be spawned between the
+	// live-run check and the status flip.
+	unlock := s.lockReconcile(goalID)
+	defer unlock()
+
+	g, err := s.Get(ctx, goalID)
+	if err != nil {
+		return nil, err
+	}
+	if g.Status != "active" {
+		return nil, NewValidationError("only an active goal can be submitted for review")
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "submitted for review"
+	}
+
+	tx, err := s.st.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var live int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run WHERE goal_id=? AND status IN ('queued','running')`, goalID).Scan(&live); err != nil {
+		return nil, fmt.Errorf("count live runs: %w", err)
+	}
+	if live > 0 {
+		return nil, NewValidationError("stop queued/running runs before submitting")
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE goal SET status='review', review_request=? WHERE id=? AND status='active'`,
+		reason, goalID)
+	if err != nil {
+		return nil, fmt.Errorf("submit goal for review: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Lost the active race (cancel/reopen/review elsewhere) — same refusal.
+		return nil, NewValidationError("only an active goal can be submitted for review")
+	}
+	detail, _ := json.Marshal(map[string]string{"reason": reason})
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO activity_log (id,goal_id,actor_type,actor_id,action,detail,created_at) VALUES (?,?,'human','','submitted_review',?,?)`,
+		newID(), goalID, string(detail), now()); err != nil {
+		return nil, fmt.Errorf("insert submitted_review activity: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO comment (id,goal_id,author_type,author_id,parent_id,content,created_at) VALUES (?,?,'system','',NULL,?,?)`,
+		newID(), goalID, "Goal submitted for review: "+reason, now()); err != nil {
+		return nil, fmt.Errorf("insert submit-for-review comment: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.bus.Publish(ctx, events.Event{Topic: "goal:reviewing", Payload: map[string]any{
+		"goal_id":      goalID,
+		"reason":       reason,
+		"auto_approve": false,
+	}})
+	return s.Get(ctx, goalID)
+}
+
 // Delete removes a goal and dependents. The goal's running runs are NOT
 // terminated here — their rows are gone by the time the daemon could act, so
 // the ids are captured BEFORE the cascade and travel in the goal:deleted
@@ -1129,8 +1224,8 @@ func (s *GoalService) reconcileOnRunEndOnce(ctx context.Context, rc goalRunConte
 
 	var g Goal
 	err = tx.QueryRowContext(ctx,
-		`SELECT id,assignee_type,assignee_id,status,title,created_by_type,created_by_id FROM goal WHERE id=?`, rc.GoalID).
-		Scan(&g.ID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.Title, &g.CreatedByType, &g.CreatedByID)
+		`SELECT id,assignee_type,assignee_id,status,category,title,created_by_type,created_by_id FROM goal WHERE id=?`, rc.GoalID).
+		Scan(&g.ID, &g.AssigneeType, &g.AssigneeID, &g.Status, &g.Category, &g.Title, &g.CreatedByType, &g.CreatedByID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil // goal vanished; nothing to reconcile
 	}
@@ -1315,6 +1410,45 @@ func (s *GoalService) reconcileOnRunEndOnce(ctx context.Context, rc goalRunConte
 				g.Title, rc.RunID, pendingSG, pendingChanges, pendingConsults, pendingAskHuman)
 			break // stay active — the attention loop owns the next step
 		}
+		// v3 HOOTL (human out of the loop): the human waived the acceptance
+		// checkpoint for this goal. The finalization guard above still
+		// protects an unfinished plan (sub-goals/changes/consults/ask-human),
+		// but once it passes the goal promotes to done WITHOUT evaluating
+		// gatesForGoal. The skip is recorded in the activity trail
+		// (auto_completed) so the UI timeline can explain why no review card
+		// appeared, and the finish event carries category + auto_approved so
+		// the notify layer can render the auto-completion.
+		if g.Category == "hootl" {
+			res, err := tx.ExecContext(ctx,
+				`UPDATE goal SET status='done', handoff_note='' WHERE id=? AND status NOT IN ('done','failed','cancelled','review')`,
+				rc.GoalID)
+			if err != nil {
+				return fmt.Errorf("auto-complete hootl goal: %w", err)
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				break // the goal moved elsewhere (review/terminal raced) — no auto-complete
+			}
+			detail, _ := json.Marshal(map[string]any{"category": "hootl", "gate_skipped": true})
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO activity_log (id,goal_id,actor_type,actor_id,action,detail,created_at) VALUES (?,?,?,?,'auto_completed',?,?)`,
+				newID(), rc.GoalID, "system", "", string(detail), now()); err != nil {
+				return fmt.Errorf("insert auto_completed activity: %w", err)
+			}
+			// Terminal state — drop queued runs (same rule as the HITL done path).
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE run SET status='cancelled', cancel_reason='goal_terminal' WHERE goal_id=? AND status='queued'`, rc.GoalID); err != nil {
+				return fmt.Errorf("cancel queued runs on auto-complete: %w", err)
+			}
+			doneSummary := ""
+			_ = tx.QueryRowContext(ctx,
+				`SELECT content FROM comment WHERE goal_id=? AND author_type='agent' ORDER BY created_at DESC LIMIT 1`,
+				rc.GoalID).Scan(&doneSummary)
+			pendingEvents = append(pendingEvents, events.Event{Topic: "goal:finished", Payload: map[string]any{
+				"goal_id": rc.GoalID, "status": "done", "summary": doneSummary,
+				"category": "hootl", "auto_approved": true,
+			}})
+			break
+		}
 		// A completed run that passed machine verification has reached the
 		// acceptance-judgment step (D2: inside this transaction). If the
 		// goal's domain has checkpoint gates, the goal parks in review and
@@ -1365,6 +1499,7 @@ func (s *GoalService) reconcileOnRunEndOnce(ctx context.Context, rc goalRunConte
 				"goal_id":      rc.GoalID,
 				"run_id":       rc.RunID,
 				"reason":       reason,
+				"category":     g.Category,
 				"auto_approve": IsAutoApproveGoal(ctx, tx, g.CreatedByType, g.CreatedByID),
 			}})
 			break
@@ -2295,7 +2430,8 @@ func (s *GoalService) reconcileGoalOnce(ctx context.Context, goalID string) erro
 	//     attention still pending — auto-spawning would loop the stuck agent
 	//     (决策 2-6: a timeout is the human's call);
 	//   - PROGRESS guard: spawn only when an attention SIGNAL (a change
-	//     revision or a failed sub-goal's run) is NEWER than the goal's last
+	//     revision, a failed sub-goal's run, or — for the idle fallback — the
+	//     latest non-idle-wake run's finish) is NEWER than the goal's last
 	//     owner-run spawn — an owner woken for THIS set of changes that made
 	//     no progress must not be re-spawned in a loop (the E2E spun 7 wakes).
 	//     A new revision / failure re-arms the spawn.
@@ -2310,7 +2446,7 @@ func (s *GoalService) reconcileGoalOnce(ctx context.Context, goalID string) erro
 			lastOwnerCancelled = true
 		}
 		if err := tx.QueryRowContext(ctx, `
-			SELECT MAX(x.ts) FROM (
+			SELECT COALESCE(MAX(x.ts),'') FROM (
 			  SELECT COALESCE((SELECT MAX(r2.created_at) FROM change_revision r2 WHERE r2.change_id = c.id), c.created_at) AS ts
 			  FROM change c WHERE c.goal_id=? AND c.status='ready'
 			  UNION ALL
@@ -2326,6 +2462,14 @@ func (s *GoalService) reconcileGoalOnce(ctx context.Context, goalID string) erro
 			`SELECT COALESCE(MAX(queued_at),'') FROM run WHERE goal_id=? AND role='owner'`,
 			goalID).Scan(&lastOwnerSpawn); err != nil {
 			return fmt.Errorf("last owner spawn: %w", err)
+		}
+		// The idle fallback (task 8.1) contributes its own signal: the newest
+		// finish among runs that were NOT an idle-fallback wake. Without it the
+		// fallback would set attention but never satisfy the spawn guard.
+		if idle, _, idleSignal, idleErr := s.idleWrapupTx(ctx, tx, goalID); idleErr != nil {
+			return idleErr
+		} else if idle && idleSignal > newestSignal {
+			newestSignal = idleSignal
 		}
 	}
 	if attention != "" && !lastOwnerCancelled && newestSignal > lastOwnerSpawn {
@@ -2505,6 +2649,57 @@ func (s *GoalService) enqueueSquadReviewTx(ctx context.Context, tx *sql.Tx, goal
 	return nil
 }
 
+const (
+	// wrapupIdleAfter is how long a goal may sit with NOTHING in flight before
+	// the owner is woken to review and close it out (task 8.1). Without this
+	// fallback an active goal whose last run finished and whose owner ended its
+	// turn stays active forever: no verified sub-goal exists to arm the
+	// progress-based wrapup bit.
+	wrapupIdleAfter = 10 * time.Minute
+	// wrapupIdleAnchor is the synthetic wake anchor marking a run spawned by
+	// the idle fallback. The idle signal EXCLUDES these runs: the owner waking,
+	// reviewing, and ending its turn without submitting must not let its own
+	// finish re-arm the fallback (that would be an endless wake loop).
+	wrapupIdleAnchor = "wrapup-idle"
+)
+
+// idleWrapupTx reports whether an ACTIVE goal has no work in flight (task 8.1):
+// no queued/running run, no pending/running/verifying sub-goal, no READY
+// change, and at least one finished run whose newest finish is older than
+// wrapupIdleAfter. The returned signal is the newest finish among runs that
+// were NOT an idle-fallback wake — the recency proof a spawn guard can compare
+// against the last owner spawn (same shape as the other attention signals).
+// All reads run on the caller's transaction.
+func (s *GoalService) idleWrapupTx(ctx context.Context, tx *sql.Tx, goalID string) (bool, int, string, error) {
+	var liveRuns, openSubGoals, readyChanges, runCount int
+	var latestFinished, signal string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT
+		  (SELECT COUNT(*) FROM run WHERE goal_id=? AND status IN ('queued','running')),
+		  (SELECT COUNT(*) FROM sub_goal WHERE goal_id=? AND status IN ('pending','running','verifying')),
+		  (SELECT COUNT(*) FROM change WHERE goal_id=? AND status='ready'),
+		  (SELECT COUNT(*) FROM run WHERE goal_id=?),
+		  (SELECT COALESCE(MAX(finished_at),'') FROM run WHERE goal_id=?),
+		  (SELECT COALESCE(MAX(finished_at),'') FROM run WHERE goal_id=? AND NOT (role='owner' AND wake_anchor=?))`,
+		goalID, goalID, goalID, goalID, goalID, goalID, wrapupIdleAnchor).
+		Scan(&liveRuns, &openSubGoals, &readyChanges, &runCount, &latestFinished, &signal); err != nil {
+		return false, 0, "", fmt.Errorf("idle wrapup state: %w", err)
+	}
+	if liveRuns > 0 || openSubGoals > 0 || readyChanges > 0 || runCount == 0 || latestFinished == "" {
+		return false, 0, "", nil
+	}
+	finished, err := time.Parse(time.RFC3339Nano, latestFinished)
+	if err != nil {
+		// A malformed timestamp must not break reconcile; treat it as "not idle".
+		return false, 0, "", nil
+	}
+	idleFor := time.Since(finished)
+	if idleFor < wrapupIdleAfter {
+		return false, 0, "", nil
+	}
+	return true, int(idleFor / time.Minute), signal, nil
+}
+
 // compileWakeNoteTx renders the derived attention bits into the owner's wake
 // note (决策 6-17) — one bullet per bit, naming the concrete sub-goals and
 // change counts. Platform text is English (决策 6-18); the sub-goal TITLES
@@ -2520,6 +2715,7 @@ func (s *GoalService) compileWakeNoteTx(ctx context.Context, tx *sql.Tx, goalID,
 	// Platform text is English (决策 6-18) — the note names the MATERIALS
 	// (sub-goal titles) verbatim; their language is the leader's own.
 	var bullets []string
+	idleAnchor := ""
 	for _, bit := range strings.Split(attention, ",") {
 		switch bit {
 		case "recovery":
@@ -2551,6 +2747,13 @@ func (s *GoalService) compileWakeNoteTx(ctx context.Context, tx *sql.Tx, goalID,
 			}
 			if len(titles) > 0 {
 				bullets = append(bullets, fmt.Sprintf("- Sub-goal(s) %q verified with no changes — the deliverable lives in the feed (its report); review the conclusion and wrap up", strings.Join(titles, ", ")))
+			} else if idle, mins, _, ierr := s.idleWrapupTx(ctx, tx, goalID); ierr != nil {
+				return "", "", ierr
+			} else if idle {
+				// The idle fallback (task 8.1) is the ONLY reason this wake is
+				// armed when there is no verified sub-goal to name.
+				idleAnchor = wrapupIdleAnchor
+				bullets = append(bullets, fmt.Sprintf("- No work remains in flight (last run finished %d min ago) — review the deliverable and submit the goal for review, then wrap up.", mins))
 			}
 		}
 	}
@@ -2558,12 +2761,17 @@ func (s *GoalService) compileWakeNoteTx(ctx context.Context, tx *sql.Tx, goalID,
 	// — the agent's own `goal comment` (its result/answer, 决策 4-4 revised).
 	// If the sub-goal's agent did not comment, there is no anchor (the owner
 	// relies on the wake note bullets + pulling the feed). Recovery-only wakes
-	// (failed runs produce no agent comment) get no anchor.
+	// (failed runs produce no agent comment) get no anchor. The idle fallback
+	// carries the synthetic wrapup-idle anchor instead.
 	var anchor string
-	_ = tx.QueryRowContext(ctx,
-		`SELECT c.id FROM comment c JOIN run r ON r.id = c.run_id
-		 WHERE r.goal_id=? AND r.role='subgoal'
-		 ORDER BY c.created_at DESC LIMIT 1`, goalID).Scan(&anchor)
+	if idleAnchor != "" {
+		anchor = idleAnchor
+	} else {
+		_ = tx.QueryRowContext(ctx,
+			`SELECT c.id FROM comment c JOIN run r ON r.id = c.run_id
+			 WHERE r.goal_id=? AND r.role='subgoal'
+			 ORDER BY c.created_at DESC LIMIT 1`, goalID).Scan(&anchor)
+	}
 	return strings.Join(bullets, "\n"), anchor, nil
 }
 
@@ -2674,6 +2882,33 @@ func (s *GoalService) deriveOwnerAttentionTx(ctx context.Context, tx *sql.Tx, go
 	}
 	if wrapup > 0 {
 		bits = append(bits, "wrapup")
+	}
+	// need_wrapup (idle fallback, task 8.1): NOTHING is in flight — no run
+	// queued/running, no open sub-goal, no READY change — and the goal's last
+	// run finished more than wrapupIdleAfter ago. This is the "owner ended its
+	// turn without closing the goal" case the verification-based bit cannot
+	// see (no sub-goal was verified). The recency signal is the latest finish
+	// among runs that were NOT an idle-fallback wake: the run spawned by this
+	// fallback must never become its own next signal, or the owner would be
+	// woken forever. Arming also requires that signal to be newer than the
+	// last owner spawn (mirrors the reconcile spawn guard), so a wake that
+	// already happened does not leave a stale badge.
+	if wrapup == 0 {
+		idle, _, signal, err := s.idleWrapupTx(ctx, tx, goalID)
+		if err != nil {
+			return "", err
+		}
+		if idle {
+			var lastOwnerSpawn string
+			if err := tx.QueryRowContext(ctx,
+				`SELECT COALESCE(MAX(queued_at),'') FROM run WHERE goal_id=? AND role='owner'`,
+				goalID).Scan(&lastOwnerSpawn); err != nil {
+				return "", fmt.Errorf("attention: last owner spawn: %w", err)
+			}
+			if signal > lastOwnerSpawn {
+				bits = append(bits, "wrapup")
+			}
+		}
 	}
 	return strings.Join(bits, ","), nil
 }

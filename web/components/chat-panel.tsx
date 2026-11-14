@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { AcpChatClient, ChatEvent, PermissionRequest, SessionInfo } from "@/lib/acp";
 import { Button, Dialog, inputCls } from "@/components/ui";
 import { StreamCards } from "@/lib/run-messages";
+import { useStickToBottom } from "@/lib/use-stick-to-bottom";
 
 interface Msg extends ChatEvent {
   id: number;
@@ -39,6 +40,10 @@ export function ChatPanel({ agentId, agentName, onClose }: { agentId: string; ag
     currentRef.current = current;
     busyRef.current = busy;
   }, [current, busy]);
+  // The chat transcript follows new content (including a streaming
+  // tool_call_update merged into an existing card) unless the human scrolled
+  // up to read history.
+  const scrollRef = useStickToBottom<HTMLDivElement>([messages, busy]);
 
 
   const push = (ev: ChatEvent) => {
@@ -205,7 +210,7 @@ export function ChatPanel({ agentId, agentName, onClose }: { agentId: string; ag
 
         {phase === "chat" && (
           <>
-            <div className="flex-1 overflow-y-auto space-y-2 rounded-lg bg-surface-0 border border-line p-3">
+            <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-2 rounded-lg bg-surface-0 border border-line p-3">
               {messages.map((m) => {
                 // User + agent text stay as chat bubbles (the conversational
                 // surface). Thought + tool render as collapsible StreamCards

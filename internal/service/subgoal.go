@@ -107,6 +107,14 @@ func (s *GoalService) CreateSubGoal(ctx context.Context, goalID, title, descript
 		}
 	}
 	if verifierID != "" {
+		// PLAYER-REFEREE RULE (contract 7.4, findings §W7): the verifier must
+		// be an independent agent — a work item may not be judged by the
+		// agent that executed it (the same principle the squad reviewer rule
+		// above enforces). The goal OWNER as verifier stays allowed: the
+		// owner is the integrator, and judging a sub-goal is often its job.
+		if verifierID == assigneeID {
+			return nil, NewValidationError("the verifier must be a different agent than the assignee (player-referee)")
+		}
 		if err := mustExist(ctx, s.st, `SELECT COUNT(*) FROM agent WHERE id=?`, verifierID, "verifier agent"); err != nil {
 			return nil, err
 		}
@@ -539,19 +547,25 @@ func (s *GoalService) materializeChangeTx(ctx context.Context, tx *sql.Tx, sg Su
 // the verdict authority lives in the run, not the tool caller's say-so).
 // P1-2 hardens the boundary: the run's AGENT must be the sub-goal's named
 // verifier (verifier_id is authority, not metadata) and the run must still
-// be running (a cancelled verify run cannot judge). passed → verified +
-// Change/Revision atomic + sub_goal.verified event; rejected →
-// verification_result recorded + quality_iteration++ + back to running with
-// the assignee's successor run. Every round appends a verification_result
-// row (audit/evidence).
+// be inside its verdict window. The window is "running", or "completed"
+// within verifyLateVerdictWindow of finished_at — the reported race
+// (findings §W6): Finish stamped the verify run completed while the verdict
+// tool call was already in flight, and the old running-only guard rejected
+// it, leaving the sub-goal verifying forever. failed/cancelled runs never
+// judge. passed → verified + Change/Revision atomic + sub_goal.verified
+// event; rejected → verification_result recorded + quality_iteration++ +
+// back to running with the assignee's successor run. Every round appends a
+// verification_result row (audit/evidence), so a retried verdict is
+// idempotent: an existing row for THIS verifier run wins and no second
+// Change can materialize.
 func (s *GoalService) VerifySubGoal(ctx context.Context, runID, verdict, summary, evidence string) error {
 	if verdict != "passed" && verdict != "rejected" {
 		return NewValidationError("verdict must be passed or rejected")
 	}
-	var role, subGoalID, agentID, goalID, runStatus string
+	var role, subGoalID, agentID, goalID, runStatus, finishedAt string
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT role, sub_goal_id, agent_id, goal_id, status FROM run WHERE id=?`, runID).
-		Scan(&role, &subGoalID, &agentID, &goalID, &runStatus)
+		`SELECT role, sub_goal_id, agent_id, goal_id, status, finished_at FROM run WHERE id=?`, runID).
+		Scan(&role, &subGoalID, &agentID, &goalID, &runStatus, &finishedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -561,7 +575,7 @@ func (s *GoalService) VerifySubGoal(ctx context.Context, runID, verdict, summary
 	if role != "verify" {
 		return NewValidationError("only a verify run can issue a sub-goal verdict")
 	}
-	if runStatus != "running" {
+	if !verifyVerdictWindowOpen(runStatus, finishedAt, time.Now()) {
 		return NewValidationError("the verify run is no longer running — its verdict window is closed")
 	}
 
@@ -587,8 +601,19 @@ func (s *GoalService) VerifySubGoal(ctx context.Context, runID, verdict, summary
 	if agentID != sg.VerifierID {
 		return NewValidationError("the verdict must come from the sub-goal's verifier agent")
 	}
-	// Conditional: only a verifying sub-goal takes a verdict (idempotency —
-	// double verdicts from a retried tool call no-op).
+	// Idempotency FIRST: a retried verdict (the tool call replayed after the
+	// first one committed — or a late verdict after the platform re-queued)
+	// must never materialize a second Change or rework round. Checked by the
+	// verifier RUN id: one run judges at most once.
+	var dup int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM verification_result WHERE verifier_run_id=?`, runID).Scan(&dup); err != nil {
+		return fmt.Errorf("check existing verdict: %w", err)
+	}
+	if dup > 0 {
+		return NewValidationError("a verdict already exists for this verify run")
+	}
+	// Conditional: only a verifying sub-goal takes a verdict.
 	if sg.Status != "verifying" {
 		return NewValidationError("the sub-goal is not awaiting a verdict")
 	}
@@ -733,10 +758,379 @@ func (s *GoalService) MarkChangeIntegrated(ctx context.Context, changeID string,
 	return nil
 }
 
+// verifyLateVerdictWindow bounds a LATE verdict for a completed verify run.
+// The verdict tool call can still be in flight when the daemon's Finish
+// stamps the run terminal (the reported race: run 793a7522 finished 18:19
+// while the leader dispatched the verifier); a completed run therefore
+// accepts a verdict for this window after finished_at. failed/cancelled
+// runs never accept one — a dead machine must not judge.
+const verifyLateVerdictWindow = 30 * time.Minute
+
+// verifyStaleWindow is how long a sub-goal may sit in verifying with no
+// verdict before the sweeper raises its ONE stale alarm.
+const verifyStaleWindow = time.Hour
+
+// verifyVerdictWindowOpen reports whether a verify run in runStatus (with
+// run.finished_at = finishedAt) may still take a verdict. It fails CLOSED:
+// a completed run with a missing/unparseable finished_at is outside the
+// window (the boundary fixture writes status='completed' via direct SQL and
+// leaves finished_at empty), and a future stamped time is treated as inside
+// it (clock skew must not lose a real verdict).
+func verifyVerdictWindowOpen(runStatus, finishedAt string, now time.Time) bool {
+	if runStatus == "running" {
+		return true
+	}
+	if runStatus != "completed" || finishedAt == "" {
+		return false
+	}
+	done, err := time.Parse(time.RFC3339Nano, finishedAt)
+	if err != nil {
+		return false
+	}
+	return now.Sub(done) <= verifyLateVerdictWindow
+}
+
+// formatVerifyDuration renders the stale verifying wait at human scale —
+// minutes below one hour, then hours (plus minutes when nonzero).
+func formatVerifyDuration(d time.Duration) string {
+	d = d.Round(time.Minute)
+	if d < time.Hour {
+		if m := int(d.Minutes()); m > 0 {
+			return fmt.Sprintf("%d min", m)
+		}
+		return "under a minute"
+	}
+	h := int(d.Hours())
+	if m := int(d.Minutes()) - h*60; m > 0 {
+		return fmt.Sprintf("%dh%dm", h, m)
+	}
+	return fmt.Sprintf("%dh", h)
+}
+
+// verifyHealResult is one verify-integrity heal's outcome. The run-end
+// reconcile and the periodic sweeper share the policy through
+// healVerifyingSubGoalTx so the two paths can never drift.
+type verifyHealResult struct {
+	requeued bool
+	parked   bool
+	events   []events.Event
+}
+
+// healVerifyingSubGoal is the tx-wrapper form of the heal (used by the
+// sweeper): commit the transaction, THEN publish the events it collected
+// (invariant 13).
+func (s *GoalService) healVerifyingSubGoal(ctx context.Context, subGoalID, runID, runStatus string) (verifyHealResult, error) {
+	tx, err := s.st.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return verifyHealResult{}, err
+	}
+	defer tx.Rollback()
+	out, err := s.healVerifyingSubGoalTx(ctx, tx, subGoalID, runID, runStatus)
+	if err != nil {
+		return verifyHealResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return verifyHealResult{}, err
+	}
+	for _, e := range out.events {
+		s.bus.Publish(ctx, e)
+	}
+	return out, nil
+}
+
+// healVerifyingSubGoalTx applies the verify-integrity heal for a sub-goal
+// whose verify run reached a terminal status without a verdict (findings
+// §W6, contract 7.2/7.3). Called INSIDE the caller's transaction, after the
+// run's reconciled_at stamp:
+//
+//	still verifying, no verdict in the CURRENT verify wait, completed FIRST
+//	  attempt of that wait → re-dispatch the verifier exactly once (attempt
+//	  2; the per-wait attempt count and a pending-run check are the
+//	  double-requeue guard);
+//	otherwise (failed/cancelled, or already re-dispatched) → park the goal in
+//	  review with review_request "verify_no_verdict: <title>", so a human
+//	  decides retry/abort (handoff-park precedent: all side effects are
+//	  guarded by the conditional UPDATE);
+//	the platform NEVER auto-records a passed verdict — it cannot invent a
+//	  judgement.
+//
+// A sub-goal that moved on (verified/rejected) or whose verdict already
+// landed is a no-op. Side-effect rows (activity, system comment, successor
+// run) are born in this transaction; the returned events are published by
+// the caller after commit (invariant 13).
+func (s *GoalService) healVerifyingSubGoalTx(ctx context.Context, tx *sql.Tx, subGoalID, runID, runStatus string) (verifyHealResult, error) {
+	var out verifyHealResult
+	var goalID, title, status, verifierID string
+	err := tx.QueryRowContext(ctx,
+		`SELECT goal_id, title, status, verifier_id FROM sub_goal WHERE id=?`, subGoalID).
+		Scan(&goalID, &title, &status, &verifierID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return out, fmt.Errorf("load sub-goal for verify heal: %w", err)
+	}
+	if status != "verifying" {
+		return out, nil
+	}
+	// Scope every guard to the CURRENT verify wait (review §M1): a rejected
+	// verdict starts a rework round, and every round re-enters verifying
+	// with a FRESH attempt budget. The wait begins at the latest
+	// subgoal-role (assignee/rework) run — verify runs and verdicts created
+	// after that point belong to this round. Lifetime counts strand round-2+
+	// no-verdict runs: the round-1 rejected verdict made `verdicts > 0` true
+	// forever and the attempts gate unreachable, so the sub-goal sat
+	// verifying while the goal could never finalize. (An empty boundary —
+	// legacy rows with no subgoal-role run — degrades to the old lifetime
+	// counts.)
+	var waitStart string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(created_at), '') FROM run WHERE sub_goal_id=? AND role='subgoal'`, subGoalID).
+		Scan(&waitStart); err != nil {
+		return out, fmt.Errorf("load verify-wait boundary: %w", err)
+	}
+	var verdicts int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM verification_result WHERE sub_goal_id=?
+		  AND (verifier_run_id IN (SELECT id FROM run WHERE sub_goal_id=? AND role='verify' AND created_at > ?)
+		       OR (verifier_run_id='' AND created_at > ?))`,
+		subGoalID, subGoalID, waitStart, waitStart).Scan(&verdicts); err != nil {
+		return out, fmt.Errorf("count verdicts: %w", err)
+	}
+	if verdicts > 0 {
+		return out, nil // the verdict landed normally in this wait
+	}
+	var attempts int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run WHERE sub_goal_id=? AND role='verify' AND created_at > ?`,
+		subGoalID, waitStart).Scan(&attempts); err != nil {
+		return out, fmt.Errorf("count verify runs: %w", err)
+	}
+	// A queued/running verify run means a concurrent healer already acted
+	// (the sweeper raced the run-end reconcile): the re-dispatch happened —
+	// never park or requeue on top of it (review §m1: the old placement let
+	// the park branch fire while the re-dispatched attempt was still
+	// queued).
+	var pending int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run WHERE sub_goal_id=? AND role='verify' AND status IN ('queued','running')`,
+		subGoalID).Scan(&pending); err != nil {
+		return out, fmt.Errorf("check pending verifier run: %w", err)
+	}
+	if pending > 0 {
+		return out, nil
+	}
+	ts := now()
+	// Re-dispatch only when a NAMED agent verifier exists (legacy verifying
+	// rows with a machine verifier have no agent to wake — park them).
+	if runStatus == "completed" && attempts == 1 && verifierID != "" {
+		if s.runSvc == nil {
+			return out, errors.New("goalSvc.runSvc not wired")
+		}
+		if _, runEv, err := s.runSvc.enqueueVerifyRunTx(ctx, tx, subGoalID); err != nil {
+			return out, fmt.Errorf("re-enqueue verifier run: %w", err)
+		} else if runEv != nil {
+			out.events = append(out.events, *runEv)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO comment (id,goal_id,author_type,author_id,parent_id,content,created_at) VALUES (?,?,'system','',NULL,?,?)`,
+			newID(), goalID, "Verifier run ended without a verdict — re-queued verification once (attempt 2).", ts); err != nil {
+			return out, fmt.Errorf("insert verify requeue comment: %w", err)
+		}
+		detail, _ := json.Marshal(map[string]string{"sub_goal_id": subGoalID, "run_id": runID})
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO activity_log (id,goal_id,actor_type,actor_id,action,detail,created_at) VALUES (?,?,'system','','verify_requeued',?,?)`,
+			newID(), goalID, string(detail), ts); err != nil {
+			return out, fmt.Errorf("insert verify requeued activity: %w", err)
+		}
+		logging.Infof("subgoal: %s verify run %s ended without a verdict — re-queued once (attempt 2)", subGoalID, runID)
+		out.requeued = true
+		return out, nil
+	}
+	// failed/cancelled, or an already-re-dispatched attempt: park the goal
+	// for a human decision (the platform cannot retry forever, and it cannot
+	// judge the work itself). Same shape as the handoff park.
+	reason := "verify_no_verdict: " + title
+	res, err := tx.ExecContext(ctx,
+		`UPDATE goal SET status='review', review_request=? WHERE id=? AND status='active'`, reason, goalID)
+	if err != nil {
+		return out, fmt.Errorf("park goal for verify no-verdict: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Goal already review/terminal — no fake park markers (the handoff
+		// precedent: a park that did not happen must not publish a card).
+		return out, nil
+	}
+	detail, _ := json.Marshal(map[string]string{"reason": "verify_no_verdict", "sub_goal_id": subGoalID})
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO activity_log (id,goal_id,actor_type,actor_id,action,detail,created_at) VALUES (?,?,'system','','entered_review',?,?)`,
+		newID(), goalID, string(detail), ts); err != nil {
+		return out, fmt.Errorf("insert verify park activity: %w", err)
+	}
+	short := runID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	if short == "" {
+		short = "unknown"
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO comment (id,goal_id,author_type,author_id,parent_id,content,created_at) VALUES (?,?,'system','',NULL,?,?)`,
+		newID(), goalID, fmt.Sprintf("Verification produced no verdict (run %s %s). The goal is parked for a human decision.", short, runStatus), ts); err != nil {
+		return out, fmt.Errorf("insert verify park comment: %w", err)
+	}
+	// Squad-owned goals: the reviewers' runs are this park's successor, born
+	// in this transaction (the handoff/gate precedent). Self-guards non-squad.
+	if err := s.enqueueSquadReviewTx(ctx, tx, goalID, runID, reason); err != nil {
+		return out, fmt.Errorf("enqueue squad review: %w", err)
+	}
+	logging.Infof("goal: %s parked (verify_no_verdict: sub-goal %s, run %s %s)", goalID, subGoalID, short, runStatus)
+	out.parked = true
+	out.events = append(out.events, events.Event{Topic: "goal:reviewing", Payload: map[string]any{
+		"goal_id": goalID,
+		"run_id":  runID,
+		"reason":  reason,
+		// A machine-detected no-verdict park is NEVER auto-approved — the
+		// human must decide (contract 7.2). Unlike the gate park, whose
+		// created_by decides, there is no agent request to auto-approve.
+		"auto_approve": false,
+	}})
+	return out, nil
+}
+
+// SweepVerifying is the verify-integrity sweeper (contract 7.3, findings
+// §W6): for every sub_goal still in verifying, either heal it when its
+// latest verify run is terminal without a verdict (same policy as the
+// run-end reconcile), or raise ONE stale alarm after an hour with no
+// verdict. Safe to run concurrently with the run-end reconcile: every
+// transition is conditional, and the pending-run check plus the per-wait
+// verify-attempt count are the double-requeue/double-park guards.
+//
+// Receiver note: the v2 sub-goal layer lives on GoalService (there is no
+// SubGoalService type), so SweepVerifying is a GoalService method; the
+// daemon wrapper in internal/daemon/verify_sweeper.go stays thin.
+func (s *GoalService) SweepVerifying(ctx context.Context) (requeued, parked, alerted int, err error) {
+	type verifyingRow struct {
+		id, goalID, title, createdAt string
+	}
+	rows, err := s.st.DB().QueryContext(ctx,
+		`SELECT id, goal_id, title, created_at FROM sub_goal WHERE status='verifying'`)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("scan verifying sub-goals: %w", err)
+	}
+	var items []verifyingRow
+	for rows.Next() {
+		var r verifyingRow
+		if err := rows.Scan(&r.id, &r.goalID, &r.title, &r.createdAt); err != nil {
+			rows.Close()
+			return 0, 0, 0, err
+		}
+		items = append(items, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, err
+	}
+	for _, sg := range items {
+		var runID, runStatus, runCreated string
+		qerr := s.st.DB().QueryRowContext(ctx,
+			`SELECT id, status, created_at FROM run WHERE sub_goal_id=? AND role='verify' ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+			sg.id).Scan(&runID, &runStatus, &runCreated)
+		if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
+			return requeued, parked, alerted, fmt.Errorf("load latest verify run: %w", qerr)
+		}
+		terminal := qerr == nil && (runStatus == "completed" || runStatus == "failed" || runStatus == "cancelled")
+		if terminal {
+			heal, herr := s.healVerifyingSubGoal(ctx, sg.id, runID, runStatus)
+			if herr != nil {
+				return requeued, parked, alerted, fmt.Errorf("heal verifying sub-goal %s: %w", sg.id, herr)
+			}
+			if heal.requeued {
+				requeued++
+			}
+			if heal.parked {
+				parked++
+			}
+			if heal.requeued || heal.parked {
+				// The heal either restarted the wait (attempt 2) or already
+				// parked the goal — a stale alarm would be redundant noise.
+				continue
+			}
+		}
+		// Stale check: the wait starts with the latest verify run; with no
+		// verify run at all only the sub-goal's own created_at remains (the
+		// sub_goal table has no updated_at — contract's schema check).
+		start := runCreated
+		if runID == "" {
+			start = sg.createdAt
+		}
+		startAt, perr := time.Parse(time.RFC3339Nano, start)
+		if perr != nil || time.Since(startAt) <= verifyStaleWindow {
+			continue
+		}
+		fired, aerr := s.alertStaleVerifying(ctx, sg.id, sg.goalID, sg.title, runID, time.Since(startAt))
+		if aerr != nil {
+			return requeued, parked, alerted, fmt.Errorf("alert stale verifying sub-goal %s: %w", sg.id, aerr)
+		}
+		if fired {
+			alerted++
+		}
+	}
+	return requeued, parked, alerted, nil
+}
+
+// alertStaleVerifying posts the ONE stale-verifying alarm for a sub-goal
+// (contract 7.3): a system comment plus activity_log action
+// verify_stale_alert. Dedupe is the existing verify_stale_alert activity for
+// this sub-goal (no new column) — checked and written in ONE transaction so
+// a crash or a concurrent sweep cannot duplicate the comment. Returns
+// whether a new alarm was posted.
+func (s *GoalService) alertStaleVerifying(ctx context.Context, subGoalID, goalID, title, runID string, waited time.Duration) (bool, error) {
+	tx, err := s.st.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	pattern := `%"sub_goal_id":"` + subGoalID + `"%`
+	var existing string
+	err = tx.QueryRowContext(ctx,
+		`SELECT id FROM activity_log WHERE goal_id=? AND action='verify_stale_alert' AND detail LIKE ? LIMIT 1`,
+		goalID, pattern).Scan(&existing)
+	if err == nil {
+		return false, nil // already alarmed for this work item
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("check stale alert: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO comment (id,goal_id,author_type,author_id,parent_id,content,created_at) VALUES (?,?,'system','',NULL,?,?)`,
+		newID(), goalID, fmt.Sprintf("Work item %s has been verifying for %s — no verdict yet. Check the verifier or park it manually.", title, formatVerifyDuration(waited)), now()); err != nil {
+		return false, fmt.Errorf("insert stale alert comment: %w", err)
+	}
+	detail, _ := json.Marshal(map[string]string{"sub_goal_id": subGoalID, "run_id": runID})
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO activity_log (id,goal_id,actor_type,actor_id,action,detail,created_at) VALUES (?,?,'system','','verify_stale_alert',?,?)`,
+		newID(), goalID, string(detail), now()); err != nil {
+		return false, fmt.Errorf("insert stale alert activity: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	logging.Infof("subgoal: %s stale verifying (%s) — alarm posted", subGoalID, formatVerifyDuration(waited))
+	return true, nil
+}
+
 // ReconcileVerifyRun closes a verify run (决策 6-5): the verdict tool already
 // made the sub-goal transition — the run itself is discarded (verify runs
 // have no goal authority). The verifier's verdict lives in verification_result
 // (structured) + the agent's own `goal comment` if it has an opinion.
+//
+// Verify-integrity heal (findings §W6, contract 7.2): a verify run can end
+// WITHOUT a verdict (machine cut, forgotten tool call, the late-verdict
+// race). The run then must not die silently: in the same transaction as the
+// reconciled_at stamp, healVerifyingSubGoalTx either re-dispatches the
+// verifier once or parks the goal for a human. The heal's events are
+// published after the commit, like the run:discarded notice.
 func (s *GoalService) ReconcileVerifyRun(ctx context.Context, rc goalRunContext) error {
 	tx, err := s.st.DB().BeginTx(ctx, nil)
 	if err != nil {
@@ -747,12 +1141,22 @@ func (s *GoalService) ReconcileVerifyRun(ctx context.Context, rc goalRunContext)
 	if _, err := tx.ExecContext(ctx, `UPDATE run SET reconciled_at=? WHERE id=?`, now(), rc.RunID); err != nil {
 		return fmt.Errorf("stamp reconciled_at: %w", err)
 	}
+	var heal verifyHealResult
+	if rc.SubGoalID != "" {
+		heal, err = s.healVerifyingSubGoalTx(ctx, tx, rc.SubGoalID, rc.RunID, rc.Status)
+		if err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 	s.bus.Publish(ctx, events.Event{Topic: "run:discarded", Payload: map[string]any{
 		"run_id": rc.RunID, "goal_id": rc.GoalID, "reason": "verify-run",
 	}})
+	for _, e := range heal.events {
+		s.bus.Publish(ctx, e)
+	}
 	return nil
 }
 

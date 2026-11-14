@@ -14,8 +14,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eushing/agentwork/internal/daemon"
 	"github.com/eushing/agentwork/internal/events"
@@ -72,6 +74,18 @@ func (s *Server) SetTemplates(templates *service.TemplateService, templateApply 
 
 // ListenAndServe mounts routes and serves until ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+	// Remote skill sync needs the issue providers' pull-request surface.
+	// service.PullProvider is a local structural interface with exactly
+	// CreatePull/CheckPushPermission, so issue.Provider satisfies it.
+	if s.skillSvc != nil {
+		s.skillSvc.SetPullProviderFactory(func(name, token string) (service.PullProvider, error) {
+			p, err := issue.NewProvider(name, token)
+			if err != nil {
+				return nil, err
+			}
+			return p, nil
+		})
+	}
 	settingsSvc := service.NewSettingsService(s.st)
 	machineSvc := service.NewMachineService(s.st)
 	// webhookSecret resolves one delivery's signing secret: the repo's own
@@ -425,6 +439,10 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		if err != nil {
 			return
 		}
+		// A hijacked conn is NOT closed by net/http when the handler returns:
+		// every exit path must close it or the browser is left with a
+		// half-open socket (no close frame, no FIN — it just spins forever).
+		defer conn.Close()
 		// Keepalive: set up BEFORE OpenChatForAgent — the CLI spawn can take
 		// seconds, and an idle socket during spawn is the same timeout risk.
 		_ = conn.SetReadDeadline(time.Now().Add(chatPongWait))
@@ -452,23 +470,34 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		if err != nil {
 			// The machine is offline or the agent is unknown — the ACP
 			// handshake never started (no pending JSON-RPC request to reject).
-			// Just close the socket; the web's connect() promise rejects.
+			// Still send a REAL close frame: conn.Close() alone is just a TCP
+			// FIN, so the browser reports 1005/1006 with no reason and the UI
+			// cannot tell "machine offline" from "proxy dropped us".
 			logging.Infof("chat: agent %s: %v", agentID, err)
-			_ = conn.Close()
+			_ = conn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseInternalServerErr, chatCloseReason("chat open failed: ", err)),
+				time.Now().Add(chatWriteWait))
 			return
 		}
+		// gorilla permits ONE concurrent writer: the sink pump and this
+		// handler's read loop both write messages (frames vs. the JSON-RPC
+		// error reply), so every WriteMessage goes through one mutex.
+		// (WriteControl — ping and close frames — is safe concurrently by
+		// the library's contract and stays outside it.)
+		var chatWriteMu sync.Mutex
 		entry := s.d.BindChatSink(chatID,
-			func(b []byte) error { return conn.WriteMessage(websocket.TextMessage, b) },
+			func(b []byte) error {
+				chatWriteMu.Lock()
+				defer chatWriteMu.Unlock()
+				return conn.WriteMessage(websocket.TextMessage, b)
+			},
 			func() {
-				// Send a WS close frame BEFORE closing the TCP socket.
-				// conn.Close() alone sends a TCP FIN — intermediaries
-				// (ELB, nginx) may buffer it, so the browser doesn't
-				// learn the connection died until their idle timeout
-				// (300s) fires. A WS close frame is protocol-level data
-				// that MUST be forwarded, triggering the browser's
-				// onclose immediately → prompt reconnect.
+				// The machine side ended the chat (CLI exited) or the machine
+				// link dropped. Send a real 1011 close frame with a reason the
+				// browser UI can show — conn.Close() alone is a bare TCP FIN,
+				// which surfaces as an unexplained 1005/1006.
 				_ = conn.WriteControl(websocket.CloseMessage,
-					websocket.FormatCloseMessage(websocket.CloseGoingAway, "machine offline"),
+					websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "machine closed the chat (CLI exited or machine offline)"),
 					time.Now().Add(chatWriteWait))
 				_ = conn.Close()
 			})
@@ -497,9 +526,19 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 						"id":      id,
 						"error":   map[string]any{"code": -32000, "message": err.Error()},
 					})
+					chatWriteMu.Lock()
 					_ = conn.WriteMessage(websocket.TextMessage, errMsg)
+					chatWriteMu.Unlock()
 				}
 				logging.Infof("chat: %s web→machine: %v", chatID, err)
+				// Also send a close frame with the real cause: the JSON-RPC
+				// error only settles the pending request, and a handler
+				// return without a close frame would leave the browser
+				// socket half-open (no FIN, no close) if the write raced a
+				// dropped link.
+				_ = conn.WriteControl(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseInternalServerErr, chatCloseReason("chat write failed: ", err)),
+					time.Now().Add(chatWriteWait))
 				return
 			}
 		}
@@ -933,6 +972,22 @@ func extractJSONRPCID(frame []byte) json.RawMessage {
 		return nil
 	}
 	return probe.ID
+}
+
+// chatCloseReason builds a WebSocket close reason from a chat failure.
+// RFC 6455 caps the reason payload at 123 bytes (the browser exposes it
+// verbatim in CloseEvent.reason), so oversize messages are trimmed without
+// splitting a UTF-8 sequence.
+func chatCloseReason(prefix string, err error) string {
+	const limit = 123
+	s := prefix + err.Error()
+	if len(s) <= limit {
+		return s
+	}
+	for len(s) > limit || !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // corsMiddleware allows the Next.js dev server to call the API and WS

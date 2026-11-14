@@ -8,6 +8,7 @@ import { Badge, AttentionChip, ReviewPhaseBadge, PageBody, PageHeader, SectionCa
 import { GoalStats } from "@/components/goal-stats";
 import { GoalBoard } from "@/components/goal-board";
 import { GoalBatchBar, GoalSelectCheckbox, CheckIcon } from "@/components/goal-batch-bar";
+import { CategoryBadge } from "@/components/category-badge";
 import { cn } from "@/lib/utils";
 import type { Goal, GoalStatus } from "@/lib/types";
 
@@ -76,7 +77,11 @@ function GoalsPageInner() {
     window.localStorage.setItem("agentwork-goals-view", v);
   };
 
-  const agentName = (aid: string) => agents?.find((a) => a.id === aid)?.name ?? aid;
+  // 已删除 agent 的 goal 仍保留记录：id 非空但查不到时显示「已删除 agent」，
+  // 不再把 uuid 露给人看。agents 尚未加载时退回 id（这不是"已删除"），空 id
+  // 返回 "" 让调用方的 `|| "?"` 继续兜底。
+  const agentName = (aid: string) =>
+    agents?.find((a) => a.id === aid)?.name ?? (aid ? (agents ? "已删除 agent" : aid) : "");
   const squadName = (sid: string) => squads?.find((s) => s.id === sid)?.name ?? sid;
 
   const filtered = goals?.filter((g) => filter === "all" || g.status === filter) ?? [];
@@ -216,6 +221,7 @@ function GoalsPageInner() {
                     </h3>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
+                    <CategoryBadge category={g.category} />
                     <AttentionChip attention={g.attention} />
                     {g.status === "review" ? (
                       <ReviewPhaseBadge phase={g.review_phase} className="shrink-0" />

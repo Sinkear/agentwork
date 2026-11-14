@@ -19,6 +19,11 @@ var ErrNotFound = errors.New("not found")
 // Handlers map it to HTTP 400.
 var ErrValidation = errors.New("validation error")
 
+// ErrForbidden is returned when the configured git token's identity lacks
+// push/PR permission on the skill's remote repository. Handlers map it to
+// HTTP 403.
+var ErrForbidden = errors.New("forbidden")
+
 // validationError wraps a message with ErrValidation so errors.Is works.
 // code is a machine-readable error code (may be empty for plain validation
 // errors); see codes.go for the shared set. detail is an optional set of

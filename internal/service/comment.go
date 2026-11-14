@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -327,6 +328,34 @@ func (s *CommentService) create(ctx context.Context, c Comment, dispatch bool) (
 			// threshold fails the goal (the task is stuck in a handoff loop).
 			if exceeds, err := s.mentionCycleExceeds(ctx, c.GoalID, MaxMentionCycle); err == nil && exceeds {
 				s.forceMentionCycleFailed(ctx, c.GoalID)
+				continue
+			}
+			// Redundant-consult dedupe (Task 9): a mention is a request for a
+			// turn, and the mentioned agent may ALREADY have a queued/running
+			// run for this goal (the "double run" defect: create_sub_goal's
+			// subgoal run + the leader's dispatch mention both start the same
+			// work). Keep the comment — it is the feed's record of the ask —
+			// but do not enqueue a second executor turn; record the decision
+			// in activity_log for audit. The comment path holds no transaction
+			// here (the comment row committed above), so a pool read is safe.
+			var existingRunID string
+			if err := s.st.DB().QueryRowContext(ctx,
+				`SELECT id FROM run WHERE goal_id=? AND agent_id=? AND status IN ('queued','running') ORDER BY queued_at LIMIT 1`,
+				c.GoalID, m.ID).Scan(&existingRunID); err == nil {
+				detail, _ := json.Marshal(map[string]string{
+					"agent_id":        m.ID,
+					"existing_run_id": existingRunID,
+				})
+				if _, aerr := s.st.DB().ExecContext(ctx,
+					`INSERT INTO activity_log (id,goal_id,actor_type,actor_id,action,detail,created_at) VALUES (?,?,?,?,'dedupe_consult',?,?)`,
+					newID(), c.GoalID, c.AuthorType, c.AuthorID, string(detail), now()); aerr != nil {
+					logging.Errorf("comment: record dedupe_consult goal=%s: %v", c.GoalID, aerr)
+				}
+				logging.Debugf("comment: deduped consult goal=%q (%s) agent=%s — run %s is already queued/running",
+					g.Title, c.GoalID, m.ID, existingRunID)
+				continue
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				logging.Errorf("comment: dedupe consult check goal=%s agent=%s: %v", c.GoalID, m.ID, err)
 				continue
 			}
 			r, e := s.runSvc.EnqueueForMention(ctx, c.GoalID, m.ID, c.ID)

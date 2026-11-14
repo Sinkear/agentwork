@@ -83,9 +83,14 @@ export function StreamCards({ items, compact }: { items: RenderItem[]; compact?:
   const force = () => forceTick((x) => x + 1);
   const sz = compact ? "text-[10px]" : "text-[11px]";
 
-  const toggle = (key: string) => {
-    const cur = collapsedRef.current.get(key) ?? false;
-    collapsedRef.current.set(key, !cur);
+  // The map stores only MANUAL overrides (absent → the per-kind default
+  // applies). The flip must start from the card's RENDERED state, not the
+  // map's raw value: a default-collapsed card (tool, finished thought) has
+  // no map entry, so reading the map with ?? false made the FIRST click a
+  // silent no-op (it wrote back the same collapsed state — two clicks were
+  // needed to expand).
+  const toggle = (key: string, renderedCollapsed: boolean) => {
+    collapsedRef.current.set(key, !renderedCollapsed);
     force();
   };
 
@@ -99,7 +104,7 @@ export function StreamCards({ items, compact }: { items: RenderItem[]; compact?:
           return (
             <div key={item.key} className={sz}>
               <button
-                onClick={() => toggle(item.key)}
+                onClick={() => toggle(item.key, collapsed)}
                 className="text-ink-3 font-medium hover:text-ink-2"
               >
                 {collapsed ? "+" : "-"} thought
@@ -113,11 +118,15 @@ export function StreamCards({ items, compact }: { items: RenderItem[]; compact?:
           );
         }
         if (item.kind === "tool") {
-          const collapsed = collapsedRef.current.get(item.key) ?? false;
+          // Default: collapsed — a tool card is one line until the human
+          // opens it. Streaming tool_call_update merges into the SAME card
+          // key, so an update never re-expands a closed card; a manual
+          // toggle (key present in the map) always wins.
+          const collapsed = collapsedRef.current.get(item.key) ?? true;
           return (
             <div key={item.key} className={sz}>
               <button
-                onClick={() => toggle(item.key)}
+                onClick={() => toggle(item.key, collapsed)}
                 className="text-purple-400 font-medium hover:text-purple-300"
               >
                 {collapsed ? "+" : "-"} {item.toolName}

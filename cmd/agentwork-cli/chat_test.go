@@ -68,9 +68,9 @@ func TestInjectChatMcpServersNormalizesNilArrays(t *testing.T) {
 	var got struct {
 		Params struct {
 			McpServers []struct {
-				Headers []any `json:"headers"`
-				Env     []any `json:"env"`
-				Args    []any `json:"args"`
+				Headers []any  `json:"headers"`
+				Env     []any  `json:"env"`
+				Args    []any  `json:"args"`
 				Name    string `json:"name"`
 				Command string `json:"command"`
 			} `json:"mcpServers"`

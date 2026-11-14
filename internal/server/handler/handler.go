@@ -76,6 +76,9 @@ func (h *Handlers) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /agents/{id}", h.getAgent)
 	mux.HandleFunc("PUT /agents/{id}", h.updateAgent)
 	mux.HandleFunc("DELETE /agents/{id}", h.deleteAgent)
+	// Read-only preflight for the delete confirm dialog: live-work blockers
+	// and the cascade counts (runs/schedules/terminal history).
+	mux.HandleFunc("GET /agents/{id}/delete-impact", h.agentDeleteImpact)
 	mux.HandleFunc("GET /agents/{id}/history", h.agentHistory)
 	// Sidebar pin: PUT toggles one agent's pin, GET lists pinned ids. The
 	// static /agents/pinned path wins over the /agents/{id} wildcard in
@@ -90,6 +93,7 @@ func (h *Handlers) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /goals/{id}/assign", h.assignGoal)
 	mux.HandleFunc("POST /goals/{id}/cancel", h.cancelGoal)
 	mux.HandleFunc("POST /goals/{id}/review", h.resolveGoalReview)
+	mux.HandleFunc("POST /goals/{id}/submit-review", h.submitGoalReview)
 	mux.HandleFunc("POST /goals/{id}/reopen", h.reopenGoal)
 	mux.HandleFunc("POST /goals/{id}/activate", h.activateGoal)
 	mux.HandleFunc("GET /goals/{id}/runs", h.listRuns)
@@ -138,6 +142,11 @@ func (h *Handlers) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /skills", h.listSkills)
 	mux.HandleFunc("POST /skills", h.createSkill)
 	mux.HandleFunc("DELETE /skills/{id}", h.deleteSkill)
+	mux.HandleFunc("PUT /skills/{id}/source", h.setSkillSource)
+	mux.HandleFunc("DELETE /skills/{id}/source", h.clearSkillSource)
+	mux.HandleFunc("GET /skills/{id}/sync", h.compareSkillSync)
+	mux.HandleFunc("POST /skills/{id}/sync", h.syncSkill)
+	mux.HandleFunc("POST /skills/{id}/pull-request", h.pullRequestSkill)
 	mux.HandleFunc("POST /teams/import", h.importTeam)
 	mux.HandleFunc("GET /teams/import", h.listTeamImports)
 	mux.HandleFunc("GET /teams/import/{runId}", h.getTeamImport)
@@ -287,6 +296,14 @@ func (h *Handlers) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// agentDeleteImpact returns the preflight summary for the delete confirm
+// dialog: live-work blockers (queued/running runs, non-terminal goals) plus
+// the cascade counts. Unknown agent → 404 via service.ErrNotFound.
+func (h *Handlers) agentDeleteImpact(w http.ResponseWriter, r *http.Request) {
+	out, err := h.Agent.DeleteImpact(r.Context(), r.PathValue("id"))
+	writeJSON(w, out, err)
+}
+
 // ── agent pin ──
 
 // setAgentPin toggles the sidebar-pin state for one agent.
@@ -405,6 +422,26 @@ func (h *Handlers) resolveGoalReview(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := h.Goal.ResolveReview(r.Context(), r.PathValue("id"), "", body.Decision, body.Reason, "human")
 	writeJSON(w, out, err)
+}
+
+// submitGoalReview moves an ACTIVE goal into review at the owner's explicit
+// request (task 8.2) — the positive counterpart of the gate park. Returns the
+// updated goal wrapped in {"goal": ...}; an empty body is accepted (default
+// review request), malformed JSON and service ValidationErrors are 400.
+func (h *Handlers) submitGoalReview(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	out, err := h.Goal.SubmitForReview(r.Context(), r.PathValue("id"), body.Reason)
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	writeJSON(w, map[string]any{"goal": out}, nil)
 }
 
 // reopenGoal restarts a failed/cancelled goal (the human take-over path).
@@ -693,6 +730,99 @@ func (h *Handlers) deleteSkill(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── skills: remote source / sync / pull request (feature: remote skill source) ──
+
+// setSkillSource binds or updates the skill's remote git repository.
+func (h *Handlers) setSkillSource(w http.ResponseWriter, r *http.Request) {
+	if h.Skills == nil {
+		writeErr(w, http.StatusInternalServerError, errors.New("skills library not configured"))
+		return
+	}
+	var in service.SkillSourceInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	out, err := h.Skills.SetSource(r.Context(), r.PathValue("id"), in)
+	writeJSON(w, out, err)
+}
+
+// clearSkillSource removes the remote binding (token included).
+func (h *Handlers) clearSkillSource(w http.ResponseWriter, r *http.Request) {
+	if h.Skills == nil {
+		writeErr(w, http.StatusInternalServerError, errors.New("skills library not configured"))
+		return
+	}
+	out, err := h.Skills.ClearSource(r.Context(), r.PathValue("id"))
+	writeJSON(w, out, err)
+}
+
+// compareSkillSync diffs local files vs the remote source (read-only).
+func (h *Handlers) compareSkillSync(w http.ResponseWriter, r *http.Request) {
+	if h.Skills == nil {
+		writeErr(w, http.StatusInternalServerError, errors.New("skills library not configured"))
+		return
+	}
+	out, err := h.Skills.Compare(r.Context(), r.PathValue("id"))
+	writeJSON(w, out, err)
+}
+
+// syncSkill pulls or pushes the skill against its remote source. The service
+// verifies push permission (ErrForbidden → 403) BEFORE touching files/remote.
+func (h *Handlers) syncSkill(w http.ResponseWriter, r *http.Request) {
+	if h.Skills == nil {
+		writeErr(w, http.StatusInternalServerError, errors.New("skills library not configured"))
+		return
+	}
+	skillID := r.PathValue("id")
+	var body struct {
+		Direction string `json:"direction"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// Collect the users BEFORE a pull rewrites the package: after it, each
+	// affected agent's machine gets the refreshed config.push (mirrors
+	// deleteSkill's pattern).
+	agents := []string{}
+	if h.Daemon != nil {
+		agents = h.Daemon.SkillAgents(r.Context(), skillID)
+	}
+	out, err := h.Skills.Sync(r.Context(), skillID, body.Direction)
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	if out.Action == "pulled" && h.Daemon != nil {
+		for _, id := range agents {
+			go h.Daemon.PushAgentSkills(context.Background(), id)
+		}
+	}
+	writeJSON(w, out, nil)
+}
+
+// pullRequestSkill submits the local skill changes as a PR on the remote.
+func (h *Handlers) pullRequestSkill(w http.ResponseWriter, r *http.Request) {
+	if h.Skills == nil {
+		writeErr(w, http.StatusInternalServerError, errors.New("skills library not configured"))
+		return
+	}
+	var body struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	// The body is optional: an empty request is a valid "use defaults" call.
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	out, err := h.Skills.PullRequest(r.Context(), r.PathValue("id"), body.Title, body.Body)
+	writeJSON(w, out, err)
 }
 
 // ── team import (processor-run-driven) ──
@@ -1358,7 +1488,7 @@ func (h *Handlers) testGitAndRespond(w http.ResponseWriter, r *http.Request, git
 }
 
 // writeJSON writes v as JSON, or an error response if err is non-nil. err is
-// mapped: ErrNotFound→404, ErrValidation→400, else 500.
+// mapped: ErrNotFound→404, ErrValidation→400, ErrForbidden→403, else 500.
 func writeJSON(w http.ResponseWriter, v any, err error) {
 	if err != nil {
 		code := http.StatusInternalServerError
@@ -1366,6 +1496,8 @@ func writeJSON(w http.ResponseWriter, v any, err error) {
 			code = http.StatusNotFound
 		} else if errors.Is(err, service.ErrValidation) {
 			code = http.StatusBadRequest
+		} else if errors.Is(err, service.ErrForbidden) {
+			code = http.StatusForbidden
 		}
 		writeErr(w, code, err)
 		return

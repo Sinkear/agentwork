@@ -191,29 +191,11 @@ func (e *executor) execute(p link.RunDispatchParams) {
 	// The agent's persona (pushed via config.push) rides AGENTS.md in the
 	// workdir — the runtime loads it natively. The run's CONTEXT layer
 	// (platform background, goal, team, role contract, tool surface —
-	// shipped in the dispatch) is persona material too and is merged into
+	// shipped in the dispatch) is persona material too and is staged into
 	// the same file; the prompt carries the task only.
 	pushedProfile := ""
 	if !p.Proc {
-		pushedProfile = syncAgentProfile(p.AgentID, workdir)
-		if p.RunProfile != "" {
-			// Merge RunProfile into the workdir's AGENTS.md. If the agent
-			// had no pushed system prompt, syncAgentProfile wrote nothing
-			// and the file may not exist yet — in that case CREATE it with
-			// RunProfile alone (the squad instructions / team playbook ride
-			// here when the leader agent has no persona of its own).
-			// Previously a missing file silently dropped RunProfile, losing
-			// the squad instructions entirely.
-			agentsMD := filepath.Join(workdir, "AGENTS.md")
-			if b, err := os.ReadFile(agentsMD); err == nil {
-				pushedProfile = string(b) + "\n\n" + p.RunProfile
-				cliLogf("exec: run %s RunProfile merged (%d bytes) into existing AGENTS.md → %s", p.RunID, len(p.RunProfile), agentsMD)
-			} else {
-				pushedProfile = p.RunProfile
-				cliLogf("exec: run %s RunProfile created AGENTS.md (%d bytes, no agent persona) → %s", p.RunID, len(p.RunProfile), agentsMD)
-			}
-			_ = os.WriteFile(agentsMD, []byte(pushedProfile), 0o644)
-		}
+		pushedProfile = stageRunProfile(ctx, p, workdir)
 		// Skills ride the workdir too (project-level): staged from the
 		// pushed dir under their ORIGINAL names — the user's own global
 		// skills are never touched. Scratch workdirs are platform-owned
@@ -407,6 +389,24 @@ loop:
 	case proto.StatusCancelled:
 		status = "cancelled"
 	}
+	// Scratch machine verification (W1): the domain's frozen acceptance
+	// policy runs HERE, after the agent exited and before the terminal
+	// report — a scratch deliverable has no diff for the daemon to judge.
+	// A failed check flips the run to failed (the platform's local-path
+	// semantics: verification failure = run failure), and the evidence
+	// bundle travels with the report so delivery can require it.
+	evidence := ""
+	if status == "completed" && p.Scratch && !p.Proc && p.Checks != nil && len(p.Checks.Verify) > 0 {
+		report, passed, results := runScratchChecks(context.Background(), workdir, p.Checks)
+		evidence = buildScratchEvidence(workdir, p.Checks, results, passed, report)
+		if !passed {
+			cliLogf("exec: run %s scratch verification FAILED", p.RunID)
+			status = "failed"
+			result.Output = "verification failed:\n" + report
+		} else {
+			cliLogf("exec: run %s scratch verification passed (%d command(s))", p.RunID, len(results))
+		}
+	}
 	headSHA := ""
 	if status == "completed" && !p.Scratch && !p.Proc {
 		sha, err := commitAndPush(context.Background(), p, workdir, repo, branch, p.RunID, pushedProfile)
@@ -428,7 +428,7 @@ loop:
 	// structured side effects, never agent stdout). Digest goal runs too:
 	// the dispatch lists the goal-directory files (manifest + articles) the
 	// daemon collects — same channel, not a processor run.
-	finishParams := link.RunFinishedParams{RunID: p.RunID, Status: status, Summary: result.Output, Token: p.Token, HeadSHA: headSHA, SessionID: sessionID, WorkDir: workdir}
+	finishParams := link.RunFinishedParams{RunID: p.RunID, Status: status, Summary: result.Output, Token: p.Token, HeadSHA: headSHA, SessionID: sessionID, WorkDir: workdir, Evidence: evidence}
 	if (p.Proc || len(p.ArtifactFiles) > 0) && status == "completed" {
 		finishParams.Artifacts = map[string]string{}
 		for _, f := range p.ArtifactFiles {
@@ -547,37 +547,74 @@ func writeAgentProfile(agentID, systemPrompt string) error {
 	return os.WriteFile(path, []byte(systemPrompt), 0o644)
 }
 
-// syncAgentProfile APPENDS the agent's pushed AGENTS.md into the run's
-// workdir (the runtime's profile resolver walks up from cwd) — a
-// repo-owned AGENTS.md in the checkout survives (its instructions are the
-// project's ground truth and must not be clobbered; the platform profile
-// rides below it). Persistent workdirs and the stable chat directory are
-// staged REPEATEDLY: if the persona is already present, return the file
-// as-is instead of appending a duplicate. Returns the content so the
-// commit step can recognize the platform-written suffix.
-func syncAgentProfile(agentID, workdir string) string {
-	staging := filepath.Join(agentProfileDir(agentID), "AGENTS.md")
-	b, err := os.ReadFile(staging)
-	if err != nil {
-		cliLogf("exec: syncAgentProfile agent=%s: no staging AGENTS.md at %s (agent has no persona)", agentID, staging)
+// stageRunProfile writes THIS run's identity into the workdir's AGENTS.md —
+// a per-run REWRITE, never a merge with on-disk history (F3, 身份唯一性).
+//
+// The working directory is shared across runs by different agents (owner,
+// sub-goal executor, handoff successor) and by the same agent under
+// different roles. The old append-only merge let a PREVIOUS run's persona +
+// fixed block survive into the next run, so the executor read a
+// predecessor's role contract as its own — the identity-hijack bug: a
+// verifier woke to the executor's "You implement this work item" contract,
+// and every re-run layered the whole fixed block again. A run's identity
+// must come from THIS run alone:
+//
+//   - scratch workdirs are platform-owned: AGENTS.md is rewritten
+//     WHOLESALE as this run's persona + RunProfile; nothing on disk
+//     survives the spawn.
+//   - git workdirs keep the REPO's AGENTS.md (the COMMITTED HEAD version —
+//     the project's ground truth, never clobbered) and replace everything
+//     the platform layered after it with this run's persona + RunProfile;
+//     worktree leftovers from previous runs (stale fixed blocks, a
+//     predecessor's persona) are discarded.
+//
+// Returns the platform-written suffix actually staged ("" when nothing
+// was) so commitAndPush can recognize and exclude AGENTS.md from the
+// change commit.
+func stageRunProfile(ctx context.Context, p link.RunDispatchParams, workdir string) string {
+	personaB, _ := os.ReadFile(filepath.Join(agentProfileDir(p.AgentID), "AGENTS.md"))
+	block := strings.TrimSpace(string(personaB))
+	if rp := strings.TrimSpace(p.RunProfile); rp != "" {
+		if block != "" {
+			block += "\n\n"
+		}
+		block += rp
+	}
+	agentsMD := filepath.Join(workdir, "AGENTS.md")
+	// The repo-owned baseline: the COMMITTED AGENTS.md on the worktree's
+	// HEAD. Anything beyond it in the worktree file is platform-written
+	// (the old code appended without markers) and gets replaced, not
+	// preserved. Scratch workdirs have no repo — platform-owned whole.
+	base := ""
+	if !p.Scratch {
+		if out, err := runGit(ctx, workdir, "show", "HEAD:AGENTS.md"); err == nil {
+			base = strings.TrimSpace(out)
+		}
+	}
+	switch {
+	case block == "" && base == "":
+		// Nothing platform-owned this run and no repo baseline: clear any
+		// stale platform file outright.
+		if _, err := os.Stat(agentsMD); err == nil {
+			_ = os.Remove(agentsMD)
+			cliLogf("exec: run %s stageRunProfile: removed stale AGENTS.md (no persona, no RunProfile) → %s", p.RunID, agentsMD)
+		}
+		return ""
+	case block == "":
+		// Nothing to stage: restore the repo baseline alone (the platform
+		// adds nothing this run).
+		_ = os.WriteFile(agentsMD, []byte(base+"\n"), 0o644)
+		cliLogf("exec: run %s stageRunProfile: no persona/RunProfile — restored repo AGENTS.md (%d bytes) → %s", p.RunID, len(base), agentsMD)
 		return ""
 	}
-	persona := string(b)
-	path := filepath.Join(workdir, "AGENTS.md")
-	existing, err := os.ReadFile(path)
-	if err == nil && strings.TrimSpace(string(existing)) != "" {
-		if strings.Contains(string(existing), persona) {
-			cliLogf("exec: syncAgentProfile agent=%s: already present in %s (skip)", agentID, path)
-			return string(existing) // already staged — never duplicate
-		}
-		merged := string(existing) + "\n\n" + persona
-		_ = os.WriteFile(path, []byte(merged), 0o644)
-		cliLogf("exec: syncAgentProfile agent=%s: merged %d bytes into existing %s", agentID, len(persona), path)
-		return merged
+	content := block
+	if base != "" {
+		content = base + "\n\n" + block
 	}
-	_ = os.WriteFile(path, []byte(persona), 0o644)
-	cliLogf("exec: syncAgentProfile agent=%s: wrote %d bytes → %s", agentID, len(persona), path)
-	return persona
+	_ = os.WriteFile(agentsMD, []byte(content), 0o644)
+	cliLogf("exec: run %s stageRunProfile: staged %d bytes%s → %s", p.RunID, len(block),
+		map[bool]string{true: " below repo AGENTS.md", false: ""}[base != ""], agentsMD)
+	return block
 }
 
 // machineSkillRoot is where config.push lands an agent's skill packages on
@@ -741,7 +778,21 @@ func (e *executor) buildEnv(p link.RunDispatchParams, workdir string) []string {
 		"AGENTWORK_RUN_ID="+p.RunID,
 		"AGENTWORK_AGENT_ID="+p.AgentID,
 		"AGENTWORK_TOKEN="+p.Token,
+		"AGENTWORK_WORKDIR="+workdir,
 	)
+	// Scratch runs own a persistent project directory: name it explicitly
+	// and give reports/ a durable home. Reports MUST NOT live in /tmp (the
+	// case report's A9: a 100%-complete report rotted in tmp and the user
+	// saw nothing) — the report dir is inside the project dir, survives
+	// turns, and is the only place the platform can read evidence from.
+	if p.Scratch && workdir != "" {
+		reportDir := filepath.Join(workdir, "reports")
+		_ = os.MkdirAll(reportDir, 0o755)
+		env = append(env,
+			"AGENTWORK_GOAL_DIR="+workdir,
+			"AGENTWORK_REPORT_DIR="+reportDir,
+		)
+	}
 	return env
 }
 

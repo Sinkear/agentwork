@@ -261,6 +261,17 @@ type GoalWaitParams struct {
 	RPCToken
 }
 
+// RunChecks is the scratch-domain acceptance policy shipped to the machine.
+// Setup runs first (environment preparation, e.g. dependency installs), then
+// Verify; any non-zero exit fails the run. VerifyTimeout is in seconds (0 =
+// the platform default). Excludes/Gates are repo-only and never shipped to
+// a scratch run.
+type RunChecks struct {
+	Setup         []string `json:"setup,omitempty"`
+	Verify        []string `json:"verify,omitempty"`
+	VerifyTimeout int      `json:"verify_timeout,omitempty"`
+}
+
 // ── run dispatch (machine link, Phase 2) ──
 
 // RunDispatchParams is the daemon → machine dispatch: EVERYTHING the
@@ -303,6 +314,15 @@ type RunDispatchParams struct {
 	// skills there. '' = not probed; the executor falls back to its own
 	// CLI mapping.
 	ProjectSkillsDir string `json:"project_skills_dir,omitempty"`
+	// Checks: the scratch-domain acceptance policy to run on the MACHINE
+	// after the agent exits (setup → verify in the workdir). A scratch
+	// deliverable has no git diff for the daemon to verify, so the machine
+	// executes the domain's Verify commands and uploads a signed evidence
+	// bundle with run.finished; the daemon refuses delivery without a
+	// passed bundle when the domain is frozen with a Verify policy. Nil =
+	// no machine-side verification (legacy daemon or no frozen policy).
+	Checks *RunChecks `json:"checks,omitempty"`
+
 	// RunProfile: the run's full CONTEXT layer — platform background, the
 	// goal (title + acceptance policy), the team (squad roster + playbook
 	// + leader protocol), the agent's role contract, and the tool surface.

@@ -148,6 +148,7 @@ type intakeAction struct {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"` // "agent" (default) | "squad"
 		DomainID     string `json:"domain_id"`
+		Category     string `json:"category"` // "hitl" (default) | "hootl"
 	} `json:"schedule"`
 	Agent      agentAction      `json:"agent"`
 	Squad      squadAction      `json:"squad"`
@@ -176,6 +177,7 @@ type goalAction struct {
 	AssigneeID   string `json:"assignee_id"`
 	AssigneeType string `json:"assignee_type"` // "agent" (default) | "squad"
 	DomainID     string `json:"domain_id"`
+	Category     string `json:"category"` // "hitl" (default) | "hootl"
 }
 
 // agentAction carries the create_agent fields. Technical config (env/model/
@@ -519,6 +521,7 @@ func (d *Daemon) doCreateGoal(ctx context.Context, g goalAction, hasAgents bool)
 		AssigneeType:  assigneeType,
 		AssigneeID:    assigneeID,
 		Status:        "active",
+		Category:      g.Category,
 		CreatedByType: "human",
 	})
 	if err != nil {
@@ -648,6 +651,7 @@ func (d *Daemon) intakeCreateSchedule(ctx context.Context, parsed intakeAction) 
 		DomainID:       domainID,
 		CronExpression: sch.Cron,
 		Timezone:       timezone,
+		Category:       sch.Category,
 		Enabled:        true,
 	})
 	if err != nil {
@@ -1762,6 +1766,9 @@ func mergeGoal(draftPayload string, reply goalAction) goalAction {
 	}
 	if strings.TrimSpace(reply.DomainID) != "" {
 		draft.DomainID = reply.DomainID
+	}
+	if strings.TrimSpace(reply.Category) != "" {
+		draft.Category = reply.Category
 	}
 	return draft
 }

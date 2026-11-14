@@ -38,6 +38,12 @@ func (s *connStubProvider) ListPullComments(context.Context, string, int) ([]Com
 func (s *connStubProvider) CreatePullComment(context.Context, string, int, string) error {
 	return nil
 }
+func (s *connStubProvider) CreatePull(context.Context, string, string, string, string, string) (string, int, error) {
+	return "", 0, nil
+}
+func (s *connStubProvider) CheckPushPermission(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
 
 // connectionHarness builds a store with one repo domain x/y (optionally with a
 // LEGACY direct assignee), a squad sq1 and a matching ConnectionRoute. The

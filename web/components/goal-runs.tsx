@@ -9,6 +9,7 @@ import { Badge, Empty } from "@/components/ui";
 import type { Run } from "@/lib/types";
 import type { ChatMessage } from "@/lib/api";
 import { groupMessages, StreamCards } from "@/lib/run-messages";
+import { useStickToBottom } from "@/lib/use-stick-to-bottom";
 
 // useThrottled returns a throttled wrapper (leading + trailing edge): at
 // most one call per window, and a call landing inside an open window is
@@ -207,11 +208,14 @@ function RunCard({ run, goalId, agentName }: { run: Run; goalId: string; agentNa
 // RunMessages renders the interaction stream as collapsible cards: thoughts
 // and tool calls fold on click; assistant text is always shown.
 function RunMessages({ messages }: { messages: ChatMessage[] }) {
+  // 1s 一次的 refetch 会换数组 identity：贴底跟随新行与 streaming
+  // tool_call_update，用户翻历史时不抢滚动位置。
+  const scrollRef = useStickToBottom<HTMLDivElement>([messages]);
   if (messages.length === 0) {
     return <div className="text-[11px] text-ink-3 py-2">尚无交互记录…</div>;
   }
   return (
-    <div className="max-h-72 overflow-y-auto">
+    <div ref={scrollRef} className="max-h-72 overflow-y-auto">
       <StreamCards items={groupMessages(messages)} />
     </div>
   );

@@ -476,6 +476,12 @@ the domain's gate rules + the human's approval decide whether the goal is
 done. You never set the goal's status yourself, and you do not wait for a
 "final confirmation" to close it — your run ending is your part done, the
 rest is the platform's and the human's.
+
+TERMINAL RULE: once the final sub-goal is verified and no READY change is
+left, do NOT end your turn empty — submit the goal for review
+(agentwork goal submit-review) or hand it to a human. Ending with neither
+leaves the goal active forever; the collaboration warning is NOT an
+exemption from this rule.
 `
 
 const squadParentStatusNotOwned = `You were consulted on a goal someone else owns (guest run, READ-ONLY — your

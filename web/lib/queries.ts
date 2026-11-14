@@ -9,10 +9,16 @@ import {
   listSkills,
   createSkill,
   deleteSkill,
+  configureSkillSource,
+  clearSkillSource,
+  compareSkillSync,
+  runSkillSync,
+  createSkillPullRequest,
   listAgents,
   createAgent,
   updateAgent,
   deleteAgent,
+  getAgentDeleteImpact,
   listPinnedAgents,
   setAgentPin,
   listGoals,
@@ -25,6 +31,7 @@ import {
   reopenGoal,
   activateGoal,
   continueGoal,
+  submitGoalReview,
   listGoalRuns,
   listGoalRunMessages,
   listGoalComments,
@@ -101,8 +108,10 @@ export const qk = {
   runtimes: ["runtimes"] as const,
   machines: ["machines"] as const,
   skills: ["skills"] as const,
+  skillSync: (id: string) => ["skills", id, "sync"] as const,
   agents: ["agents"] as const,
   pinnedAgents: ["agents", "pinned"] as const,
+  agentDeleteImpact: (id: string) => ["agents", id, "delete-impact"] as const,
   goals: ["goals"] as const,
   goal: (id: string) => ["goals", id] as const,
   goalRuns: (goalId: string) => ["goals", goalId, "runs"] as const,
@@ -174,6 +183,60 @@ export function useDeleteSkill() {
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.skills }),
   });
 }
+
+// ── Skill 远端仓库源同步（Feature A）──
+// 所有写操作都同时刷新技能列表（source/last_sync_* 会变）和该技能的 compare。
+function invalidateSkillSync(qc: ReturnType<typeof useQueryClient>, id: string) {
+  qc.invalidateQueries({ queryKey: qk.skills });
+  qc.invalidateQueries({ queryKey: qk.skillSync(id) });
+}
+
+export function useConfigureSkillSource() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: {
+      id: string;
+      body: { repo_url: string; provider?: string; branch?: string; path?: string; token?: string };
+    }) => configureSkillSource(vars.id, vars.body),
+    onSuccess: (_data, vars) => invalidateSkillSync(qc, vars.id),
+  });
+}
+
+export function useClearSkillSource() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => clearSkillSource(id),
+    onSuccess: (_data, id) => invalidateSkillSync(qc, id),
+  });
+}
+
+// 只读比较：远端探测失败（403/网络）是业务结果，不自动重试。
+export function useSkillSyncCompare(skillId: string, enabled = true) {
+  return useQuery({
+    queryKey: qk.skillSync(skillId),
+    queryFn: () => compareSkillSync(skillId),
+    enabled,
+    retry: false,
+  });
+}
+
+export function useRunSkillSync() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { id: string; direction: "pull" | "push" }) =>
+      runSkillSync(vars.id, vars.direction),
+    onSuccess: (_data, vars) => invalidateSkillSync(qc, vars.id),
+  });
+}
+
+export function useCreateSkillPullRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { id: string; title?: string; body?: string }) =>
+      createSkillPullRequest(vars.id, { title: vars.title, body: vars.body }),
+    onSuccess: (_data, vars) => invalidateSkillSync(qc, vars.id),
+  });
+}
 export function useCreateRuntime() {
   const qc = useQueryClient();
   return useMutation({
@@ -218,6 +281,20 @@ export function useDeleteAgent() {
       qc.invalidateQueries({ queryKey: qk.agents });
       qc.invalidateQueries({ queryKey: qk.pinnedAgents });
     },
+  });
+}
+
+// useAgentDeleteImpact fetches the pre-delete impact report for the delete
+// confirm dialog. Disabled while no agent is selected (dialog closed); the
+// dialog opens only after a click, so one fetch per open (staleTime keeps a
+// quick cancel→reopen from re-hitting the API, refetch on open is fine).
+export function useAgentDeleteImpact(id: string | null) {
+  return useQuery({
+    queryKey: qk.agentDeleteImpact(id ?? ""),
+    queryFn: () => getAgentDeleteImpact(id as string),
+    enabled: !!id,
+    staleTime: 5_000,
+    retry: false,
   });
 }
 
@@ -304,6 +381,21 @@ export function useContinueGoal() {
       qc.invalidateQueries({ queryKey: qk.goals });
       qc.invalidateQueries({ queryKey: qk.goal(id) });
       qc.invalidateQueries({ queryKey: ["goals", id, "runs"] });
+    },
+  });
+}
+// Explicit submit-for-review (contract task 8.2): the goal flips active→review
+// and waits for a human decision. Invalidate goal/goals/timeline so the card,
+// list chip and feed all show the review state.
+export function useSubmitGoalReview() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason?: string }) =>
+      submitGoalReview(id, reason),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: qk.goals });
+      qc.invalidateQueries({ queryKey: qk.goal(vars.id) });
+      qc.invalidateQueries({ queryKey: qk.goalTimeline(vars.id) });
     },
   });
 }

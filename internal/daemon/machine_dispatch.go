@@ -498,7 +498,7 @@ func (d *Daemon) finishMachineRun(ctx context.Context, p link.RunFinishedParams,
 		// its own work): setup+verify+guards run on the adopted branch,
 		// and a red result flips the report to failed (the local path's
 		// semantics: verification failure = run failure + retry chain).
-		if failReport := d.processMachineRunCompletion(ctx, p.RunID, p.Summary, p.HeadSHA); failReport != "" {
+		if failReport := d.processMachineRunCompletion(ctx, p.RunID, p.Summary, p.HeadSHA, p.Evidence); failReport != "" {
 			p.Status = "failed"
 			p.Summary = failReport
 		}
@@ -590,6 +590,89 @@ func (d *Daemon) notifyTeamImportComplete(ctx context.Context, ti *service.TeamI
 	}
 }
 
+// longToolIdleBudget is the silent-tool budget: an OPEN tool call (a
+// tool_use whose CallID has no newer tool_result) is treated as a long
+// command, not a stuck run. 15 minutes comes from the observed worst case
+// (`uv sync --frozen` resolving 183 packages: 5–10 min on a cold cache) plus
+// headroom, and is min(30m, max_run_duration/4) clamped — max_run_duration
+// remains the platform's only auto-cancel authority (W4).
+const longToolIdleBudget = 15 * time.Minute
+
+// runActivity is what the idle watchdog needs to decide whether silence is a
+// long tool or a stalled turn.
+type runActivity struct {
+	lastEvent time.Time // newest persisted event (falls back to the in-memory signal)
+	openTool  string    // newest tool row is an unpaired tool_use, if any
+	openSince time.Time // when that tool_use row was created (= tool start)
+}
+
+// lastRunActivity reads the run's recent persisted event stream
+// (chat_message, last 8 rows) and detects the "inside one command" shape:
+// the newest tool row is a tool_use whose CallID has no NEWER tool_result.
+// Tool rows are role='tool' with tool_calls holding a JSON-encoded
+// proto.Event (daemon.persistEvent); tool_use/tool_result are separate rows
+// aggregated by CallID. A tool_use with an empty CallID cannot be paired and
+// is treated as closed (the legacy fallback row shape).
+func (d *Daemon) lastRunActivity(ctx context.Context, runID string) runActivity {
+	var out runActivity
+	closed := map[string]bool{}
+	rows, err := d.st.DB().QueryContext(ctx,
+		`SELECT tool_calls, created_at FROM chat_message WHERE run_id=? ORDER BY created_at DESC LIMIT 8`,
+		runID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var raw, ts string
+			if err := rows.Scan(&raw, &ts); err != nil {
+				continue
+			}
+			t, err := time.Parse(time.RFC3339Nano, ts)
+			if err != nil {
+				continue
+			}
+			if out.lastEvent.IsZero() {
+				out.lastEvent = t
+			}
+			var ev proto.Event
+			if raw == "" || raw == "[]" || json.Unmarshal([]byte(raw), &ev) != nil {
+				continue
+			}
+			switch ev.Type {
+			case proto.EventToolResult:
+				if ev.CallID != "" {
+					closed[ev.CallID] = true
+				}
+			case proto.EventToolUse:
+				if ev.CallID == "" || closed[ev.CallID] {
+					continue
+				}
+				// Scanning newest→oldest: a result newer than this use would
+				// have been seen already. An unclosed use is the open call.
+				out.openTool = ev.Tool
+				if out.openTool == "" {
+					out.openTool = "tool"
+				}
+				out.openSince = t
+				return out
+			}
+		}
+		// A mid-iteration driver error must not masquerade as "no rows
+		// read": lastEvent would stay zero and the watchdog would fall
+		// through to the in-memory fallback with a stale timestamp.
+		if err := rows.Err(); err != nil {
+			return out
+		}
+	}
+	if out.lastEvent.IsZero() {
+		d.machineLastEventMu.Lock()
+		if t, ok := d.machineLastEvent[runID]; ok {
+			out.lastEvent = t
+		}
+		d.machineLastEventMu.Unlock()
+	}
+	return out
+}
+
 // runMachineWatchdog supervises a dispatched run. Two signals, two policies:
 //
 //   - idle (no events for idleWindow): NOTIFY the human, do NOT cancel. The
@@ -631,21 +714,40 @@ func (d *Daemon) machineWatchdogTick(runID, machineID string, start time.Time, c
 		return true
 	}
 
-	// Idle signal: notify once, never cancel. The run stays — if the
-	// agent is in rate-limit backoff it recovers; if truly stuck the human
-	// stops it (or max_run_duration below eventually cancels).
-	d.machineLastEventMu.Lock()
-	last, ok := d.machineLastEvent[runID]
-	d.machineLastEventMu.Unlock()
-	if ok && time.Since(last) > idleWindow && !*idleNotified {
+	// Idle signal: notify once, never cancel. Two shapes:
+	//   - the newest tool row is an OPEN tool_use (no matching tool_result
+	//     yet): a long command (`uv sync` 183 packages takes 5–10 min) is
+	//     normal, so nothing is emitted below longToolIdleBudget, and ONE
+	//     context-rich comment naming the tool above it. Without this every
+	//     long command produced a false "stuck" alarm (W4).
+	//   - otherwise keep the historical 2-minute notify, now with the
+	//     absolute last-event time so the reader can tell a stalled turn
+	//     from a stalled TOOL.
+	// The run always stays: if the agent is in rate-limit backoff it
+	// recovers; if truly stuck the human stops it (or max_run_duration
+	// below eventually cancels).
+	state := d.lastRunActivity(context.Background(), runID)
+	idleContent := ""
+	idleElapsed := time.Duration(0)
+	if state.openTool != "" {
+		idleElapsed = time.Since(state.openSince)
+		if idleElapsed >= longToolIdleBudget && !*idleNotified {
+			idleContent = fmt.Sprintf("Run is waiting on long-running tool %q (%s) — no events since %s. The platform will not auto-cancel; check the process or wait.",
+				state.openTool, idleElapsed.Round(time.Second), state.openSince.UTC().Format(time.RFC3339))
+		}
+	} else if !state.lastEvent.IsZero() && time.Since(state.lastEvent) > idleWindow && !*idleNotified {
+		idleElapsed = time.Since(state.lastEvent)
+		idleContent = fmt.Sprintf("Run idle for %s (last event %s, %s ago) — possibly stuck or in rate-limit backoff. The platform will not auto-cancel. Stop it manually if needed, otherwise wait for recovery.",
+			idleWindow, state.lastEvent.UTC().Format(time.RFC3339), idleElapsed.Round(time.Second))
+	}
+	if idleContent != "" {
 		var goalID string
 		if err := d.st.DB().QueryRowContext(context.Background(),
 			`SELECT goal_id FROM run WHERE id=?`, runID).Scan(&goalID); err == nil && goalID != "" {
-			content := fmt.Sprintf("Run idle for %s — possibly stuck or in rate-limit backoff. The platform will not auto-cancel. Stop it manually if needed, otherwise wait for recovery.", idleWindow)
 			if _, err := d.commentSvc.CreateNoDispatch(context.Background(), service.Comment{
 				GoalID:     goalID,
 				AuthorType: "system",
-				Content:    content,
+				Content:    idleContent,
 				RunID:      runID,
 			}); err != nil {
 				logging.Infof("machine: watchdog idle-notify comment for run %s: %v", runID, err)
@@ -654,7 +756,7 @@ func (d *Daemon) machineWatchdogTick(runID, machineID string, start time.Time, c
 			}
 		}
 		logging.Infof("machine: watchdog idle-notify for run %s (silent %s) — not cancelling, waiting for recovery or human stop",
-			runID, time.Since(last).Round(time.Second))
+			runID, idleElapsed.Round(time.Second))
 		return false
 	}
 
@@ -694,7 +796,7 @@ func (d *Daemon) machineWatchdogTick(runID, machineID string, start time.Time, c
 // adopted branch must point AT it, and a branch that cannot be adopted at
 // all is a hard failure — a completed run that pushed work must never fall
 // back to the zero-change path (a lost push is not "no changes").
-func (d *Daemon) processMachineRunCompletion(ctx context.Context, runID, agentSummary, headSHA string) string {
+func (d *Daemon) processMachineRunCompletion(ctx context.Context, runID, agentSummary, headSHA, evidence string) string {
 	var goalID, role, subGoalID, domainID, gitURL, defaultBranch, gitCredentials, domainType string
 	if err := d.st.DB().QueryRowContext(ctx,
 		`SELECT r.goal_id, r.role, r.sub_goal_id, d.id, d.git_url, d.default_branch, d.git_credentials, COALESCE(d.type,'')
@@ -702,8 +804,15 @@ func (d *Daemon) processMachineRunCompletion(ctx context.Context, runID, agentSu
 		runID).Scan(&goalID, &role, &subGoalID, &domainID, &gitURL, &defaultBranch, &gitCredentials, &domainType); err != nil {
 		return "" // unknown run / no domain — the goal layer's judgment stands
 	}
-	if domainType == "scratch" || role == "consult" || role == "review" {
-		return "" // scratch: no diff; read-only roles: nothing to verify or gate
+	if domainType == "scratch" {
+		// No diff to verify — but a frozen Verify policy still binds the
+		// DELIVERABLE, and the machine that owns the files already ran it
+		// (cmd/agentwork-cli/scratch_verify.go). Require its bundle and stamp
+		// it on the run for delivery/audit (scratch_gate.go).
+		return d.stampScratchEvidence(ctx, runID, domainID, role, evidence)
+	}
+	if role == "consult" || role == "review" {
+		return "" // read-only roles: nothing to verify or gate
 	}
 	checks, timeout, baseline, frozen := d.loadDomainChecks(ctx, domainID)
 	if !frozen {
@@ -915,6 +1024,19 @@ func (d *Daemon) PushAgentSkills(ctx context.Context, agentID string) {
 		}
 		pushes = append(pushes, link.SkillPush{Name: name, Archive: archive})
 	}
+	// A push with ANY failed archive is refused wholesale (review §M1): the
+	// machine's config.push wipes its staging dir before extracting, so a
+	// partial push destroys the failed skill's last good staging copy — and
+	// the machine reports success for the subset, which makes the machine
+	// refresh live chat copies with wipe=true too. The skill's file content
+	// exists nowhere else (the skill table is metadata-only; a skill without
+	// a remote source cannot be pulled back). Only a genuinely empty
+	// selection (the agent has no skills) still sends, to clear stale
+	// staging.
+	if len(pushes) < len(skillIDs) {
+		logging.Infof("machine: config.push %s: refusing partial skill push — %d of %d selected archive(s) unavailable; machine staging left untouched", agentID, len(skillIDs)-len(pushes), len(skillIDs))
+		return
+	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	promptLen := len(systemPrompt)
@@ -975,10 +1097,11 @@ func (d *Daemon) AgentMachineID(ctx context.Context, agentID string) string {
 
 // SkillAgents returns the agents that have the skill selected (their
 // machines get a re-push after a library deletion so the skill's directory
-// is cleaned up).
+// is cleaned up). Same predicate as SkillService.Delete's usage check
+// (INSTR + quoted id) so both sides agree on what "selected" means.
 func (d *Daemon) SkillAgents(ctx context.Context, skillID string) []string {
 	rows, err := d.st.DB().QueryContext(ctx,
-		`SELECT id FROM agent WHERE skills LIKE ?`, `%"`+skillID+`"%`)
+		`SELECT id FROM agent WHERE INSTR(skills, ?) > 0`, `"`+skillID+`"`)
 	if err != nil {
 		return nil
 	}
