@@ -30,6 +30,7 @@ import {
   StatStrip,
 } from "@/components/ui";
 import { cn, relTime } from "@/lib/utils";
+import { CategoryBadge } from "@/components/category-badge";
 import type { Schedule } from "@/lib/types";
 
 export default function SchedulesPage() {
@@ -148,6 +149,7 @@ export default function SchedulesPage() {
                       {s.cron_expression}
                     </code>
                     <span className="font-mono text-[10px] text-ink-3">{s.timezone || "UTC"}</span>
+                    <CategoryBadge category={s.category} className="scale-90" />
                   </div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-3">
                     <span>负责人 {assigneeLabel(s)}</span>
@@ -336,6 +338,10 @@ function ScheduleDetail({
             <span className="text-ink-3 text-xs">状态：</span>
             <Badge status={schedule.enabled ? "running" : "cancelled"} className="scale-90" />
           </span>
+          <span>
+            <span className="text-ink-3 text-xs">验收分类：</span>
+            <CategoryBadge category={schedule.category} />
+          </span>
           <span><span className="text-ink-3 text-xs">下次触发：</span>{schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString("zh-CN") : "-"}</span>
           <span><span className="text-ink-3 text-xs">上次触发：</span>{schedule.last_run_at ? new Date(schedule.last_run_at).toLocaleString("zh-CN") : "从未"}</span>
         </div>
@@ -437,6 +443,16 @@ function ScheduleFormFields({
           ))}
         </select>
       </Field>
+      {/* Feature B：触发出来的 Goal 继承此验收分类。 */}
+      <Field
+        label="验收分类"
+        hint={form.category === "hootl" ? "无需人工复检，任务完成即结束" : "结束前进入 review 阶段等待人工审批"}
+      >
+        <select value={form.category} onChange={(e) => set({ category: e.target.value })} className={inputCls}>
+          <option value="hitl">HITL · 人工验收</option>
+          <option value="hootl">HOOTL · 免复检</option>
+        </select>
+      </Field>
       <Field label="Cron 表达式" hint="5 字段 cron: 分 时 日 月 星期（必填）">
         <input value={form.cron_expression} onChange={(e) => set({ cron_expression: e.target.value })} className={`${inputCls} font-mono`} required placeholder="0 9 * * 1-5" />
       </Field>
@@ -456,6 +472,7 @@ type ScheduleFormState = {
   domain_id: string;
   cron_expression: string;
   timezone: string;
+  category: string; // hitl | hootl
 };
 
 function NewScheduleForm({
@@ -473,7 +490,7 @@ function NewScheduleForm({
   const [form, setForm] = useState<ScheduleFormState>({
     name: "", title_template: "", description: "",
     assignee_type: "agent", assignee_id: "", domain_id: "",
-    cron_expression: "", timezone: "UTC",
+    cron_expression: "", timezone: "UTC", category: "hitl",
   });
   const set = (patch: Partial<ScheduleFormState>) => setForm((f) => ({ ...f, ...patch }));
 
@@ -530,6 +547,7 @@ function EditScheduleDialog({
     domain_id: schedule.domain_id,
     cron_expression: schedule.cron_expression,
     timezone: schedule.timezone || "UTC",
+    category: schedule.category || "hitl",
   });
   const set = (patch: Partial<ScheduleFormState>) => setForm((f) => ({ ...f, ...patch }));
 

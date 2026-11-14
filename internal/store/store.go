@@ -103,6 +103,7 @@ func Open(path string) (*Store, error) {
 		// the migration because the index references it and schema.sql runs
 		// before the ALTER on an old DB.
 		`ALTER TABLE goal ADD COLUMN connection_id TEXT NOT NULL DEFAULT ''`,
+
 		// RSI (self-improvement): per-goal execution mode + capture knobs.
 		// Columns live in the migration for the same reason as
 		// connection_id — an old DB gains them before any index/query runs.
@@ -153,6 +154,24 @@ func Open(path string) (*Store, error) {
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_rsi_round_session ON rsi_round(session_id, round_no)`,
 		`CREATE INDEX IF NOT EXISTS idx_rsi_round_goal ON rsi_round(goal_id, created_at)`,
+
+		// HITL/HOOTL task category: a goal created by a human/agent defaults
+		// to hitl (the existing human-checkpoint flow); hootl goals finish
+		// directly on completion without entering review.
+		`ALTER TABLE goal ADD COLUMN category TEXT NOT NULL DEFAULT 'hitl'`,
+		// A schedule clones its category onto every fired goal.
+		`ALTER TABLE schedule ADD COLUMN category TEXT NOT NULL DEFAULT 'hitl'`,
+		// Remote skill source (git repo binding). Tokens are stored like the
+		// domain.git_credentials column (single-user daemon, local SQLite).
+		`ALTER TABLE skill ADD COLUMN repo_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE skill ADD COLUMN repo_provider TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE skill ADD COLUMN repo_branch TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE skill ADD COLUMN repo_path TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE skill ADD COLUMN repo_token TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE skill ADD COLUMN last_synced_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE skill ADD COLUMN last_sync_action TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE skill ADD COLUMN last_remote_sha TEXT NOT NULL DEFAULT ''`,
+
 		`DROP INDEX IF EXISTS uq_goal_source_ref`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_goal_source_ref_conn ON goal(source_ref, connection_id) WHERE source_ref != ''`,
 	} {

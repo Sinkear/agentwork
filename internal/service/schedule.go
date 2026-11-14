@@ -17,13 +17,18 @@ import (
 // every fired goal — unattended runs need the domain's acceptance policy and
 // worktree, exactly like human-created goals.
 type Schedule struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	TitleTemplate  string `json:"title_template"`
-	Description    string `json:"description"`
-	AssigneeType   string `json:"assignee_type"` // agent | squad
-	AssigneeID     string `json:"assignee_id"`
-	DomainID       string `json:"domain_id"` // v2: fired goals belong to this domain
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	TitleTemplate string `json:"title_template"`
+	Description   string `json:"description"`
+	AssigneeType  string `json:"assignee_type"` // agent | squad
+	AssigneeID    string `json:"assignee_id"`
+	DomainID      string `json:"domain_id"` // v2: fired goals belong to this domain
+	// Category is the fired goals' human-in-the-loop mode (v3): "hitl"
+	// (default — checkpoint gates park completed runs in review) | "hootl"
+	// (unattended completion, gates skipped). Every firing clones it onto the
+	// goal it creates.
+	Category       string `json:"category"`
 	CronExpression string `json:"cron_expression"`
 	Timezone       string `json:"timezone"`
 	Enabled        bool   `json:"enabled"`
@@ -79,6 +84,15 @@ func (s *ScheduleService) validateSchedule(ctx context.Context, sch *Schedule) e
 	default:
 		return NewValidationError("assignee_type must be agent or squad")
 	}
+	// v3 HITL/HOOTL: each fired goal inherits this mode. Empty means the
+	// default human-in-the-loop; anything else is a client bug.
+	switch sch.Category {
+	case "":
+		sch.Category = "hitl"
+	case "hitl", "hootl":
+	default:
+		return NewValidationError("category must be hitl or hootl")
+	}
 	// v2 (M1): unattended goals need a domain (acceptance policy + worktree +
 	// deliver). Require it for agent/squad assignees.
 	if sch.DomainID == "" {
@@ -117,9 +131,9 @@ func (s *ScheduleService) Create(ctx context.Context, sch Schedule) (*Schedule, 
 		enabled = 1
 	}
 	if _, err := s.st.DB().ExecContext(ctx,
-		`INSERT INTO schedule (id,name,title_template,description,assignee_type,assignee_id,domain_id,cron_expression,timezone,enabled,next_run_at,last_run_at,created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,'',?)`,
-		sch.ID, sch.Name, sch.TitleTemplate, sch.Description, sch.AssigneeType, sch.AssigneeID, sch.DomainID, sch.CronExpression, sch.Timezone, enabled, sch.NextRunAt, sch.CreatedAt); err != nil {
+		`INSERT INTO schedule (id,name,title_template,description,assignee_type,assignee_id,domain_id,category,cron_expression,timezone,enabled,next_run_at,last_run_at,created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'',?)`,
+		sch.ID, sch.Name, sch.TitleTemplate, sch.Description, sch.AssigneeType, sch.AssigneeID, sch.DomainID, sch.Category, sch.CronExpression, sch.Timezone, enabled, sch.NextRunAt, sch.CreatedAt); err != nil {
 		return nil, fmt.Errorf("insert schedule: %w", err)
 	}
 
@@ -170,6 +184,12 @@ func (s *ScheduleService) Update(ctx context.Context, id string, sch Schedule) (
 		if sch.Timezone == "" {
 			sch.Timezone = existing.Timezone
 		}
+		// Category is not identity, but a time-only edit must not silently
+		// flip the built-in schedule's mode: empty carries forward (same rule
+		// as timezone), a non-empty value is an explicit mode change.
+		if sch.Category == "" {
+			sch.Category = existing.Category
+		}
 		if sch.Name != existing.Name || sch.TitleTemplate != existing.TitleTemplate ||
 			sch.Description != existing.Description ||
 			sch.AssigneeType != existing.AssigneeType || sch.AssigneeID != existing.AssigneeID ||
@@ -186,8 +206,8 @@ func (s *ScheduleService) Update(ctx context.Context, id string, sch Schedule) (
 		return nil, err
 	}
 	if _, err := s.st.DB().ExecContext(ctx,
-		`UPDATE schedule SET name=?,title_template=?,description=?,assignee_type=?,assignee_id=?,domain_id=?,cron_expression=?,timezone=?,next_run_at=? WHERE id=?`,
-		sch.Name, sch.TitleTemplate, sch.Description, sch.AssigneeType, sch.AssigneeID, sch.DomainID, sch.CronExpression, sch.Timezone, sch.NextRunAt, sch.ID); err != nil {
+		`UPDATE schedule SET name=?,title_template=?,description=?,assignee_type=?,assignee_id=?,domain_id=?,category=?,cron_expression=?,timezone=?,next_run_at=? WHERE id=?`,
+		sch.Name, sch.TitleTemplate, sch.Description, sch.AssigneeType, sch.AssigneeID, sch.DomainID, sch.Category, sch.CronExpression, sch.Timezone, sch.NextRunAt, sch.ID); err != nil {
 		return nil, fmt.Errorf("update schedule: %w", err)
 	}
 	s.bus.Publish(ctx, events.Event{Topic: "schedule:updated", Payload: sch})
@@ -201,7 +221,7 @@ func (s *ScheduleService) List(ctx context.Context) ([]Schedule, error) {
 	// deadlocks. The marker is set at daemon startup (static for the call).
 	marker := s.builtInMarkerID(ctx)
 	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT id,name,title_template,description,assignee_type,assignee_id,domain_id,cron_expression,timezone,enabled,next_run_at,last_run_at,created_at
+		`SELECT id,name,title_template,description,assignee_type,assignee_id,domain_id,category,cron_expression,timezone,enabled,next_run_at,last_run_at,created_at
 		 FROM schedule ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -212,7 +232,7 @@ func (s *ScheduleService) List(ctx context.Context) ([]Schedule, error) {
 	for rows.Next() {
 		var sch Schedule
 		var enabled int
-		if err := rows.Scan(&sch.ID, &sch.Name, &sch.TitleTemplate, &sch.Description, &sch.AssigneeType, &sch.AssigneeID, &sch.DomainID, &sch.CronExpression, &sch.Timezone, &enabled, &sch.NextRunAt, &sch.LastRunAt, &sch.CreatedAt); err != nil {
+		if err := rows.Scan(&sch.ID, &sch.Name, &sch.TitleTemplate, &sch.Description, &sch.AssigneeType, &sch.AssigneeID, &sch.DomainID, &sch.Category, &sch.CronExpression, &sch.Timezone, &enabled, &sch.NextRunAt, &sch.LastRunAt, &sch.CreatedAt); err != nil {
 			return nil, err
 		}
 		sch.Enabled = enabled != 0
@@ -226,9 +246,9 @@ func (s *ScheduleService) Get(ctx context.Context, id string) (*Schedule, error)
 	var sch Schedule
 	var enabled int
 	err := s.st.DB().QueryRowContext(ctx,
-		`SELECT id,name,title_template,description,assignee_type,assignee_id,domain_id,cron_expression,timezone,enabled,next_run_at,last_run_at,created_at
+		`SELECT id,name,title_template,description,assignee_type,assignee_id,domain_id,category,cron_expression,timezone,enabled,next_run_at,last_run_at,created_at
 		 FROM schedule WHERE id=?`, id).
-		Scan(&sch.ID, &sch.Name, &sch.TitleTemplate, &sch.Description, &sch.AssigneeType, &sch.AssigneeID, &sch.DomainID, &sch.CronExpression, &sch.Timezone, &enabled, &sch.NextRunAt, &sch.LastRunAt, &sch.CreatedAt)
+		Scan(&sch.ID, &sch.Name, &sch.TitleTemplate, &sch.Description, &sch.AssigneeType, &sch.AssigneeID, &sch.DomainID, &sch.Category, &sch.CronExpression, &sch.Timezone, &enabled, &sch.NextRunAt, &sch.LastRunAt, &sch.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -334,7 +354,7 @@ func (s *ScheduleService) Delete(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-// builtInMarkerID returns the seeded built-in schedule's id ('' = none).
+// builtInMarkerID returns the seeded built-in schedule's id (” = none).
 // The marker lives in app_settings (key builtin.digest.schedule_id, written
 // by SeedDigestSchedule) — bare SQL here, matching the daemon's settings
 // reads. Update/Delete consult it for the built-in guard; List/Get for the

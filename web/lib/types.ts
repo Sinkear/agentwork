@@ -15,6 +15,69 @@ export interface Skill {
   name: string;
   description: string;
   created_at: string;
+  source?: SkillSource | null;
+}
+
+// SkillSource is a skill's remote repository binding (Feature A). It is
+// omitted when no repo_url is configured. The token is write-only: the API
+// never serializes it — `has_token` says whether one is stored.
+export interface SkillSource {
+  repo_url: string;
+  provider: string; // github | gitcode
+  branch: string;
+  path: string; // '' = repo root containing the skill
+  has_token?: boolean;
+  last_synced_at?: string;
+  last_sync_action?: string; // '' | pulled | pushed | pr
+  last_remote_sha?: string;
+}
+
+// SyncEntry is one file difference between the local skill dir and the
+// remote repo (paths relative to the configured repo path).
+export interface SyncEntry {
+  path: string;
+  status: "added" | "modified" | "removed";
+  local_sha256?: string;
+  remote_sha256?: string;
+}
+
+export interface SyncCounts {
+  added: number;
+  modified: number;
+  removed: number;
+  unchanged: number;
+}
+
+// SyncResult is GET /skills/{id}/sync (read-only compare, still probes the
+// configured token's push permission) and the mutation responses for
+// POST /skills/{id}/sync.
+export interface SyncResult {
+  skill_id?: string;
+  identity?: string;
+  can_push?: boolean;
+  state?: "in_sync" | "local_ahead" | "remote_ahead" | "diverged";
+  base_branch?: string;
+  remote_sha?: string;
+  entries?: SyncEntry[];
+  counts?: SyncCounts;
+  checked_at?: string;
+  // local_missing: the skill's local files are gone (runs/skills wiped, or a
+  // DB restored without runs/). A pull restores them; push/PR stay blocked.
+  local_missing?: boolean;
+  // mutation extras
+  action?: string; // pulled | pushed
+  branch?: string;
+  commit?: string;
+}
+
+// SkillPullRequestResult is POST /skills/{id}/pull-request's response.
+export interface SkillPullRequestResult {
+  pr_url: string;
+  pr_number: number;
+  branch: string;
+  base: string;
+  identity: string;
+  commit: string;
 }
 
 // Machine is a remote host registered via `agentwork connect`.
@@ -87,6 +150,7 @@ export interface Goal {
   assignee_type: string; // agent | squad | human
   assignee_id: string;
   status: GoalStatus;
+  category: string; // hitl | hootl — hootl 完成即结束，跳过人工复检
   handoff_note: string;
   review_request: string;
   human_iterations: number;
@@ -353,6 +417,7 @@ export interface Schedule {
   domain_id: string; // 触发时克隆 goal 所属的域（验收策略 + worktree）
   cron_expression: string;
   timezone: string;
+  category: string; // hitl | hootl — 派生 goal 的验收分类
   enabled: boolean;
   next_run_at: string;
   last_run_at: string;

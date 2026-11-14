@@ -92,6 +92,24 @@ func TestIntakeCreateGoal(t *testing.T) {
 		t.Fatalf("first run must be queued for execution, got %q", runStatus)
 	}
 
+	// category passes through the intake path untouched: HOOTL goals are
+	// created with category=hootl (the service would default an empty value
+	// back to hitl).
+	if r := d.intakeCreateGoal(ctx, intakeAction{Goal: goalAction{
+		Title: "免复检任务", AssigneeID: "a1", DomainID: domID, Category: "hootl",
+	}}).Message; !strings.Contains(r, "已创建任务") {
+		t.Fatalf("hootl creation reply, got %q", r)
+	}
+	var category string
+	if err := d.st.DB().QueryRowContext(ctx,
+		`SELECT category FROM goal WHERE title=?`, "免复检任务").Scan(&category); err != nil {
+		t.Fatalf("hootl goal must exist: %v", err)
+	}
+	if category != "hootl" {
+		t.Fatalf("intake must persist category=hootl, got %q", category)
+	}
+	_ = d.intakeSvc.ClearDraft(ctx)
+
 	// Missing title → the ask lists 标题 (the first call saved a goal draft
 	// for "从飞书建的任务"; clear it so this case asks fresh).
 	_ = d.intakeSvc.ClearDraft(ctx)
@@ -159,9 +177,18 @@ func TestIntakeCreateSchedule(t *testing.T) {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"`
 		DomainID     string `json:"domain_id"`
-	}{Name: "每小时巡检", Title: "定时巡检", Cron: "0 * * * *", AssigneeID: "a1", DomainID: domID}}).Message
+		Category     string `json:"category"`
+	}{Name: "每小时巡检", Title: "定时巡检", Cron: "0 * * * *", AssigneeID: "a1", DomainID: domID, Category: "hootl"}}).Message
 	if !strings.Contains(reply, "已创建定时任务") {
 		t.Fatalf("expected creation reply, got %q", reply)
+	}
+	var schedCategory string
+	if err := d.st.DB().QueryRowContext(ctx,
+		`SELECT category FROM schedule WHERE name=?`, "每小时巡检").Scan(&schedCategory); err != nil {
+		t.Fatalf("schedule must exist: %v", err)
+	}
+	if schedCategory != "hootl" {
+		t.Fatalf("intake must persist schedule category=hootl, got %q", schedCategory)
 	}
 	// Bad cron → the validator's message, not a crash.
 	if r := d.intakeCreateSchedule(ctx, intakeAction{Intent: "create_schedule", Schedule: struct {
@@ -172,6 +199,7 @@ func TestIntakeCreateSchedule(t *testing.T) {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"`
 		DomainID     string `json:"domain_id"`
+		Category     string `json:"category"`
 	}{Name: "坏cron", Title: "x", Cron: "not-a-cron", AssigneeID: "a1", DomainID: domID}}).Message; !strings.Contains(r, "创建定时任务失败") {
 		t.Fatalf("bad cron must surface the validator message, got %q", r)
 	}
@@ -189,6 +217,7 @@ func TestIntakeCreateSchedule(t *testing.T) {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"`
 		DomainID     string `json:"domain_id"`
+		Category     string `json:"category"`
 	}{Name: "每小时巡检"}}).Message
 	if !strings.Contains(stop, "已停用") {
 		t.Fatalf("expected stop reply, got %q", stop)
@@ -201,6 +230,7 @@ func TestIntakeCreateSchedule(t *testing.T) {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"`
 		DomainID     string `json:"domain_id"`
+		Category     string `json:"category"`
 	}{Name: "不存在"}}).Message; !strings.Contains(r, "没找到") {
 		t.Fatalf("stopping an unknown schedule must say so, got %q", r)
 	}
@@ -1105,6 +1135,7 @@ func TestIntakeScheduleEnable(t *testing.T) {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"`
 		DomainID     string `json:"domain_id"`
+		Category     string `json:"category"`
 	}{Name: "每小时巡检", Title: "定时巡检", Cron: "0 * * * *", AssigneeID: "a1", DomainID: domID}})
 	d.intakeScheduleStop(ctx, intakeAction{Intent: "schedule_stop", Schedule: struct {
 		Name         string `json:"name"`
@@ -1114,6 +1145,7 @@ func TestIntakeScheduleEnable(t *testing.T) {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"`
 		DomainID     string `json:"domain_id"`
+		Category     string `json:"category"`
 	}{Name: "每小时巡检"}})
 
 	// Enable it back.
@@ -1125,6 +1157,7 @@ func TestIntakeScheduleEnable(t *testing.T) {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"`
 		DomainID     string `json:"domain_id"`
+		Category     string `json:"category"`
 	}{Name: "每小时巡检"}}).Message
 	if !strings.Contains(reply, "已启用") {
 		t.Fatalf("enable must succeed, got %q", reply)
@@ -1151,6 +1184,7 @@ func TestIntakeScheduleEnable(t *testing.T) {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"`
 		DomainID     string `json:"domain_id"`
+		Category     string `json:"category"`
 	}{Name: "不存在"}}).Message; !strings.Contains(r, "没找到") {
 		t.Fatalf("enable non-existent must say so, got %q", r)
 	}
@@ -1171,6 +1205,7 @@ func TestIntakeScheduleDelete(t *testing.T) {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"`
 		DomainID     string `json:"domain_id"`
+		Category     string `json:"category"`
 	}{Name: "待删除", Title: "x", Cron: "0 * * * *", AssigneeID: "a1", DomainID: domID}})
 
 	reply := d.intakeScheduleDelete(ctx, intakeAction{Intent: "schedule_delete", Schedule: struct {
@@ -1181,6 +1216,7 @@ func TestIntakeScheduleDelete(t *testing.T) {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"`
 		DomainID     string `json:"domain_id"`
+		Category     string `json:"category"`
 	}{Name: "待删除"}}).Message
 	if !strings.Contains(reply, "已删除") {
 		t.Fatalf("delete must succeed, got %q", reply)
@@ -1201,6 +1237,7 @@ func TestIntakeScheduleDelete(t *testing.T) {
 		AssigneeID   string `json:"assignee_id"`
 		AssigneeType string `json:"assignee_type"`
 		DomainID     string `json:"domain_id"`
+		Category     string `json:"category"`
 	}{Name: "不存在"}}).Message; !strings.Contains(r, "没找到") {
 		t.Fatalf("delete non-existent must say so, got %q", r)
 	}

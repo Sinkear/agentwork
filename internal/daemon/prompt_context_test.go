@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -489,5 +490,57 @@ func TestConsultStatusPicksAgentCommentByRunID(t *testing.T) {
 	// The consult entry must appear exactly once (no cartesian-product dup).
 	if c := strings.Count(status, "how?"); c != 1 {
 		t.Fatalf("consultStatus must render the consult once, got %d occurrences in:\n%s", c, status)
+	}
+}
+
+// TestCollaborationWarningScope (task 8.3): the collaboration warning is a
+// HAND-OFF warning — only owner/consult runs can hand work off, so only they
+// may see it. Verify/subgoal/review prompts must never carry it (their ends
+// are dictated by the protocol), and the owner text must name the positive
+// close-out path (`agentwork goal submit-review`).
+func TestCollaborationWarningScope(t *testing.T) {
+	d, st, goalID, agentID := seedCtx(t)
+	ctx := context.Background()
+
+	// Churn above the hint threshold: agent-authored trigger comments whose
+	// runs are counted by agentTriggeredRunCount (roles not subgoal/verify/
+	// review). MaxMentionHints + 1 owner runs is enough.
+	for i := 0; i <= service.MaxMentionHints; i++ {
+		cmtID := fmt.Sprintf("churn-cmt-%d", i)
+		runID := fmt.Sprintf("churn-run-%d", i)
+		if _, err := st.DB().ExecContext(ctx,
+			`INSERT INTO comment (id,goal_id,author_type,author_id,parent_id,content,created_at) VALUES (?,?,'agent',?,NULL,?,?)`,
+			cmtID, goalID, agentID, "hand it back", "2026-09-09T10:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.DB().ExecContext(ctx,
+			`INSERT INTO run (id,goal_id,agent_id,run_kind,run_type,status,role,attempt,trigger_comment_id,finished_at,queued_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			runID, goalID, agentID, "worker", "worker", "completed", "owner", 1,
+			cmtID, "2026-09-09T10:05:00Z", "2026-09-09T10:01:00Z", "2026-09-09T10:01:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	q := &service.ClaimedRow{RunID: "run-new", GoalID: goalID, AgentID: agentID, Attempt: 1}
+	owner := d.assemblePrompt(ctx, q, promptInputs{runRole: "owner", goalTitle: "g"})
+	if !strings.Contains(owner, "Collaboration warning") {
+		t.Fatalf("owner prompt above the mention threshold must carry the warning, got:\n%s", owner)
+	}
+	if !strings.Contains(owner, "submit the goal for review") {
+		t.Fatalf("warning must name the submit-for-review close-out, got:\n%s", owner)
+	}
+
+	for _, tc := range []struct {
+		role string
+		in   promptInputs
+	}{
+		{"verify", promptInputs{runRole: "verify", verifyRun: true, goalTitle: "g", title: "t", desc: "d"}},
+		{"subgoal", promptInputs{runRole: "subgoal", subGoalRun: true, goalTitle: "g", title: "t", desc: "d"}},
+		{"review", promptInputs{runRole: "review", reviewRun: true, goalTitle: "g"}},
+	} {
+		prompt := d.assemblePrompt(ctx, q, tc.in)
+		if strings.Contains(prompt, "Collaboration warning") {
+			t.Fatalf("%s prompt must NEVER carry the collaboration warning, got:\n%s", tc.role, prompt)
+		}
 	}
 }

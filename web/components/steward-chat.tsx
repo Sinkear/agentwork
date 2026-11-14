@@ -8,6 +8,7 @@ import { StewardSetup } from "@/components/steward-setup";
 import { AcpChatClient, ChatEvent, PermissionRequest } from "@/lib/acp";
 import { describeStewardFailure } from "@/lib/steward";
 import { StreamCards } from "@/lib/run-messages";
+import { useStickToBottom } from "@/lib/use-stick-to-bottom";
 import { listAgents } from "@/lib/api";
 
 // StewardChat — 与管家的 ACP 会话，作为「对话」页面的主体（不再是右下角浮窗）。
@@ -61,7 +62,9 @@ export function StewardChat({ className }: { className?: string }) {
   const msgID = useRef<number>(
     Math.max(0, ...loadHistory().map((m) => m.id || 0)) + 1
   );
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // 跟到底部：messages 每变一次（含 streaming tool_call_update 合并进旧
+  // 卡片、thought/agent 片段增长）就贴底；用户主动往上翻则先不打扰。
+  const scrollRef = useStickToBottom<HTMLDivElement>([messages, busy]);
   const agentActivity = useRef(false);
   // busy 镜像到 ref：连接 effect 的 cleanup 关闭的是 mount 时的状态，
   // 没有 ref 永远看到 false，会漏掉 cancel，留下一个孤儿 turn。
@@ -137,10 +140,6 @@ export function StewardChat({ className }: { className?: string }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stewardId]);
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight);
-  }, [messages, busy]);
 
   useEffect(() => {
     saveHistory(messages);

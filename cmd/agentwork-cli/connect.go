@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -200,11 +201,33 @@ func runLink(ctx context.Context, wsURL string, st cliState, name, hostname stri
 	// PROJECT-level skills (original names, the user's own global skills
 	// untouched). The agent's whole staging dir is rebuilt from scratch, so
 	// removals propagate.
+	//
+	// The rebuild (RemoveAll → extract → refresh live chats) is serialized
+	// PER AGENT: daemon-side push callers are fire-and-forget, so two
+	// pushes for the same agent can overlap; interleaved RemoveAll/extract
+	// phases would leave a half-built staging dir, and interleaved
+	// copyAgentSkills(wipe=true) on the same chat cwd could tear the copy
+	// with neither push re-fixing it.
+	skillPushMu := &sync.Mutex{}
+	skillPushLocks := map[string]*sync.Mutex{}
+	skillPushLock := func(agentID string) *sync.Mutex {
+		skillPushMu.Lock()
+		defer skillPushMu.Unlock()
+		m := skillPushLocks[agentID]
+		if m == nil {
+			m = &sync.Mutex{}
+			skillPushLocks[agentID] = m
+		}
+		return m
+	}
 	peer.Handle(link.MethodConfigPush, func(ctx context.Context, raw json.RawMessage) (any, *link.RPCError) {
 		var p link.ConfigPushParams
 		if err := json.Unmarshal(raw, &p); err != nil || p.AgentID == "" {
 			return nil, &link.RPCError{Code: link.CodeInvalidParams, Message: "agent_id is required"}
 		}
+		lock := skillPushLock(p.AgentID)
+		lock.Lock()
+		defer lock.Unlock()
 		res := link.ConfigPushResult{}
 		// The agent-level persona (system prompt) rides AGENTS.md in the
 		// per-agent config dir — the runtime's profile resolver loads it
@@ -238,6 +261,16 @@ func runLink(ctx context.Context, wsURL string, st cliState, name, hostname stri
 			res.Written = append(res.Written, sk.Name)
 		}
 		cliLogf("config.push: agent %s skills → %d installed, %d error(s) into %s", p.AgentID, len(res.Written), len(res.Errors), root)
+		// Push the refreshed staging into the agent's LIVE chat cwds: their
+		// copies were made at chat.open, so without this a chat opened before
+		// the sync keeps loading the old skill until it is restarted. Only
+		// when every selected archive installed cleanly — a partial push must
+		// not delete skills from a live cwd.
+		if len(res.Errors) == 0 {
+			chat.refreshAgentSkillCopies(p.AgentID)
+		} else {
+			cliLogf("config.push: agent %s: %d error(s) — live chat skill copies left as-is", p.AgentID, len(res.Errors))
+		}
 		return res, nil
 	})
 	// Every handler is registered — StartReadLoop must run BEFORE the first

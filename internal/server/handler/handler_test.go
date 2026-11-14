@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/eushing/agentwork/internal/events"
@@ -30,7 +31,8 @@ func newTestHandlers(t *testing.T) (*Handlers, *store.Store, string) {
 	if err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
-	agent, err := service.NewAgentService(st, events.NewBus()).Create(ctx, service.Agent{Name: "A", RuntimeID: rt.ID, MaxConcurrent: 2})
+	as := service.NewAgentService(st, events.NewBus())
+	agent, err := as.Create(ctx, service.Agent{Name: "A", RuntimeID: rt.ID, MaxConcurrent: 2})
 	if err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
@@ -39,7 +41,7 @@ func newTestHandlers(t *testing.T) (*Handlers, *store.Store, string) {
 		t.Fatalf("seed domain: %v", err)
 	}
 
-	h := &Handlers{Goal: gs}
+	h := &Handlers{Goal: gs, Agent: as}
 	mux := http.NewServeMux()
 	h.Mount(mux)
 
@@ -99,5 +101,96 @@ func TestListGoalsLimit(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("GET %s: expected 400, got %d", bad, rec.Code)
 		}
+	}
+}
+
+// TestAgentDeleteImpactHandler: GET /agents/{id}/delete-impact returns the
+// snake_case preflight JSON (blocked by the seeded active goals) and 404s for
+// an unknown agent.
+// TestSubmitGoalReviewHandler: POST /goals/{id}/submit-review wraps the goal
+// in {"goal": ...} on 200, maps the service ValidationError to 400 (live runs
+// or a non-active goal), and 404s for an unknown goal.
+func TestSubmitGoalReviewHandler(t *testing.T) {
+	h, _, _ := newTestHandlers(t)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+
+	_, goals := get(t, mux, "/goals")
+	if len(goals) == 0 {
+		t.Fatal("seed produced no goals")
+	}
+	goalID := goals[0].ID
+
+	post := func(path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := post("/goals/"+goalID+"/submit-review", `{"reason":"交付物在 feed 里，提交审核"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("submit-review: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Goal service.Goal `json:"goal"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode submit-review: %v (body %s)", err, rec.Body.String())
+	}
+	if body.Goal.ID != goalID || body.Goal.Status != "review" || body.Goal.ReviewRequest == "" {
+		t.Fatalf("unexpected submit-review body: %s", rec.Body.String())
+	}
+
+	// Already in review → the active-only refusal is a 400.
+	if rec := post("/goals/"+goalID+"/submit-review", `{"reason":"again"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("second submit: status %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	// Malformed JSON is a 400 before the service is consulted.
+	if rec := post("/goals/"+goalID+"/submit-review", `{"reason":`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed body: status %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	// Unknown goal → ErrNotFound → 404.
+	if rec := post("/goals/does-not-exist/submit-review", `{"reason":"x"}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown goal: status %d, want 404 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAgentDeleteImpactHandler(t *testing.T) {
+	h, _, agentID := newTestHandlers(t)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/agents/"+agentID+"/delete-impact", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete-impact: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		AgentID       string `json:"agent_id"`
+		CanDelete     bool   `json:"can_delete"`
+		ActiveRuns    int    `json:"active_runs"`
+		ActiveGoals   int    `json:"active_goals"`
+		TerminalGoals int    `json:"terminal_goals"`
+		Blockers      []struct {
+			Kind    string `json:"kind"`
+			Count   int    `json:"count"`
+			Message string `json:"message"`
+		} `json:"blockers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode delete-impact: %v (body %s)", err, rec.Body.String())
+	}
+	if body.AgentID != agentID || body.CanDelete || body.ActiveGoals != 3 || len(body.Blockers) != 1 ||
+		body.Blockers[0].Kind != "active_goals" || body.Blockers[0].Count != 3 || body.Blockers[0].Message == "" {
+		t.Fatalf("unexpected delete-impact body: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/agents/does-not-exist/delete-impact", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown agent: status %d, body %s", rec.Code, rec.Body.String())
 	}
 }

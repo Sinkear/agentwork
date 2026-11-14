@@ -258,13 +258,18 @@ func (s *AgentService) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	// Hard-reject guards: any referencing row blocks the delete and forces the
-	// caller to clean up first. goal/schedule/squad/run all hold an agent id;
-	// issue_assignee makes this agent an issue-handling target. Only when zero
-	// references remain does the delete proceed (plan §守卫矩阵).
+	// Hard-reject guards: only LIVE work blocks the delete. Terminal goal /
+	// schedule / run history is not a reason to keep an agent around — the
+	// operator can delete the agent and the history stays queryable (goal
+	// rows have no FK on assignee_id, so a terminal goal keeps its dangling
+	// assignee id as an audit trail; schedules are cleaned below). Still
+	// hard-rejected: an active goal (the agent owns unfinished work), a
+	// queued/running run (its worker would be orphaned mid-flight), squad
+	// leadership/membership (FK integrity) and domain issue handling
+	// (plan §守卫矩阵).
 	var n int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM goal WHERE assignee_type='agent' AND assignee_id=?`, id).Scan(&n); err != nil {
+		`SELECT COUNT(*) FROM goal WHERE assignee_type='agent' AND assignee_id=? AND status NOT IN ('done','failed','cancelled')`, id).Scan(&n); err != nil {
 		return fmt.Errorf("check goals: %w", err)
 	}
 	if n > 0 {
@@ -274,21 +279,7 @@ func (s *AgentService) Delete(ctx context.Context, id string) error {
 			name = id
 		}
 		return NewCodedErrorDetail(CodeAgentHasGoals,
-			fmt.Sprintf("agent %q has %d goal(s); delete or reassign them first", name, n),
-			map[string]any{"name": name, "count": n})
-	}
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM schedule WHERE assignee_type='agent' AND assignee_id=?`, id).Scan(&n); err != nil {
-		return fmt.Errorf("check schedules: %w", err)
-	}
-	if n > 0 {
-		var name string
-		_ = tx.QueryRowContext(ctx, `SELECT name FROM agent WHERE id=?`, id).Scan(&name)
-		if name == "" {
-			name = id
-		}
-		return NewCodedErrorDetail(CodeAgentHasSchedules,
-			fmt.Sprintf("agent %q has %d schedule(s); delete or reassign them first", name, n),
+			fmt.Sprintf("agent %q has %d active goal(s); finish, cancel or reassign them first", name, n),
 			map[string]any{"name": name, "count": n})
 	}
 	// squad.leader_id is RESTRICT — a leaderless squad is invalid.
@@ -320,10 +311,11 @@ func (s *AgentService) Delete(ctx context.Context, id string) error {
 			fmt.Sprintf("agent %q is a member of %d squad(s); remove them from squads first", name, n),
 			map[string]any{"name": name, "count": n})
 	}
-	// Only a RUNNING run blocks — completed/failed/cancelled runs are history.
+	// Only queued/running runs block — completed/failed/cancelled runs are
+	// history and are deleted with their chat_message cache below.
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM run WHERE agent_id=? AND status='running'`, id).Scan(&n); err != nil {
-		return fmt.Errorf("check running runs: %w", err)
+		`SELECT COUNT(*) FROM run WHERE agent_id=? AND status IN ('queued','running')`, id).Scan(&n); err != nil {
+		return fmt.Errorf("check active runs: %w", err)
 	}
 	if n > 0 {
 		var name string
@@ -332,7 +324,7 @@ func (s *AgentService) Delete(ctx context.Context, id string) error {
 			name = id
 		}
 		return NewCodedErrorDetail(CodeAgentHasRunningRuns,
-			fmt.Sprintf("agent %q has %d running run(s); wait for them to finish or cancel them first", name, n),
+			fmt.Sprintf("agent %q has %d queued/running run(s); wait for them to finish or cancel them first", name, n),
 			map[string]any{"name": name, "count": n})
 	}
 	if err := tx.QueryRowContext(ctx,
@@ -349,11 +341,12 @@ func (s *AgentService) Delete(ctx context.Context, id string) error {
 			fmt.Sprintf("agent %q handles issues for %d domain(s); reassign issue handling first", name, n),
 			map[string]any{"name": name, "count": n})
 	}
-	// All guards passed (zero referencing rows). Clean up the FK-constrained
-	// history before the agent row can go: run.agent_id is a non-cascading FK,
-	// so a run must be dropped (with its chat_message cache) before the agent.
-	// Schedules/goals/squad_members pointing at this agent are already gone
-	// (the guards above refused while any existed).
+	// All guards passed. Clean up the FK-constrained history before the agent
+	// row can go: run.agent_id is a non-cascading FK, so a run must be
+	// dropped (with its chat_message cache) before the agent. squad_members
+	// pointing at this agent are already gone (the guard above refused while
+	// any existed). Terminal goal history is KEPT: goal.assignee_id has no
+	// FK, so the rows survive with a dangling assignee id as an audit trail.
 	for _, stmt := range []string{
 		`DELETE FROM chat_message WHERE run_id IN (SELECT id FROM run WHERE agent_id=?)`,
 		`DELETE FROM run WHERE agent_id=?`,
@@ -368,6 +361,13 @@ func (s *AgentService) Delete(ctx context.Context, id string) error {
 		// it silently. Must precede the agent delete: agent_pin.agent_id is a
 		// non-cascading FK, so a leftover pin row would reject DELETE FROM agent.
 		`DELETE FROM agent_pin WHERE agent_id=?`,
+		// Schedules assigned to this agent are deleted with it (disabled ones
+		// are no longer a hard guard — only live work is). schedule_run holds
+		// non-cascading FKs to schedule(id) and goal(id) and records each
+		// firing, so its rows must go before the schedule rows; the goals the
+		// firings produced are left untouched.
+		`DELETE FROM schedule_run WHERE schedule_id IN (SELECT id FROM schedule WHERE assignee_type='agent' AND assignee_id=?)`,
+		`DELETE FROM schedule WHERE assignee_type='agent' AND assignee_id=?`,
 		`DELETE FROM agent WHERE id=?`,
 	} {
 		if _, err := tx.ExecContext(ctx, stmt, id); err != nil {
@@ -380,6 +380,117 @@ func (s *AgentService) Delete(ctx context.Context, id string) error {
 	// Tell the daemon to drop this agent's worker.
 	s.bus.Publish(ctx, events.Event{Topic: "agent:deleted", Payload: map[string]string{"id": id}})
 	return nil
+}
+
+// AgentDeleteBlocker is one live-work reason an agent cannot be deleted.
+type AgentDeleteBlocker struct {
+	Kind    string `json:"kind"` // active_runs | active_goals
+	Count   int    `json:"count"`
+	Message string `json:"message"`
+}
+
+// AgentDeleteImpact is the read-only preflight for DELETE /agents/{id} — what
+// the operator would cascade-delete and what currently blocks it. Counts use
+// the exact predicates AgentService.Delete enforces for live work:
+//   - active_runs: run rows in queued/running (blocking);
+//   - active_goals: goals assigned to the agent whose status is not terminal
+//     done/failed/cancelled (blocking);
+//   - runs: all run rows that would be deleted (history included);
+//   - schedules/enabled_schedules: all assigned schedules (deleted with the
+//     agent) and how many are enabled;
+//   - terminal_goals: done/failed/cancelled goal history (kept);
+//   - sub_goals: non-terminal sub-goals the delete would cancel.
+//
+// can_delete is true when Blockers is empty. Squad leadership/membership and
+// domain issue-handling are separate DELETE guards (FK integrity) and are not
+// part of this live-work summary.
+type AgentDeleteImpact struct {
+	AgentID          string               `json:"agent_id"`
+	CanDelete        bool                 `json:"can_delete"`
+	ActiveRuns       int                  `json:"active_runs"`
+	ActiveGoals      int                  `json:"active_goals"`
+	Runs             int                  `json:"runs"`
+	Schedules        int                  `json:"schedules"`
+	EnabledSchedules int                  `json:"enabled_schedules"`
+	TerminalGoals    int                  `json:"terminal_goals"`
+	SubGoals         int                  `json:"sub_goals"`
+	Blockers         []AgentDeleteBlocker `json:"blockers"`
+}
+
+// rowCounter is the QueryRowContext subset shared by *sql.DB and *sql.Tx.
+type rowCounter interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func countInt(ctx context.Context, q rowCounter, query string, args ...any) (int, error) {
+	var n int
+	if err := q.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// DeleteImpact computes AgentDeleteImpact for the preflight endpoint. Unknown
+// agent → ErrNotFound (handler maps to 404).
+func (s *AgentService) DeleteImpact(ctx context.Context, id string) (*AgentDeleteImpact, error) {
+	db := s.st.DB()
+	var name string
+	err := db.QueryRowContext(ctx, `SELECT name FROM agent WHERE id=?`, id).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load agent: %w", err)
+	}
+
+	imp := &AgentDeleteImpact{AgentID: id, Blockers: []AgentDeleteBlocker{}}
+	if imp.ActiveRuns, err = countInt(ctx, db,
+		`SELECT COUNT(*) FROM run WHERE agent_id=? AND status IN ('queued','running')`, id); err != nil {
+		return nil, fmt.Errorf("count active runs: %w", err)
+	}
+	if imp.Runs, err = countInt(ctx, db,
+		`SELECT COUNT(*) FROM run WHERE agent_id=?`, id); err != nil {
+		return nil, fmt.Errorf("count runs: %w", err)
+	}
+	if imp.ActiveGoals, err = countInt(ctx, db,
+		`SELECT COUNT(*) FROM goal WHERE assignee_type='agent' AND assignee_id=? AND status NOT IN ('done','failed','cancelled')`, id); err != nil {
+		return nil, fmt.Errorf("count active goals: %w", err)
+	}
+	if imp.TerminalGoals, err = countInt(ctx, db,
+		`SELECT COUNT(*) FROM goal WHERE assignee_type='agent' AND assignee_id=? AND status IN ('done','failed','cancelled')`, id); err != nil {
+		return nil, fmt.Errorf("count terminal goals: %w", err)
+	}
+	if imp.Schedules, err = countInt(ctx, db,
+		`SELECT COUNT(*) FROM schedule WHERE assignee_type='agent' AND assignee_id=?`, id); err != nil {
+		return nil, fmt.Errorf("count schedules: %w", err)
+	}
+	if imp.EnabledSchedules, err = countInt(ctx, db,
+		`SELECT COUNT(*) FROM schedule WHERE assignee_type='agent' AND assignee_id=? AND enabled=1`, id); err != nil {
+		return nil, fmt.Errorf("count enabled schedules: %w", err)
+	}
+	if imp.SubGoals, err = countInt(ctx, db,
+		`SELECT COUNT(*) FROM sub_goal WHERE (assignee_id=? OR verifier_id=?) AND status NOT IN ('verified','cancelled','failed')`, id, id); err != nil {
+		return nil, fmt.Errorf("count sub-goals: %w", err)
+	}
+
+	if imp.ActiveRuns > 0 {
+		imp.Blockers = append(imp.Blockers, AgentDeleteBlocker{
+			Kind:  "active_runs",
+			Count: imp.ActiveRuns,
+			Message: fmt.Sprintf("agent %q has %d queued/running run(s); wait for them to finish or cancel them first",
+				name, imp.ActiveRuns),
+		})
+	}
+	if imp.ActiveGoals > 0 {
+		imp.Blockers = append(imp.Blockers, AgentDeleteBlocker{
+			Kind:  "active_goals",
+			Count: imp.ActiveGoals,
+			Message: fmt.Sprintf("agent %q has %d active goal(s); finish, cancel or reassign them first",
+				name, imp.ActiveGoals),
+		})
+	}
+	imp.CanDelete = len(imp.Blockers) == 0
+	return imp, nil
 }
 
 // GetSteward returns the system-internal steward agent (type=steward), used by

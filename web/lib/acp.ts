@@ -3,6 +3,18 @@
 // session/prompt, event streaming, permission requests — against our own
 // daemon endpoint (GET /agents/{id}/acp), which relays the frames
 // unparsed to the machine. Protocol shapes mirror internal/acp.
+//
+// Reliability contract (bug 2 — /goals/new "交给管家创建" hung silently):
+//   * Every HANDSHAKE step has a deadline (connect 15s, initialize 20s,
+//     session/new 30s, session/list 20s). A turn (session/prompt) still has
+//     no artificial limit — an agent takes as long as it takes; its socket
+//     death rejects it immediately.
+//   * Every failure message carries the phase and, for socket deaths, the
+//     real WS close code + reason, so the UI can show "why" instead of
+//     spinning forever.
+//   * onclose rejects ALL pending requests (each labelled with its phase)
+//     and fires onClose with the close info, including when the owner
+//     abandons the client during a handshake.
 
 export interface SessionInfo {
   sessionId: string;
@@ -36,27 +48,100 @@ export interface ChatEvent {
   isResult?: boolean;
 }
 
+// AcpPhase names the lifecycle step a close/timeout happened in. Included in
+// every error message so "连接已关闭" is never the whole story.
+export type AcpPhase =
+  | "connect"
+  | "initialize"
+  | "session/list"
+  | "session/new"
+  | "session/load"
+  | "session/prompt"
+  | "ready"
+  | "closed";
+
+export interface AcpCloseInfo {
+  code: number;
+  reason: string;
+  phase: AcpPhase;
+}
+
 export interface AcpChatCallbacks {
   onEvent?: (ev: ChatEvent) => void;
   onPermissionRequest?: (
     req: PermissionRequest,
     respond: (outcome: { optionId?: string; cancelled?: boolean }) => void,
   ) => void;
-  onClose?: () => void;
+  onClose?: (info?: AcpCloseInfo) => void;
+}
+
+// Handshake deadlines. Deliberately distinct from the (absent) turn deadline:
+// a spawn/initialize/session handshake that has not answered by then is a
+// half-dead channel, not a slow agent. See the header contract.
+const CONNECT_OPEN_TIMEOUT_MS = 15_000;
+const INITIALIZE_TIMEOUT_MS = 20_000;
+const SESSION_LIST_TIMEOUT_MS = 20_000;
+const SESSION_NEW_TIMEOUT_MS = 30_000;
+
+interface PendingEntry {
+  resolve: (v: unknown) => void;
+  reject: (e: Error) => void;
+  method: string;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+// Human label per JSON-RPC method — the phase users see in errors.
+function methodLabel(method: string): string {
+  switch (method) {
+    case "initialize":
+      return "初始化(initialize)";
+    case "session/new":
+      return "创建会话(session/new)";
+    case "session/list":
+      return "拉取会话列表(session/list)";
+    case "session/load":
+      return "加载会话(session/load)";
+    case "session/prompt":
+      return "本轮对话(session/prompt)";
+    default:
+      return method;
+  }
+}
+
+// formatAcpClose renders a WS close event as "code + reason (+ phase)" for
+// both the class's rejections and the page banner.
+export function formatAcpClose(info: AcpCloseInfo): string {
+  let codeText: string;
+  switch (info.code) {
+    case 1000:
+      codeText = "1000，正常关闭";
+      break;
+    case 1001:
+      codeText = "1001，端点离开";
+      break;
+    case 1005:
+      codeText = "1005，没有状态码";
+      break;
+    case 1006:
+      codeText = "1006，连接异常中断（没有收到关闭帧）";
+      break;
+    default:
+      codeText = `${info.code}`;
+  }
+  const reason = info.reason ? `，原因: ${info.reason}` : "，未提供关闭原因";
+  return `连接已关闭(code ${codeText}${reason}；阶段: ${info.phase})`;
 }
 
 export class AcpChatClient {
   private ws?: WebSocket;
   private id = 0;
-  // closed marks an abandoned connect: React StrictMode runs the effect
-  // twice (mount → cleanup → mount) — the first connect is closed before
-  // its socket opens, and the late onopen must self-close instead of
-  // leaking a machine-side chat channel.
+  // closed marks an abandoned/closed client: React StrictMode runs the effect
+  // twice (mount → cleanup → mount), and a retry/「重来」 closes the old
+  // client. A late onopen must self-close instead of leaking a machine-side
+  // chat channel, and a late onclose must not fire the owner's onClose.
   private closed = false;
-  private pending = new Map<
-    number,
-    { resolve: (v: unknown) => void; reject: (e: Error) => void }
-  >();
+  private phase: AcpPhase = "connect";
+  private pending = new Map<number, PendingEntry>();
   private cb: AcpChatCallbacks;
 
   constructor(cb: AcpChatCallbacks) {
@@ -66,66 +151,145 @@ export class AcpChatClient {
   connect(url: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url);
+      // Publish the socket before it opens: close() (unmount/retry) must be
+      // able to abort a CONNECTING socket, otherwise the first render's
+      // abandoned attempt keeps a machine-side chat channel open.
+      this.ws = ws;
       let settled = false;
+      let openTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        if (openTimer) clearTimeout(openTimer);
+        this.close();
+        reject(err);
+      };
+
+      openTimer = setTimeout(() => {
+        fail(
+          new Error(
+            `连接超时(${CONNECT_OPEN_TIMEOUT_MS / 1000}s；阶段: connect)：WebSocket 没有打开——daemon 不可达，或反代没有转发 upgrade`,
+          ),
+        );
+      }, CONNECT_OPEN_TIMEOUT_MS);
+
       ws.onopen = () => {
+        if (openTimer) clearTimeout(openTimer);
         if (this.closed) {
           ws.close();
           return;
         }
-        this.ws = ws;
+        this.phase = "initialize";
         this.initialize().then(
           () => {
+            if (settled) return;
             settled = true;
+            this.phase = "ready";
             resolve();
           },
           (e) => {
-            settled = true;
-            reject(e);
+            const msg = (e as Error)?.message ?? String(e);
+            fail(new Error(`初始化失败（阶段: initialize）：${msg}`));
           },
         );
       };
-      ws.onerror = () => {
-        if (this.closed) return;
+      // No rejection here: the browser always follows an error event with a
+      // close event, and THAT carries the code/reason we want to show. The
+      // open timeout above covers a socket that never gets either.
+      ws.onerror = () => {};
+      ws.onclose = (e) => {
+        if (openTimer) clearTimeout(openTimer);
+        this.ws = undefined;
+        if (this.closed) {
+          // Deliberate close (unmount / retry): don't fire onClose, but never
+          // leave an awaited connect()/send() dangling.
+          if (!settled) {
+            settled = true;
+            reject(new Error("连接已取消（客户端已关闭）"));
+          }
+          this.rejectPending("连接已关闭（客户端主动关闭）");
+          return;
+        }
+        const info: AcpCloseInfo = {
+          code: e.code,
+          reason: e.reason ?? "",
+          phase: this.phase,
+        };
+        const desc = formatAcpClose(info);
         if (!settled) {
           settled = true;
-          reject(new Error("连接失败"));
+          reject(new Error(desc));
         }
-      };
-      ws.onclose = () => {
-        // The StrictMode ghost: this connect was abandoned before its
-        // socket opened, and the late onopen self-closed it. That is not
-        // a real death — it must not fire the panel's "连接已断开" banner
-        // while the live connection is fine.
-        if (this.closed) return;
-        if (!settled) {
-          settled = true;
-          reject(new Error("连接已关闭"));
-        }
-        // A dead connection rejects every in-flight request: the UI
-        // unblocks the moment the socket actually dies — this replaces
-        // artificial time limits (an agent turn takes as long as it takes).
-        this.pending.forEach((p) => p.reject(new Error("连接已关闭")));
-        this.pending.clear();
-        this.cb.onClose?.();
+        // A dead connection rejects every in-flight request with its own
+        // phase: the UI unblocks the moment the socket actually dies.
+        this.rejectPending(desc);
+        this.cb.onClose?.(info);
       };
       ws.onmessage = (e) => this.onMessage(String(e.data));
     });
   }
 
   close() {
-    this.closed = true;
-    this.ws?.close();
+    if (!this.closed) this.closed = true;
+    const ws = this.ws;
+    this.ws = undefined;
+    this.phase = "closed";
+    if (ws) {
+      try {
+        // A real close frame (not just TCP FIN) so proxies/middleboxes
+        // forward the teardown instead of holding a half-open socket.
+        ws.close(1000, "client closed");
+      } catch {
+        try {
+          ws.close();
+        } catch {
+          // already closing — nothing to do
+        }
+      }
+    }
+    // Reject in-flight work even on a deliberate close: an awaited caller
+    // must not hang forever behind an abandoned socket.
+    this.rejectPending("连接已关闭（客户端主动关闭）");
   }
 
-  private send(method: string, params: unknown): Promise<unknown> {
+  private rejectPending(reason: string) {
+    const entries = [...this.pending.values()];
+    this.pending.clear();
+    for (const p of entries) {
+      if (p.timer) clearTimeout(p.timer);
+      p.reject(new Error(`${reason}；进行中: ${methodLabel(p.method)}`));
+    }
+  }
+
+  private send(method: string, params: unknown, timeoutMs = 0): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      if (!this.ws) return reject(new Error("not connected"));
+      if (this.closed) return reject(new Error("连接尚未建立（客户端已关闭）"));
+      if (!this.ws) return reject(new Error(`连接尚未建立（阶段: ${method}）`));
       const id = ++this.id;
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-      // No artificial deadline — the agent takes as long as it takes.
-      // onclose rejects every pending request the moment the connection
-      // actually dies, so the UI never hangs silently.
+      const entry: PendingEntry = { resolve, reject, method };
+      this.pending.set(id, entry);
+      if (timeoutMs > 0) {
+        entry.timer = setTimeout(() => {
+          if (!this.pending.delete(id)) return;
+          // Timeout must also prove the channel is dead — otherwise a half-
+          // open socket would survive and the retry would race it.
+          this.close();
+          reject(
+            new Error(
+              `${methodLabel(method)} 超时(${Math.round(timeoutMs / 1000)}s；阶段: ${method})：机器在期限内没有回应——CLI 可能没启动、机器离线，或连接处于半死状态`,
+            ),
+          );
+        }, timeoutMs);
+      }
+      try {
+        this.ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+      } catch (e) {
+        if (this.pending.delete(id) && entry.timer) clearTimeout(entry.timer);
+        reject(new Error(`发送失败（阶段: ${method}）：${(e as Error).message}`));
+      }
+      // session/prompt intentionally has no deadline: a real turn takes as
+      // long as it takes, and onclose rejects it the moment the socket dies.
     });
   }
 
@@ -141,6 +305,7 @@ export class AcpChatClient {
       const p = this.pending.get(msg.id);
       if (!p) return;
       this.pending.delete(msg.id);
+      if (p.timer) clearTimeout(p.timer);
       if (msg.error) p.reject(new Error(msg.error.message ?? "acp error"));
       else p.resolve(msg.result);
       return;
@@ -195,12 +360,18 @@ export class AcpChatClient {
   }
 
   initialize(): Promise<void> {
-    return this.send("initialize", {
-      protocolVersion: 2,
-      capabilities: { session: {} },
-      info: { name: "agentwork-web", title: "Agentwork Web", version: "1.0.0" },
-      clientInfo: { name: "agentwork-web", title: "Agentwork Web", version: "1.0.0" },
-    }).then(() => undefined);
+    this.phase = "initialize";
+    // Timeout is enforced in send(); this method only mirrors the phase.
+    return this.send(
+      "initialize",
+      {
+        protocolVersion: 2,
+        capabilities: { session: {} },
+        info: { name: "agentwork-web", title: "Agentwork Web", version: "1.0.0" },
+        clientInfo: { name: "agentwork-web", title: "Agentwork Web", version: "1.0.0" },
+      },
+      INITIALIZE_TIMEOUT_MS,
+    ).then(() => undefined);
   }
 
   // The web never sends a cwd: the machine spawns the CLI with its process
@@ -208,11 +379,21 @@ export class AcpChatClient {
   // defaults to it. Sending a path made the CLI resolve a doubled relative
   // path (a '~' the CLI does not expand) — lstat ENOENT, "service failure".
   listSessions(): Promise<SessionInfo[]> {
-    return this.send("session/list", {}).then((r) => (r as { sessions: SessionInfo[] }).sessions ?? []);
+    this.phase = "session/list";
+    return this.send("session/list", {}, SESSION_LIST_TIMEOUT_MS)
+      .then((r) => (r as { sessions: SessionInfo[] }).sessions ?? [])
+      .finally(() => {
+        if (this.phase === "session/list") this.phase = "ready";
+      });
   }
 
   newSession(): Promise<string> {
-    return this.send("session/new", { mcpServers: [] }).then((r) => (r as { sessionId: string }).sessionId);
+    this.phase = "session/new";
+    return this.send("session/new", { mcpServers: [] }, SESSION_NEW_TIMEOUT_MS)
+      .then((r) => (r as { sessionId: string }).sessionId)
+      .finally(() => {
+        if (this.phase === "session/new") this.phase = "ready";
+      });
   }
 
   loadSession(sessionId: string, cwd: string): Promise<void> {
@@ -226,16 +407,26 @@ export class AcpChatClient {
     // actually live.
     const params: Record<string, unknown> = { sessionId, mcpServers: [] };
     if (cwd.startsWith("/")) params.cwd = cwd;
-    return this.send("session/load", params).then(() => undefined);
+    this.phase = "session/load";
+    return this.send("session/load", params)
+      .then(() => undefined)
+      .finally(() => {
+        if (this.phase === "session/load") this.phase = "ready";
+      });
   }
 
   prompt(sessionId: string, text: string): Promise<void> {
     // The ACP shape: a flat array of ContentBlock — the same shape the
     // Go client sends (verified against claude/opencode in the run flow).
+    this.phase = "session/prompt";
     return this.send("session/prompt", {
       sessionId,
       prompt: [{ type: "text", text }],
-    }).then(() => undefined);
+    })
+      .then(() => undefined)
+      .finally(() => {
+        if (this.phase === "session/prompt") this.phase = "ready";
+      });
   }
 
   cancel(sessionId: string): void {

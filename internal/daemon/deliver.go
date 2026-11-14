@@ -100,6 +100,10 @@ func (d *Daemon) deliverGoal(ctx context.Context, goalID string) {
 	// no branch-wait (owner runs already ended — the goal parked review on
 	// the owner's completion).
 	if domainType == "scratch" {
+		if reason, ok := d.scratchDeliveryBlocker(ctx, goalID, domainID); !ok {
+			d.finishDeliver(ctx, goalID, false, reason)
+			return
+		}
 		d.finishDeliver(ctx, goalID, true, "无仓库交付——产物在项目目录，按汇报验收", nil)
 		return
 	}

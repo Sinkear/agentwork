@@ -76,13 +76,31 @@ func subgoalCmd(args []string) {
 		verdict := fs.String("verdict", "", "passed|rejected (required)")
 		summary := fs.String("summary", "", "verdict summary")
 		evidence := fs.String("evidence", "", "evidence (command output etc.)")
+		evidenceFile := fs.String("evidence-file", "", "read evidence from this file instead (max 64KiB)")
 		_ = fs.Parse(args[1:])
 		if fs.NArg() < 1 || (*verdict != "passed" && *verdict != "rejected") {
-			fail("usage: agentwork subgoal verify <sub-goal-id> --verdict passed|rejected")
+			fail("usage: agentwork subgoal verify <sub-goal-id> --verdict passed|rejected [--evidence text | --evidence-file path]")
+		}
+		// Evidence files (findings-watchdog W2): the proof of a verdict is
+		// usually a report on disk, not a shell-quoted string. Read it here
+		// and cap it — evidence rides the RPC and is stored on the goal.
+		ev := *evidence
+		if *evidenceFile != "" {
+			if ev != "" {
+				fail("--evidence and --evidence-file are mutually exclusive")
+			}
+			b, err := os.ReadFile(*evidenceFile)
+			if err != nil {
+				fail("read evidence file: %v", err)
+			}
+			if len(b) > 64<<10 {
+				fail("evidence file %s is %d bytes — the limit is 64KiB; summarize it", *evidenceFile, len(b))
+			}
+			ev = string(b)
 		}
 		var out map[string]any
 		if err := rpcCall(link.MethodSubGoalVerify, link.SubGoalVerifyParams{
-			RPCToken: rpcToken(), SubGoalID: fs.Arg(0), Verdict: *verdict, Summary: *summary, Evidence: *evidence,
+			RPCToken: rpcToken(), SubGoalID: fs.Arg(0), Verdict: *verdict, Summary: *summary, Evidence: ev,
 		}, &out); err != nil {
 			fail("%v", err)
 		}

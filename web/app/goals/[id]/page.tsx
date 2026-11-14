@@ -10,6 +10,7 @@ import { GoalRuns } from "@/components/goal-runs";
 import { GoalSubGoals } from "@/components/goal-subgoals";
 import { GoalChanges } from "@/components/goal-changes";
 import { GoalStatusBar, GoalTimeline } from "@/components/goal-timeline";
+import { CategoryBadge } from "@/components/category-badge";
 import { Badge, AttentionChip, PageBody, SectionCard } from "@/components/ui";
 import { WorkflowGraphView } from "@/components/training/workflow-graph";
 import type { Goal } from "@/lib/types";
@@ -41,7 +42,10 @@ function GoalDetailPageInner() {
   if (isLoading) return <div className="p-8 text-sm text-ink-3">加载中…</div>;
   if (!goal) return <div className="p-8 text-sm text-ink-3">找不到 Goal。</div>;
 
-  const agentName = (aid: string) => agents?.find((a) => a.id === aid)?.name ?? aid;
+  // 已删除 agent 的 goal 记录仍在：id 非空但查不到时显示「已删除 agent」，
+  // 不再把 uuid 露给人看。agents 尚未加载时退回 id（这不是"已删除"）。
+  const agentName = (aid: string) =>
+    agents?.find((a) => a.id === aid)?.name ?? (aid ? (agents ? "已删除 agent" : aid) : "");
   const squadName = (sid: string) => squads?.find((s) => s.id === sid)?.name ?? sid;
   const assigneeLabel = goal.assignee_type === "squad"
     ? (squadName(goal.assignee_id) || goal.assignee_id || "-")
@@ -63,6 +67,7 @@ function GoalDetailPageInner() {
         <div className="flex items-center gap-3 mt-3">
           <h1 className="text-lg font-semibold text-ink">{goal.title}</h1>
           <Badge status={goal.status} />
+          <CategoryBadge category={goal.category} />
           <AttentionChip attention={goal.attention} />
           <GoalStatusBar goalId={id} goalStatus={goal.status} />
         </div>
