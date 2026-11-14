@@ -407,6 +407,24 @@ loop:
 	case proto.StatusCancelled:
 		status = "cancelled"
 	}
+	// Scratch machine verification (W1): the domain's frozen acceptance
+	// policy runs HERE, after the agent exited and before the terminal
+	// report — a scratch deliverable has no diff for the daemon to judge.
+	// A failed check flips the run to failed (the platform's local-path
+	// semantics: verification failure = run failure), and the evidence
+	// bundle travels with the report so delivery can require it.
+	evidence := ""
+	if status == "completed" && p.Scratch && !p.Proc && p.Checks != nil && len(p.Checks.Verify) > 0 {
+		report, passed, results := runScratchChecks(context.Background(), workdir, p.Checks)
+		evidence = buildScratchEvidence(workdir, p.Checks, results, passed, report)
+		if !passed {
+			cliLogf("exec: run %s scratch verification FAILED", p.RunID)
+			status = "failed"
+			result.Output = "verification failed:\n" + report
+		} else {
+			cliLogf("exec: run %s scratch verification passed (%d command(s))", p.RunID, len(results))
+		}
+	}
 	headSHA := ""
 	if status == "completed" && !p.Scratch && !p.Proc {
 		sha, err := commitAndPush(context.Background(), p, workdir, repo, branch, p.RunID, pushedProfile)
@@ -428,7 +446,7 @@ loop:
 	// structured side effects, never agent stdout). Digest goal runs too:
 	// the dispatch lists the goal-directory files (manifest + articles) the
 	// daemon collects — same channel, not a processor run.
-	finishParams := link.RunFinishedParams{RunID: p.RunID, Status: status, Summary: result.Output, Token: p.Token, HeadSHA: headSHA, SessionID: sessionID, WorkDir: workdir}
+	finishParams := link.RunFinishedParams{RunID: p.RunID, Status: status, Summary: result.Output, Token: p.Token, HeadSHA: headSHA, SessionID: sessionID, WorkDir: workdir, Evidence: evidence}
 	if (p.Proc || len(p.ArtifactFiles) > 0) && status == "completed" {
 		finishParams.Artifacts = map[string]string{}
 		for _, f := range p.ArtifactFiles {
@@ -741,7 +759,21 @@ func (e *executor) buildEnv(p link.RunDispatchParams, workdir string) []string {
 		"AGENTWORK_RUN_ID="+p.RunID,
 		"AGENTWORK_AGENT_ID="+p.AgentID,
 		"AGENTWORK_TOKEN="+p.Token,
+		"AGENTWORK_WORKDIR="+workdir,
 	)
+	// Scratch runs own a persistent project directory: name it explicitly
+	// and give reports/ a durable home. Reports MUST NOT live in /tmp (the
+	// case report's A9: a 100%-complete report rotted in tmp and the user
+	// saw nothing) — the report dir is inside the project dir, survives
+	// turns, and is the only place the platform can read evidence from.
+	if p.Scratch && workdir != "" {
+		reportDir := filepath.Join(workdir, "reports")
+		_ = os.MkdirAll(reportDir, 0o755)
+		env = append(env,
+			"AGENTWORK_GOAL_DIR="+workdir,
+			"AGENTWORK_REPORT_DIR="+reportDir,
+		)
+	}
 	return env
 }
 

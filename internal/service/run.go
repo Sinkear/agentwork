@@ -635,14 +635,25 @@ type ClaimedRow struct {
 // letting the daemon pass the set of agents with free capacity and claiming
 // only within that set. Returns (nil, nil) when nothing is claimable.
 //
-// SERIALIZATION (决策 6-2, per-workspace): every run gets its OWN worktree, so
-// the old per-goal lock is gone. The remaining guards:
+// SERIALIZATION (决策 6-2, per-workspace, extended by Task 9): every run gets
+// its OWN worktree, so the old per-goal lock is gone. The remaining guards:
 //   - an OWNER run is not claimed while another owner run of the same goal is
 //     running (owner single-flight — the goal branch has one writer);
 //   - a SUB-GOAL run is not claimed while another run of the same sub-goal is
 //     running (per-sub-goal single-flight);
-//   - consult/review/verify runs are read-only snapshots and run freely in
-//     parallel.
+//   - EXECUTOR single-flight: a mutating run (owner/subgoal/consult) is not
+//     claimed while ANOTHER mutating run for the same (goal_id, agent_id) is
+//     running. Worktree isolation does not isolate machine-level shared state
+//     (uv caches, install dirs, the domain checkout), so "read-only snapshot"
+//     was false for consults in practice: one agent must not run two turns of
+//     the same goal at once. An agent that genuinely needs parallel executors
+//     opts in with agent.max_concurrent > 1 (that budget is enforced by the
+//     dispatcher's free-slot set, not by this gate).
+//   - REVIEW/VERIFY runs stay claimable in parallel: they are true read-only
+//     roles (review only reads the branch during the freeze window; verify
+//     reads an adopted branch and writes no shared state) and must keep
+//     running while another executor is busy — a serialized verifier would
+//     deadlock the review queue.
 //
 // EXECUTION GATE (P0-1, 决策 6-15①): Claim is the ONLY place that decides
 // whether a queued run may execute NOW — producers may enqueue intents, the
@@ -689,6 +700,17 @@ func (s *RunService) Claim(ctx context.Context, readyAgents []string) (*ClaimedR
 		         AND ((r.role = 'owner' AND r2.role = 'owner' AND r2.goal_id != '' AND r2.goal_id = r.goal_id)
 		              OR (r.sub_goal_id != '' AND r2.sub_goal_id = r.sub_goal_id))
 		     )
+		     -- Executor single-flight (Task 9): the same agent must not execute
+		     -- two mutating runs of one goal at the same time. Review/verify are
+		     -- read-only and exempt; max_concurrent>1 is the explicit opt-in.
+		     AND (a.max_concurrent > 1
+		          OR r.role NOT IN ('owner', 'subgoal', 'consult')
+		          OR r.goal_id = ''
+		          OR NOT EXISTS (
+		            SELECT 1 FROM run r2
+		            WHERE r2.status='running' AND r2.id != r.id
+		              AND r2.goal_id = r.goal_id AND r2.agent_id = r.agent_id
+		              AND r2.role IN ('owner', 'subgoal', 'consult')))
 		   ORDER BY r.queued_at
 		   LIMIT 1
 		 )

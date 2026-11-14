@@ -91,6 +91,7 @@ func (h *Handlers) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /goals/{id}/assign", h.assignGoal)
 	mux.HandleFunc("POST /goals/{id}/cancel", h.cancelGoal)
 	mux.HandleFunc("POST /goals/{id}/review", h.resolveGoalReview)
+	mux.HandleFunc("POST /goals/{id}/submit-review", h.submitGoalReview)
 	mux.HandleFunc("POST /goals/{id}/reopen", h.reopenGoal)
 	mux.HandleFunc("POST /goals/{id}/activate", h.activateGoal)
 	mux.HandleFunc("GET /goals/{id}/runs", h.listRuns)
@@ -406,6 +407,26 @@ func (h *Handlers) resolveGoalReview(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := h.Goal.ResolveReview(r.Context(), r.PathValue("id"), "", body.Decision, body.Reason, "human")
 	writeJSON(w, out, err)
+}
+
+// submitGoalReview moves an ACTIVE goal into review at the owner's explicit
+// request (task 8.2) — the positive counterpart of the gate park. Returns the
+// updated goal wrapped in {"goal": ...}; an empty body is accepted (default
+// review request), malformed JSON and service ValidationErrors are 400.
+func (h *Handlers) submitGoalReview(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	out, err := h.Goal.SubmitForReview(r.Context(), r.PathValue("id"), body.Reason)
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	writeJSON(w, map[string]any{"goal": out}, nil)
 }
 
 // reopenGoal restarts a failed/cancelled goal (the human take-over path).

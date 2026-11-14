@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/eushing/agentwork/internal/events"
@@ -106,6 +107,55 @@ func TestListGoalsLimit(t *testing.T) {
 // TestAgentDeleteImpactHandler: GET /agents/{id}/delete-impact returns the
 // snake_case preflight JSON (blocked by the seeded active goals) and 404s for
 // an unknown agent.
+// TestSubmitGoalReviewHandler: POST /goals/{id}/submit-review wraps the goal
+// in {"goal": ...} on 200, maps the service ValidationError to 400 (live runs
+// or a non-active goal), and 404s for an unknown goal.
+func TestSubmitGoalReviewHandler(t *testing.T) {
+	h, _, _ := newTestHandlers(t)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+
+	_, goals := get(t, mux, "/goals")
+	if len(goals) == 0 {
+		t.Fatal("seed produced no goals")
+	}
+	goalID := goals[0].ID
+
+	post := func(path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := post("/goals/"+goalID+"/submit-review", `{"reason":"交付物在 feed 里，提交审核"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("submit-review: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Goal service.Goal `json:"goal"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode submit-review: %v (body %s)", err, rec.Body.String())
+	}
+	if body.Goal.ID != goalID || body.Goal.Status != "review" || body.Goal.ReviewRequest == "" {
+		t.Fatalf("unexpected submit-review body: %s", rec.Body.String())
+	}
+
+	// Already in review → the active-only refusal is a 400.
+	if rec := post("/goals/"+goalID+"/submit-review", `{"reason":"again"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("second submit: status %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	// Malformed JSON is a 400 before the service is consulted.
+	if rec := post("/goals/"+goalID+"/submit-review", `{"reason":`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed body: status %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	// Unknown goal → ErrNotFound → 404.
+	if rec := post("/goals/does-not-exist/submit-review", `{"reason":"x"}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown goal: status %d, want 404 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAgentDeleteImpactHandler(t *testing.T) {
 	h, _, agentID := newTestHandlers(t)
 	mux := http.NewServeMux()

@@ -413,6 +413,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	} else if n > 0 {
 		logging.Infof("daemon: reconciled %d active goal(s)", n)
 	}
+	// Verify integrity (findings §W6, contract 7.3): a verify run can reach a
+	// terminal status without a verdict — the run-end reconcile heals it, but
+	// a crash between the terminal UPDATE and that reconcile would leave the
+	// sub-goal verifying forever. Sweep once at startup, then on a 2-minute
+	// cadence: one re-dispatch, then a human park, plus the stale alarm.
+	d.sweepVerifyingSubGoals(ctx)
+	go d.runVerifySweeper(ctx)
 	// Option B recovery (Event≠Truth on the review window): the ready
 	// trigger, the fallback timers and the fired flags are all in-memory — a
 	// crash between a window's park and its ready publish leaves the human's
@@ -1938,6 +1945,17 @@ func (d *Daemon) runTask(ctx context.Context, q *service.ClaimedRow) {
 				}
 			}
 		}
+		// Scratch acceptance policy travels to the MACHINE: a scratch
+		// deliverable has no git diff to verify, so the domain's frozen
+		// Verify policy must run where the files live. Read-only roles never
+		// carry it (they judge, they don't deliver).
+		var scratchChecks *link.RunChecks
+		if domainType == "scratch" && (runRole == "owner" || runRole == "subgoal") {
+			checks, timeout, _, frozen := d.loadDomainChecks(ctx, domainID)
+			if frozen && len(checks.Verify) > 0 {
+				scratchChecks = &link.RunChecks{Setup: checks.Setup, Verify: checks.Verify, VerifyTimeout: timeout}
+			}
+		}
 		d.dispatchToMachine(ctx, q, link.RunDispatchParams{
 			RunID: q.RunID, GoalID: q.GoalID, AgentID: q.AgentID,
 			Role: runRole, SubGoalID: subGoalID, Attempt: q.Attempt,
@@ -1952,6 +1970,7 @@ func (d *Daemon) runTask(ctx context.Context, q *service.ClaimedRow) {
 			PriorSessionID:   priorSession,
 			PriorWorkDir:     priorWorkdir,
 			McpServers:       d.extraMcpServers(ctx, q.AgentID),
+			Checks:           scratchChecks,
 		}, runtimeMachineID)
 		return
 	}
@@ -3045,8 +3064,15 @@ func (d *Daemon) assemblePrompt(ctx context.Context, q *service.ClaimedRow, in p
 			}
 		}
 	}
-	if n, err := d.agentTriggeredRunCount(ctx, q.GoalID); err == nil && n > service.MaxMentionHints {
-		extras.WriteString(fmt.Sprintf("\n⚠️ Collaboration warning: agents have handed this task back and forth %d times. Do NOT hand it off again — finish the remaining work yourself, or end your turn and leave it for a human.\n", n))
+	// Collaboration warning: only OWNER and CONSULT runs participate in the
+	// hand-off loop this warns about (task 8.3). Verify/subgoal/review runs
+	// must never see it — they cannot hand off, and the warning text tells the
+	// reader to finish or submit the goal, which is the owner's call. The count
+	// SQL stays untouched; the text now names the positive close-out path.
+	if in.runRole == "owner" || in.runRole == "consult" {
+		if n, err := d.agentTriggeredRunCount(ctx, q.GoalID); err == nil && n > service.MaxMentionHints {
+			extras.WriteString(fmt.Sprintf("\n⚠️ Collaboration warning: agents have handed this task back and forth %d times. Do NOT hand it off again — finish the remaining work yourself. If the work is substantially done, submit the goal for review (agentwork goal submit-review) and end your turn; otherwise end your turn and leave it for a human.\n", n))
+		}
 	}
 	if in.runRole == "owner" {
 		if section := d.consultStatus(ctx, q.GoalID, q.AgentID, q.RunID); section != "" {

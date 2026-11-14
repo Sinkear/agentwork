@@ -92,7 +92,7 @@ type FlowColor = (typeof FLOW_COLORS)[number];
 // chatter are not — they live in the comment feed.
 const FLOW_ACTIONS = new Set([
   "created", "handoff", "entered_review",
-  "reopened", "cancelled", "mention_cycle_failed", "auto_completed",
+  "reopened", "cancelled", "mention_cycle_failed", "auto_completed", "submitted_review",
 ]);
 const ACTION_LABEL: Record<string, string> = {
   created: "创建",
@@ -102,6 +102,7 @@ const ACTION_LABEL: Record<string, string> = {
   cancelled: "取消",
   mention_cycle_failed: "协作循环判死",
   auto_completed: "HOOTL 自动完成",
+  submitted_review: "提交审核",
 };
 
 // activity 的 detail 是 JSON 字符串：created 带 {"category":...}（schedule

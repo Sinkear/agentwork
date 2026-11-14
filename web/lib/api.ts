@@ -174,6 +174,10 @@ export const resolveGoalReview = (
 ) => api<Goal>(`/goals/${id}/review`, { method: "POST", body: JSON.stringify(body) });
 export const activateGoal = (id: string) =>
   api<Goal>(`/goals/${id}/activate`, { method: "POST" });
+// Explicit human/agent hand-off to review (contract task 8.2): the active
+// owner declares the deliverable ready; the goal is parked for a human.
+export const submitGoalReview = (id: string, reason?: string) =>
+  api<{ goal: Goal }>(`/goals/${id}/submit-review`, { method: "POST", body: JSON.stringify({ reason: reason ?? "" }) });
 // Continue a paused goal (run stopped by the human, goal still active):
 // enqueue a fresh owner run with a pause-resume wake note.
 export const continueGoal = (id: string) =>

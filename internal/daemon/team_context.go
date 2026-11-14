@@ -76,6 +76,18 @@ func (d *Daemon) buildFixedBlock(ctx context.Context, goalID, agentID, agentName
 		b.WriteString("survive between turns; the comment feed is only for coordination. The\n")
 		b.WriteString("PARENT directory is user-maintained shared material: READ-ONLY. Write\n")
 		b.WriteString("only inside this goal's directory.\n")
+		// Durable reports (findings-watchdog W2): /tmp is not a deliverable.
+		// The report dir is inside the project directory and survives turns;
+		// the delivery evidence bundle embeds reports/manifest.json, so a
+		// version/artifact receipt written there is visible at delivery.
+		b.WriteString("REPORTS: write every report, log, and evidence file under reports/\n")
+		b.WriteString("inside the project directory (AGENTWORK_REPORT_DIR). NEVER leave the\n")
+		b.WriteString("deliverable in /tmp — tmp files are lost between runs and cannot be\n")
+		b.WriteString("evidence. If the work has versioned artifacts, also write\n")
+		b.WriteString("reports/manifest.json: {\"versions\":{\"artifact\":\"...\",\"env\":\"...\",\n")
+		b.WriteString("\"template\":\"...\"}, \"files\":[{\"path\":\"...\",\"sha256\":\"...\"}]}.\n")
+		b.WriteString("It rides the run's verification evidence, so a version mismatch is\n")
+		b.WriteString("visible at delivery instead of hidden in a chat log.\n")
 	}
 
 	b.WriteString("\n# Who You Are\n")

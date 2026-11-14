@@ -154,6 +154,8 @@ Subcommands:
                                              --assignee_type: agent (default) | squad)
   goal cancel <id>                           cancel a goal
   goal reopen --goal <id> [--reason R]       reopen a finished/cancelled goal
+  goal submit-review [--reason R] <id>       submit an active goal for review (the owner's
+                                             explicit close-out when no merge remains)
   goal delete <id>                           delete a goal (comma-separated batch)
   goal create --title T [--description D] [--assignee A] [--status S] [--category hitl|hootl]
                                              create a goal; --category hitl (default, human
@@ -219,7 +221,7 @@ Environment (injected by daemon):
 
 func goalCmd(goalID, agentID string, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: agentwork-cli goal <list|status|assign|cancel|reopen|delete|create|comment|comments|wait>")
+		fmt.Fprintln(os.Stderr, "usage: agentwork-cli goal <list|status|assign|cancel|reopen|submit-review|delete|create|comment|comments|wait>")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -233,6 +235,8 @@ func goalCmd(goalID, agentID string, args []string) {
 		goalCancel(args[1:])
 	case "reopen":
 		goalReopen(args[1:])
+	case "submit-review":
+		goalSubmitReview(args[1:])
 	case "delete":
 		goalDelete(args[1:])
 	case "create":
@@ -482,6 +486,24 @@ func goalReopen(args []string) {
 		"intent":  "goal_reopen",
 		"goal_id": *goalID,
 		"goal":    map[string]any{"description": *reason},
+	})
+}
+
+// goalSubmitReview moves an active goal into review at the owner's explicit
+// request (task 8.2) — the positive close-out path when the work lives in the
+// feed and no merge is left. Posts the dedicated server route (the same HTTP
+// surface the Web button uses), so the status flip, activity row, system
+// comment and goal:reviewing event all happen in one service transaction.
+func goalSubmitReview(args []string) {
+	fs := flag.NewFlagSet("goal submit-review", flag.ExitOnError)
+	reason := fs.String("reason", "", "review request reason (optional)")
+	fs.Parse(args)
+	rest := fs.Args()
+	if len(rest) < 1 {
+		fail("usage: agentwork-cli goal submit-review [--reason R] <goal-id>")
+	}
+	post(serverURL()+"/goals/"+rest[0]+"/submit-review", map[string]any{
+		"reason": *reason,
 	})
 }
 

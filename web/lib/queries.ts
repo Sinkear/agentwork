@@ -31,6 +31,7 @@ import {
   reopenGoal,
   activateGoal,
   continueGoal,
+  submitGoalReview,
   listGoalRuns,
   listGoalRunMessages,
   listGoalComments,
@@ -358,6 +359,21 @@ export function useContinueGoal() {
       qc.invalidateQueries({ queryKey: qk.goals });
       qc.invalidateQueries({ queryKey: qk.goal(id) });
       qc.invalidateQueries({ queryKey: ["goals", id, "runs"] });
+    },
+  });
+}
+// Explicit submit-for-review (contract task 8.2): the goal flips active→review
+// and waits for a human decision. Invalidate goal/goals/timeline so the card,
+// list chip and feed all show the review state.
+export function useSubmitGoalReview() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason?: string }) =>
+      submitGoalReview(id, reason),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: qk.goals });
+      qc.invalidateQueries({ queryKey: qk.goal(vars.id) });
+      qc.invalidateQueries({ queryKey: qk.goalTimeline(vars.id) });
     },
   });
 }

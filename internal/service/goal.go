@@ -815,6 +815,82 @@ func (s *GoalService) Cancel(ctx context.Context, goalID string) (*Goal, error) 
 	return s.Get(ctx, goalID)
 }
 
+// SubmitForReview moves an ACTIVE goal into review on the owner's explicit
+// request (task 8.2) — the positive counterpart of the automatic gate park.
+// It is the way an owner closes out a goal whose work lives in the feed
+// instead of in merges: no verified sub-goal and no ready change means the
+// automatic wrapup channel may never fire, and an active goal would otherwise
+// stay active forever.
+//
+// Refusals are ValidationErrors (the HTTP layer maps them to 400):
+//   - the goal is not active (already in review/terminal — the explicit
+//     submit is a one-way active → review transition);
+//   - a run is queued/running (submitting under live work would freeze the
+//     goal around runs that still mutate it; the owner must stop them first).
+func (s *GoalService) SubmitForReview(ctx context.Context, goalID, reason string) (*Goal, error) {
+	// Serialize with reconcile so no owner run can be spawned between the
+	// live-run check and the status flip.
+	unlock := s.lockReconcile(goalID)
+	defer unlock()
+
+	g, err := s.Get(ctx, goalID)
+	if err != nil {
+		return nil, err
+	}
+	if g.Status != "active" {
+		return nil, NewValidationError("only an active goal can be submitted for review")
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "submitted for review"
+	}
+
+	tx, err := s.st.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var live int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run WHERE goal_id=? AND status IN ('queued','running')`, goalID).Scan(&live); err != nil {
+		return nil, fmt.Errorf("count live runs: %w", err)
+	}
+	if live > 0 {
+		return nil, NewValidationError("stop queued/running runs before submitting")
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE goal SET status='review', review_request=? WHERE id=? AND status='active'`,
+		reason, goalID)
+	if err != nil {
+		return nil, fmt.Errorf("submit goal for review: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Lost the active race (cancel/reopen/review elsewhere) — same refusal.
+		return nil, NewValidationError("only an active goal can be submitted for review")
+	}
+	detail, _ := json.Marshal(map[string]string{"reason": reason})
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO activity_log (id,goal_id,actor_type,actor_id,action,detail,created_at) VALUES (?,?,'human','','submitted_review',?,?)`,
+		newID(), goalID, string(detail), now()); err != nil {
+		return nil, fmt.Errorf("insert submitted_review activity: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO comment (id,goal_id,author_type,author_id,parent_id,content,created_at) VALUES (?,?,'system','',NULL,?,?)`,
+		newID(), goalID, "Goal submitted for review: "+reason, now()); err != nil {
+		return nil, fmt.Errorf("insert submit-for-review comment: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.bus.Publish(ctx, events.Event{Topic: "goal:reviewing", Payload: map[string]any{
+		"goal_id":      goalID,
+		"reason":       reason,
+		"auto_approve": false,
+	}})
+	return s.Get(ctx, goalID)
+}
+
 // Delete removes a goal and dependents. The goal's running runs are NOT
 // terminated here — their rows are gone by the time the daemon could act, so
 // the ids are captured BEFORE the cascade and travel in the goal:deleted
@@ -2258,7 +2334,8 @@ func (s *GoalService) reconcileGoalOnce(ctx context.Context, goalID string) erro
 	//     attention still pending — auto-spawning would loop the stuck agent
 	//     (决策 2-6: a timeout is the human's call);
 	//   - PROGRESS guard: spawn only when an attention SIGNAL (a change
-	//     revision or a failed sub-goal's run) is NEWER than the goal's last
+	//     revision, a failed sub-goal's run, or — for the idle fallback — the
+	//     latest non-idle-wake run's finish) is NEWER than the goal's last
 	//     owner-run spawn — an owner woken for THIS set of changes that made
 	//     no progress must not be re-spawned in a loop (the E2E spun 7 wakes).
 	//     A new revision / failure re-arms the spawn.
@@ -2273,7 +2350,7 @@ func (s *GoalService) reconcileGoalOnce(ctx context.Context, goalID string) erro
 			lastOwnerCancelled = true
 		}
 		if err := tx.QueryRowContext(ctx, `
-			SELECT MAX(x.ts) FROM (
+			SELECT COALESCE(MAX(x.ts),'') FROM (
 			  SELECT COALESCE((SELECT MAX(r2.created_at) FROM change_revision r2 WHERE r2.change_id = c.id), c.created_at) AS ts
 			  FROM change c WHERE c.goal_id=? AND c.status='ready'
 			  UNION ALL
@@ -2289,6 +2366,14 @@ func (s *GoalService) reconcileGoalOnce(ctx context.Context, goalID string) erro
 			`SELECT COALESCE(MAX(queued_at),'') FROM run WHERE goal_id=? AND role='owner'`,
 			goalID).Scan(&lastOwnerSpawn); err != nil {
 			return fmt.Errorf("last owner spawn: %w", err)
+		}
+		// The idle fallback (task 8.1) contributes its own signal: the newest
+		// finish among runs that were NOT an idle-fallback wake. Without it the
+		// fallback would set attention but never satisfy the spawn guard.
+		if idle, _, idleSignal, idleErr := s.idleWrapupTx(ctx, tx, goalID); idleErr != nil {
+			return idleErr
+		} else if idle && idleSignal > newestSignal {
+			newestSignal = idleSignal
 		}
 	}
 	if attention != "" && !lastOwnerCancelled && newestSignal > lastOwnerSpawn {
@@ -2468,6 +2553,57 @@ func (s *GoalService) enqueueSquadReviewTx(ctx context.Context, tx *sql.Tx, goal
 	return nil
 }
 
+const (
+	// wrapupIdleAfter is how long a goal may sit with NOTHING in flight before
+	// the owner is woken to review and close it out (task 8.1). Without this
+	// fallback an active goal whose last run finished and whose owner ended its
+	// turn stays active forever: no verified sub-goal exists to arm the
+	// progress-based wrapup bit.
+	wrapupIdleAfter = 10 * time.Minute
+	// wrapupIdleAnchor is the synthetic wake anchor marking a run spawned by
+	// the idle fallback. The idle signal EXCLUDES these runs: the owner waking,
+	// reviewing, and ending its turn without submitting must not let its own
+	// finish re-arm the fallback (that would be an endless wake loop).
+	wrapupIdleAnchor = "wrapup-idle"
+)
+
+// idleWrapupTx reports whether an ACTIVE goal has no work in flight (task 8.1):
+// no queued/running run, no pending/running/verifying sub-goal, no READY
+// change, and at least one finished run whose newest finish is older than
+// wrapupIdleAfter. The returned signal is the newest finish among runs that
+// were NOT an idle-fallback wake — the recency proof a spawn guard can compare
+// against the last owner spawn (same shape as the other attention signals).
+// All reads run on the caller's transaction.
+func (s *GoalService) idleWrapupTx(ctx context.Context, tx *sql.Tx, goalID string) (bool, int, string, error) {
+	var liveRuns, openSubGoals, readyChanges, runCount int
+	var latestFinished, signal string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT
+		  (SELECT COUNT(*) FROM run WHERE goal_id=? AND status IN ('queued','running')),
+		  (SELECT COUNT(*) FROM sub_goal WHERE goal_id=? AND status IN ('pending','running','verifying')),
+		  (SELECT COUNT(*) FROM change WHERE goal_id=? AND status='ready'),
+		  (SELECT COUNT(*) FROM run WHERE goal_id=?),
+		  (SELECT COALESCE(MAX(finished_at),'') FROM run WHERE goal_id=?),
+		  (SELECT COALESCE(MAX(finished_at),'') FROM run WHERE goal_id=? AND NOT (role='owner' AND wake_anchor=?))`,
+		goalID, goalID, goalID, goalID, goalID, goalID, wrapupIdleAnchor).
+		Scan(&liveRuns, &openSubGoals, &readyChanges, &runCount, &latestFinished, &signal); err != nil {
+		return false, 0, "", fmt.Errorf("idle wrapup state: %w", err)
+	}
+	if liveRuns > 0 || openSubGoals > 0 || readyChanges > 0 || runCount == 0 || latestFinished == "" {
+		return false, 0, "", nil
+	}
+	finished, err := time.Parse(time.RFC3339Nano, latestFinished)
+	if err != nil {
+		// A malformed timestamp must not break reconcile; treat it as "not idle".
+		return false, 0, "", nil
+	}
+	idleFor := time.Since(finished)
+	if idleFor < wrapupIdleAfter {
+		return false, 0, "", nil
+	}
+	return true, int(idleFor / time.Minute), signal, nil
+}
+
 // compileWakeNoteTx renders the derived attention bits into the owner's wake
 // note (决策 6-17) — one bullet per bit, naming the concrete sub-goals and
 // change counts. Platform text is English (决策 6-18); the sub-goal TITLES
@@ -2483,6 +2619,7 @@ func (s *GoalService) compileWakeNoteTx(ctx context.Context, tx *sql.Tx, goalID,
 	// Platform text is English (决策 6-18) — the note names the MATERIALS
 	// (sub-goal titles) verbatim; their language is the leader's own.
 	var bullets []string
+	idleAnchor := ""
 	for _, bit := range strings.Split(attention, ",") {
 		switch bit {
 		case "recovery":
@@ -2514,6 +2651,13 @@ func (s *GoalService) compileWakeNoteTx(ctx context.Context, tx *sql.Tx, goalID,
 			}
 			if len(titles) > 0 {
 				bullets = append(bullets, fmt.Sprintf("- Sub-goal(s) %q verified with no changes — the deliverable lives in the feed (its report); review the conclusion and wrap up", strings.Join(titles, ", ")))
+			} else if idle, mins, _, ierr := s.idleWrapupTx(ctx, tx, goalID); ierr != nil {
+				return "", "", ierr
+			} else if idle {
+				// The idle fallback (task 8.1) is the ONLY reason this wake is
+				// armed when there is no verified sub-goal to name.
+				idleAnchor = wrapupIdleAnchor
+				bullets = append(bullets, fmt.Sprintf("- No work remains in flight (last run finished %d min ago) — review the deliverable and submit the goal for review, then wrap up.", mins))
 			}
 		}
 	}
@@ -2521,12 +2665,17 @@ func (s *GoalService) compileWakeNoteTx(ctx context.Context, tx *sql.Tx, goalID,
 	// — the agent's own `goal comment` (its result/answer, 决策 4-4 revised).
 	// If the sub-goal's agent did not comment, there is no anchor (the owner
 	// relies on the wake note bullets + pulling the feed). Recovery-only wakes
-	// (failed runs produce no agent comment) get no anchor.
+	// (failed runs produce no agent comment) get no anchor. The idle fallback
+	// carries the synthetic wrapup-idle anchor instead.
 	var anchor string
-	_ = tx.QueryRowContext(ctx,
-		`SELECT c.id FROM comment c JOIN run r ON r.id = c.run_id
-		 WHERE r.goal_id=? AND r.role='subgoal'
-		 ORDER BY c.created_at DESC LIMIT 1`, goalID).Scan(&anchor)
+	if idleAnchor != "" {
+		anchor = idleAnchor
+	} else {
+		_ = tx.QueryRowContext(ctx,
+			`SELECT c.id FROM comment c JOIN run r ON r.id = c.run_id
+			 WHERE r.goal_id=? AND r.role='subgoal'
+			 ORDER BY c.created_at DESC LIMIT 1`, goalID).Scan(&anchor)
+	}
 	return strings.Join(bullets, "\n"), anchor, nil
 }
 
@@ -2637,6 +2786,33 @@ func (s *GoalService) deriveOwnerAttentionTx(ctx context.Context, tx *sql.Tx, go
 	}
 	if wrapup > 0 {
 		bits = append(bits, "wrapup")
+	}
+	// need_wrapup (idle fallback, task 8.1): NOTHING is in flight — no run
+	// queued/running, no open sub-goal, no READY change — and the goal's last
+	// run finished more than wrapupIdleAfter ago. This is the "owner ended its
+	// turn without closing the goal" case the verification-based bit cannot
+	// see (no sub-goal was verified). The recency signal is the latest finish
+	// among runs that were NOT an idle-fallback wake: the run spawned by this
+	// fallback must never become its own next signal, or the owner would be
+	// woken forever. Arming also requires that signal to be newer than the
+	// last owner spawn (mirrors the reconcile spawn guard), so a wake that
+	// already happened does not leave a stale badge.
+	if wrapup == 0 {
+		idle, _, signal, err := s.idleWrapupTx(ctx, tx, goalID)
+		if err != nil {
+			return "", err
+		}
+		if idle {
+			var lastOwnerSpawn string
+			if err := tx.QueryRowContext(ctx,
+				`SELECT COALESCE(MAX(queued_at),'') FROM run WHERE goal_id=? AND role='owner'`,
+				goalID).Scan(&lastOwnerSpawn); err != nil {
+				return "", fmt.Errorf("attention: last owner spawn: %w", err)
+			}
+			if signal > lastOwnerSpawn {
+				bits = append(bits, "wrapup")
+			}
+		}
 	}
 	return strings.Join(bits, ","), nil
 }
