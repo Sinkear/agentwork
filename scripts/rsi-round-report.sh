@@ -1,454 +1,766 @@
 #!/usr/bin/env bash
-# scripts/rsi-round-report.sh —— RSI 轮次演进报告生成器
+# scripts/rsi-round-report.sh —— RSI 轮次报告生成器（数据驱动 / fail loud）
 #
-# 用途：每轮 self-iter goal 收尾前运行，从 daemon API 与本地 git log 汇总生成
-#       docs/rsi/round-report-r<N>.md（固定五节，自包含，不依赖读者登录平台）。
-# 依赖：bash、curl、git、python3（标准库）。
-# 用法：
-#   scripts/rsi-round-report.sh <轮次号N> [选项]
-# 选项：
-#   --api URL          daemon API 基址（默认 http://127.0.0.1:47813）
-#   --int-branch REF   集成分支（默认 agentwork-int）
-#   --since R1 --until R3  历史轮号区间（默认 1..N-1，用于跨轮对比与候选清单节）
-#   --out PATH         输出路径（默认 docs/rsi/round-report-r<N>.md）
-#   --repo URL         报告内 commit 链接的仓库基址（默认 https://github.com/Sinkear/agentwork）
-#   --dry-run          输出到 stdout，不写文件
-# 说明：
-#   - 数据源只用列表端点：/rsi/sessions、/rsi/sessions/{id}、/goals、/goals/{id}/runs、
-#     /goals/{id}/comments、/rsi/sessions/{id}/rounds（/rsi 与 /runs/{id} 单查为 404，勿用）。
-#   - API 不可达时降级：跳过对应小节并显式标注「数据不可得」，不伪造数字。
+# 用途：为 RSI 自迭代第 N 轮生成 docs/rsi/round-report-r<N>.md。
+#       报告固定五节，全部内容由 daemon API 数据与本地 git log 派生；
+#       脚本本身不含任何轮次结论、数字或提案代号，换轮次只换参数。
+#
+# 依赖：bash、curl、git、python3（仅标准库）。
+#
+# 数据源（只用以下端点；/rsi 与 /runs/{id} 不是列表端点，本脚本不使用）：
+#   GET /goals
+#   GET /rsi/sessions
+#   GET /goals/{id}/runs
+#   GET /goals/{id}/comments
+#   GET /rsi/sessions/{id}
+#   GET /rsi/sessions/{id}/rounds
+#
+# 失败语义：
+#   - 参数非法、缺依赖、不在 git 仓库内：exit 2。
+#   - 必需 API（/goals、/rsi/sessions、范围内每个 goal 的 /goals/{id}/runs）
+#     任一失败，或本轮找不到标题匹配的 goal：stderr 明确说明 + exit 1，
+#     不写输出文件。
+#   - 可选数据（comments / session 详情 / rounds）缺失：对应节标注「数据不可得」。
+#
+# 输出：默认 <repo>/docs/rsi/round-report-r<N>.md；先写同目录临时文件再 mv。
+#       --dry-run 只输出到 stdout。
 set -euo pipefail
 
-N=""
+PROG="$(basename "$0")"
 API="http://127.0.0.1:47813"
 INT_BRANCH="agentwork-int"
-SINCE=1
-UNTIL=""          # 默认 N-1
+SINCE=""
+UNTIL=""
 OUT=""
 REPO_URL="https://github.com/Sinkear/agentwork"
 DRY_RUN=0
+N=""
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --api) API="$2"; shift 2 ;;
-    --int-branch) INT_BRANCH="$2"; shift 2 ;;
-    --since) SINCE="$2"; shift 2 ;;
-    --until) UNTIL="$2"; shift 2 ;;
-    --out) OUT="$2"; shift 2 ;;
-    --repo) REPO_URL="$2"; shift 2 ;;
-    --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
-    *) if [[ -z "$N" ]]; then N="$1"; shift; else echo "未知参数: $1" >&2; exit 2; fi ;;
-  esac
-done
-[[ -z "$N" ]] && { echo "用法: $0 <轮次号N> [--api URL] [--int-branch REF] [--since R1] [--until R3] [--out PATH] [--repo URL] [--dry-run]" >&2; exit 2; }
-[[ "$N" =~ ^[0-9]+$ ]] || { echo "轮次号必须是整数: $N" >&2; exit 2; }
-[[ -z "$UNTIL" ]] && UNTIL=$((N-1))
-for c in curl git python3; do command -v "$c" >/dev/null || { echo "缺少依赖: $c" >&2; exit 2; }; done
+usage() {
+  cat <<'USAGE'
+用法：
+  scripts/rsi-round-report.sh <N> [选项]
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-OUT="${OUT:-$REPO_ROOT/docs/rsi/round-report-r$N.md}"
-TMP="$(mktemp -d /tmp/opencode/rsi-report.XXXXXX)"
-trap 'rm -rf "$TMP"' EXIT
+位置参数：
+  N              轮次号，接受 3 或 R3（必须 ≥ 1）
 
-# ---------------------------------------------------------------- 采集
-fetch() { # fetch <path> <outfile>; 失败写空文件并在 .errors 记一行
-  local path="$1" out="$2"
-  if ! curl -sf --max-time 10 "$API$path" -o "$out" 2>/dev/null; then
-    : > "$out"; echo "$path" >> "$TMP/api.errors"
-  fi
+选项：
+  --api URL          daemon API 基址（默认 http://127.0.0.1:47813）
+  --int-branch REF   集成分支（默认 agentwork-int）
+  --since ROUND      跨轮对比起始轮（默认 1），接受 1 或 R1
+  --until ROUND      跨轮对比结束轮（默认 N-1），接受 3 或 R3
+  --out PATH         输出路径（默认 <repo>/docs/rsi/round-report-r<N>.md）
+  --repo URL         报告内 commit 链接的仓库基址
+                     （默认 https://github.com/Sinkear/agentwork）
+  --dry-run          只输出到 stdout，不写文件
+  -h, --help         显示本帮助
+
+报告结构（五节，全部由数据派生）：
+  ① 本轮概览        goals/sessions、node_count、critical_path、speedup、top findings
+  ② 失败与取消      run 明细、attempt、result_summary/cancel_reason
+  ③ 提交清单        git log（按轮次时间范围；取不到时退化最近 30 条并标注口径）
+  ④ 指标            每个 session/round 的 metrics（无则标注「无」）
+  ⑤ 候选项          findings 的 category/severity/title，注明「需人工判断，不自动采纳」
+
+轮次标题匹配：
+  「RSI R<N>」与「RSI 自迭代 R<N>」两种写法都识别。
+
+数据源（仅以下端点）：
+  GET /goals
+  GET /rsi/sessions
+  GET /goals/{id}/runs
+  GET /goals/{id}/comments
+  GET /rsi/sessions/{id}
+  GET /rsi/sessions/{id}/rounds
+
+退出码：
+  0  成功
+  1  必需 API 失败 / 未找到本轮 goal（stderr 说明，不写输出文件）
+  2  参数非法、缺少依赖或不在 git 仓库内
+USAGE
 }
 
-fetch /goals "$TMP/goals.json"
-fetch /rsi/sessions "$TMP/sessions.json"
+die2() { # die2 <消息> [--show-usage]
+  echo "错误：$1" >&2
+  [[ "${2:-}" == "--show-usage" ]] && usage >&2
+  exit 2
+}
 
-# 目标 goal：标题匹配「RSI R<N>」的训练 goal（可能有多条同轮记录，如重开轮，全保留）
-python3 - "$TMP" "$N" <<'PYEOF'
-import json, sys, re
-tmp, n = sys.argv[1], sys.argv[2]
-try:
-    goals = json.load(open(f"{tmp}/goals.json"))
-except Exception:
-    goals = []
-try:
-    sessions = json.load(open(f"{tmp}/sessions.json"))
-except Exception:
-    sessions = []
-pat = re.compile(rf"RSI\s*R{n}\b")
-mine = [g for g in goals if pat.search(g.get("title", ""))]
-prev = [g for g in goals if any(re.search(rf"RSI\s*R{k}\b", g.get("title", "")) for k in range(1, int(n)))]
-json.dump(mine, open(f"{tmp}/my_goals.json", "w"), ensure_ascii=False)
-json.dump(prev, open(f"{tmp}/prev_goals.json", "w"), ensure_ascii=False)
-# goal_id -> session 映射（一个 goal 可能对应多个 session，取全部）
-m = {}
-for s in sessions:
-    m.setdefault(s.get("goal_id", ""), []).append(s)
-json.dump(m, open(f"{tmp}/sessions_by_goal.json", "w"), ensure_ascii=False)
-PYEOF
+# parse_round <3|R3|r3> → 输出十进制轮次号；非法返回 1
+parse_round() {
+  local raw="$1"
+  raw="${raw#R}"
+  raw="${raw#r}"
+  [[ "$raw" =~ ^[0-9]+$ ]] || return 1
+  local v=$((10#$raw))
+  (( v >= 1 )) || return 1
+  printf '%s\n' "$v"
+}
 
-# 逐 goal 拉 runs / comments / sessions/{id} 详情（只用列表端点）
-python3 - "$TMP" <<'PYEOF' > "$TMP/fetch.list"
-import json, sys
-tmp = sys.argv[1]
-mine = json.load(open(f"{tmp}/my_goals.json"))
-prev = json.load(open(f"{tmp}/prev_goals.json"))
-sess = json.load(open(f"{tmp}/sessions_by_goal.json"))
-seen = set()
-for g in mine + prev:
-    gid = g["id"]
-    if gid in seen: continue
-    seen.add(gid)
-    print(f"runs {gid}")
-    print(f"comments {gid}")
-    for s in sess.get(gid, []):
-        print(f"session {s['id']}")
-        print(f"rounds {s['id']}")
-PYEOF
-while read -r kind ident; do
-  case "$kind" in
-    runs) fetch "/goals/$ident/runs" "$TMP/runs_$ident.json" ;;
-    comments) fetch "/goals/$ident/comments" "$TMP/comments_$ident.json" ;;
-    session) fetch "/rsi/sessions/$ident" "$TMP/session_$ident.json" ;;
-    rounds) fetch "/rsi/sessions/$ident/rounds" "$TMP/rounds_$ident.json" ;;
+while (( $# > 0 )); do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --api)
+      (( $# >= 2 )) || die2 "--api 需要参数"
+      API="$2"; shift 2 ;;
+    --int-branch)
+      (( $# >= 2 )) || die2 "--int-branch 需要参数"
+      INT_BRANCH="$2"; shift 2 ;;
+    --since)
+      (( $# >= 2 )) || die2 "--since 需要参数"
+      SINCE="$2"; shift 2 ;;
+    --until)
+      (( $# >= 2 )) || die2 "--until 需要参数"
+      UNTIL="$2"; shift 2 ;;
+    --out)
+      (( $# >= 2 )) || die2 "--out 需要参数"
+      OUT="$2"; shift 2 ;;
+    --repo)
+      (( $# >= 2 )) || die2 "--repo 需要参数"
+      REPO_URL="$2"; shift 2 ;;
+    -*) die2 "未知选项：$1" --show-usage ;;
+    *)
+      if [[ -z "$N" ]]; then N="$1"; shift
+      else die2 "多余的位置参数：$1" --show-usage
+      fi ;;
   esac
-done < "$TMP/fetch.list"
+done
 
-# ---------------------------------------------------------------- git 证据
-# 本轮 commit 区间：集成分支上「上一轮复测 commit（若可定位）..HEAD」；退化用最近 30 条
-# 集成分支检测：优先本地，其次 origin/ 远端跟踪引用
-GIT_BRANCH_REF=""
+[[ -n "$N" ]] || die2 "缺少轮次号 N" --show-usage
+N_RAW="$N"
+N="$(parse_round "$N")" || die2 "轮次号非法：$N_RAW（需形如 3 或 R3，且 ≥ 1）"
+
+if [[ -n "$SINCE" ]]; then
+  S_RAW="$SINCE"
+  SINCE="$(parse_round "$SINCE")" || die2 "--since 非法：$S_RAW（需形如 1 或 R1，且 ≥ 1）"
+else
+  SINCE=1
+fi
+if [[ -n "$UNTIL" ]]; then
+  U_RAW="$UNTIL"
+  UNTIL="$(parse_round "$UNTIL")" || die2 "--until 非法：$U_RAW（需形如 3 或 R3，且 ≥ 1）"
+else
+  UNTIL=$((N-1))
+fi
+# N=1 时默认 until=0 表示「无历史轮」，允许；其余情况区间必须有序。
+if (( UNTIL > 0 && SINCE > UNTIL )); then
+  die2 "--since ($SINCE) 不能大于 --until ($UNTIL)"
+fi
+
+for c in curl git python3; do
+  command -v "$c" >/dev/null 2>&1 || die2 "缺少依赖：$c"
+done
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "$REPO_ROOT" ]] || die2 "当前目录不在 git 仓库内（③ 提交清单需要 git log，默认输出路径也基于仓库根）"
+
+API="${API%/}"
+REPO_URL="${REPO_URL%/}"
+[[ -n "$INT_BRANCH" ]] || die2 "--int-branch 不能为空"
+
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/rsi-round-report.XXXXXX")"
+OUT_TMP=""
+cleanup() {
+  rm -rf "$TMP"
+  if [[ -n "$OUT_TMP" ]]; then rm -f "$OUT_TMP"; fi
+}
+trap cleanup EXIT
+
+curl_err_text() {
+  [[ -s "$TMP/curl.err" ]] || return 0
+  head -c 400 "$TMP/curl.err" | tr '\n' ' '
+}
+
+# 必需数据：失败即 stderr 明确 + exit 1（此时尚未创建任何输出文件）
+require_fetch() { # require_fetch <path> <out>
+  local path="$1" out="$2" rc=0
+  if curl -sfS --max-time 10 "$API$path" -o "$out" 2>"$TMP/curl.err"; then
+    rm -f "$TMP/curl.err"
+    return 0
+  else
+    rc=$?
+  fi
+  echo "错误：必需 API 不可用：$API$path（curl exit $rc）" >&2
+  if [[ -s "$TMP/curl.err" ]]; then
+    echo "  curl: $(curl_err_text)" >&2
+  fi
+  echo "错误：中止生成，未写输出文件。" >&2
+  exit 1
+}
+
+# 可选数据：失败只登记，由渲染阶段在对应节标注「数据不可得」
+optional_fetch() { # optional_fetch <path> <out>
+  local path="$1" out="$2" rc=0
+  if curl -sfS --max-time 10 "$API$path" -o "$out" 2>"$TMP/curl.err"; then
+    rm -f "$TMP/curl.err"
+    return 0
+  else
+    rc=$?
+  fi
+  printf '%s\n' "$path" >> "$TMP/optional.failures"
+  {
+    printf '%s (curl exit %s' "$path" "$rc"
+    if [[ -s "$TMP/curl.err" ]]; then printf '：%s' "$(curl_err_text)"; fi
+    printf ')\n'
+  } >> "$TMP/optional.details"
+  rm -f "$TMP/curl.err"
+  return 0
+}
+
+require_fetch "/goals" "$TMP/goals.json"
+require_fetch "/rsi/sessions?limit=200" "$TMP/sessions.json"
+
+# 决定本轮/范围内每轮的目标 goal 与训练会话，并写出待拉取端点清单。
+if ! python3 - "$TMP" "$N" "$SINCE" "$UNTIL" <<'PYEOF'
+import json, os, re, sys
+
+tmp, n, since, until = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+
+def fail(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+def load(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        fail("错误：缺少已下载的 API 数据：%s" % path)
+    except Exception as e:
+        fail("错误：%s 不是合法 JSON：%s" % (os.path.basename(path), e))
+
+goals = load(os.path.join(tmp, "goals.json"))
+sessions = load(os.path.join(tmp, "sessions.json"))
+if not isinstance(goals, list):
+    fail("错误：/goals 返回的不是 JSON 数组")
+if not isinstance(sessions, list):
+    fail("错误：/rsi/sessions 返回的不是 JSON 数组")
+
+scope = set(range(since, until + 1)) if until >= since else set()
+scope.add(n)
+scope = sorted(scope)
+
+patterns = {rn: re.compile(rf"RSI(?:\s*自迭代)?\s*R{rn}(?!\d)") for rn in scope}
+by_round = {}
+for g in goals:
+    if not isinstance(g, dict):
+        continue
+    title = g.get("title") or ""
+    for rn, pat in patterns.items():
+        if pat.search(title):
+            by_round.setdefault(rn, []).append(g)
+
+if not by_round.get(n):
+    sample = "\n".join("  - %s" % (g.get("title") or "?") for g in goals[:20] if isinstance(g, dict))
+    fail(
+        "错误：/goals 共 %d 条，未找到标题匹配「RSI R%d」或「RSI 自迭代 R%d」的 goal。\n"
+        "最近的 goal 标题（最多 20 条）：\n%s\n"
+        "错误：中止生成，未写输出文件。" % (len(goals), n, n, sample or "  （空）")
+    )
+
+by_round_ids = {
+    str(rn): [str(g.get("id")) for g in gs if isinstance(g, dict) and g.get("id")]
+    for rn, gs in by_round.items()
+}
+with open(os.path.join(tmp, "matches.json"), "w", encoding="utf-8") as f:
+    json.dump({"scope": scope, "by_round": by_round_ids}, f, ensure_ascii=False)
+
+sess_by_goal = {}
+for s in sessions:
+    if isinstance(s, dict):
+        sess_by_goal.setdefault(s.get("goal_id") or "", []).append(s)
+
+lines = []
+for rn in scope:
+    for g in by_round.get(rn, []):
+        if not isinstance(g, dict):
+            continue
+        gid = g.get("id") or ""
+        if not gid:
+            continue
+        lines.append("runs\t%d\t%s" % (rn, gid))
+        lines.append("comments\t%d\t%s" % (rn, gid))
+        for s in sess_by_goal.get(gid, []):
+            sid = s.get("id") or ""
+            if sid:
+                lines.append("session\t%d\t%s" % (rn, sid))
+                lines.append("rounds\t%d\t%s" % (rn, sid))
+with open(os.path.join(tmp, "plan.tsv"), "w", encoding="utf-8") as f:
+    f.write("\n".join(lines) + ("\n" if lines else ""))
+
+# 本轮时间窗：goal 最早 created_at → 该轮 session 最晚 sealed/finished/started。
+mine = [g for g in by_round.get(n, []) if isinstance(g, dict)]
+starts = [g.get("created_at") for g in mine if g.get("created_at")]
+ends = []
+for g in mine:
+    for s in sess_by_goal.get(g.get("id") or "", []):
+        for k in ("sealed_at", "finished_at", "started_at"):
+            if s.get(k):
+                ends.append(s[k])
+with open(os.path.join(tmp, "window.json"), "w", encoding="utf-8") as f:
+    json.dump({"start": min(starts) if starts else "", "end": max(ends) if ends else ""}, f)
+PYEOF
+then
+  # python 已把具体原因写到 stderr；这里只补一句结论。
+  echo "错误：无法确定本轮报告的数据范围，未写输出文件。" >&2
+  exit 1
+fi
+
+# 拉取范围内每轮 goal 的 runs（必需）/ comments（可选）与 session 详情/账本（可选）
+while IFS=$'\t' read -r kind rn ident; do
+  [[ -n "$kind" ]] || continue
+  case "$kind" in
+    runs)     require_fetch "/goals/$ident/runs" "$TMP/runs_$ident.json" ;;
+    comments) optional_fetch "/goals/$ident/comments" "$TMP/comments_$ident.json" ;;
+    session)  optional_fetch "/rsi/sessions/$ident" "$TMP/session_$ident.json" ;;
+    rounds)   optional_fetch "/rsi/sessions/$ident/rounds" "$TMP/rounds_$ident.json" ;;
+    *) : ;;
+  esac
+done < "$TMP/plan.tsv"
+
+# ── ③ 提交清单的 git 证据：优先集成分支 + 轮次时间窗；取不到退化最近 30 条并标注口径。
+GIT_REF=""
 for cand in "$INT_BRANCH" "origin/$INT_BRANCH"; do
-  if git -C "$REPO_ROOT" rev-parse --verify --quiet "$cand" >/dev/null 2>&1; then
-    GIT_BRANCH_REF="$cand"; break
+  if git -C "$REPO_ROOT" rev-parse --verify --quiet "$cand^{commit}" >/dev/null 2>&1; then
+    GIT_REF="$cand"
+    break
   fi
 done
-GIT_LOG=""
-if [[ -n "$GIT_BRANCH_REF" ]]; then
-  GIT_LOG="$(git -C "$REPO_ROOT" log "$GIT_BRANCH_REF" --oneline -30 --no-decorate 2>/dev/null || true)"
-fi
-# 也合并当前分支最近提交（报告生成时可能在 feat 分支上，本工作项 commit 尚未进集成分支）
-CUR_LOG="$(git -C "$REPO_ROOT" log HEAD --oneline -15 --no-decorate 2>/dev/null || true)"
-printf '%s\n' "$GIT_LOG" > "$TMP/gitlog-int.txt"
-printf '%s\n' "$CUR_LOG" > "$TMP/gitlog-cur.txt"
 
-# ---------------------------------------------------------------- 渲染
-python3 - "$TMP" "$N" "$SINCE" "$UNTIL" "$REPO_URL" "$API" "$INT_BRANCH" <<'PYEOF' > "$TMP/report.md"
-import json, os, re, sys
+W_START="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("start",""))' "$TMP/window.json")"
+W_END="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("end",""))' "$TMP/window.json")"
+
+GIT_FMT='%H%x09%ad%x09%s'
+: > "$TMP/git.tsv"
+GIT_MODE=""
+GIT_CMD=""
+if [[ -n "$GIT_REF" ]]; then
+  if [[ -n "$W_START" ]]; then
+    if [[ -n "$W_END" ]]; then
+      GIT_CMD="git log $GIT_REF --since=$W_START --until=$W_END -n 200"
+      git -C "$REPO_ROOT" log "$GIT_REF" --since="$W_START" --until="$W_END" -n 200 \
+        --format="$GIT_FMT" --date=short --no-decorate > "$TMP/git.tsv" 2>"$TMP/git.err" || true
+    else
+      GIT_CMD="git log $GIT_REF --since=$W_START -n 200"
+      git -C "$REPO_ROOT" log "$GIT_REF" --since="$W_START" -n 200 \
+        --format="$GIT_FMT" --date=short --no-decorate > "$TMP/git.tsv" 2>"$TMP/git.err" || true
+    fi
+    if [[ ! -s "$TMP/git.tsv" ]]; then
+      GIT_MODE="fallback-recent30"
+      GIT_CMD="git log $GIT_REF -30（按轮次时间窗无结果，退化最近 30 条）"
+      git -C "$REPO_ROOT" log "$GIT_REF" -30 \
+        --format="$GIT_FMT" --date=short --no-decorate > "$TMP/git.tsv" 2>"$TMP/git.err" || true
+    else
+      GIT_MODE="window"
+    fi
+  else
+    GIT_MODE="recent30"
+    GIT_CMD="git log $GIT_REF -30（未取到轮次时间范围，退化最近 30 条）"
+    git -C "$REPO_ROOT" log "$GIT_REF" -30 \
+      --format="$GIT_FMT" --date=short --no-decorate > "$TMP/git.tsv" 2>"$TMP/git.err" || true
+  fi
+else
+  GIT_MODE="head30"
+  GIT_CMD="git log HEAD -30（本地/远端均未找到集成分支 $INT_BRANCH，退化当前分支最近 30 条）"
+  git -C "$REPO_ROOT" log HEAD -30 \
+    --format="$GIT_FMT" --date=short --no-decorate > "$TMP/git.tsv" 2>"$TMP/git.err" || true
+fi
+{
+  printf 'mode=%s\n' "$GIT_MODE"
+  printf 'cmd=%s\n' "$GIT_CMD"
+  printf 'ref=%s\n' "${GIT_REF:-HEAD}"
+} > "$TMP/git.meta"
+
+# ── 渲染五节报告
+python3 - "$TMP" "$N" "$SINCE" "$UNTIL" "$REPO_URL" "$API" "$INT_BRANCH" > "$TMP/report.md" <<'PYEOF'
+import json, os, sys
 from datetime import datetime, timezone
 
-tmp, N, SINCE, UNTIL, REPO_URL, API, INT_BRANCH = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5], sys.argv[6], sys.argv[7]
+tmp = sys.argv[1]
+N, SINCE, UNTIL = int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+REPO_URL, API, INT_BRANCH = sys.argv[5], sys.argv[6], sys.argv[7]
 
-def load(name):
+def load(name, default=None):
     p = os.path.join(tmp, name)
+    if not os.path.exists(p):
+        return default
     try:
-        return json.load(open(p))
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
-        return None
+        return default
 
-def api_failed():
-    p = os.path.join(tmp, "api.errors")
-    try:
-        return [l.strip() for l in open(p) if l.strip()]
-    except FileNotFoundError:
+def read_lines(name):
+    p = os.path.join(tmp, name)
+    if not os.path.exists(p):
         return []
+    with open(p, encoding="utf-8") as f:
+        return [ln.rstrip("\n") for ln in f if ln.strip()]
+
+def fmt_val(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        s = f"{v:.4f}".rstrip("0").rstrip(".")
+        return s or "0"
+    if v is None:
+        return "null"
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False, separators=(",", ":"))[:400]
+    return str(v)
 
 def fmt_ms(ms):
-    if not ms: return "—"
+    try:
+        ms = float(ms or 0)
+    except (TypeError, ValueError):
+        return "—"
+    if ms <= 0:
+        return "0"
     s = ms / 1000.0
+    if s >= 3600:
+        return f"{s/3600:.1f}h"
     if s >= 90:
         return f"{s/60:.1f}m"
     return f"{s:.1f}s"
 
+def fmt_metrics(m):
+    if not isinstance(m, dict) or not m:
+        return "无"
+    return " · ".join(f"`{k}`={fmt_val(v)}" for k, v in sorted(m.items()))
+
 def ts(s):
-    if not s: return "—"
-    return s[:16].replace("T", " ")
+    if not s:
+        return "—"
+    return str(s)[:16].replace("T", " ")
+
+def cell(s, limit=220):
+    s = "" if s is None else str(s)
+    s = s.replace("\r", " ").replace("\n", " ").replace("|", "\\|")
+    if len(s) > limit:
+        s = s[:limit] + "…"
+    return s or "—"
 
 def clink(sha):
     sha = (sha or "").strip()
-    if not sha: return "—"
+    if not sha:
+        return "—"
     return f"[`{sha[:8]}`]({REPO_URL}/commit/{sha})"
 
-def classify(err):
-    """根因分类：环境/代码/流程（关键词启发式，覆盖不了归入流程）。"""
-    e = (err or "")
-    if re.search(r"command not found|exit 127|machine offline|PRIVATE KEY|permission|network|connect|offline|unavailable|exit 128", e, re.I):
-        return "环境"
-    if re.search(r"FAIL:|verification failed|panic|exit status 1|compile|build failed", e, re.I):
-        return "代码"
-    return "流程"
+goals = load("goals.json", []) or []
+sessions = load("sessions.json", []) or []
+matches = load("matches.json", {}) or {}
+scope = sorted(int(x) for x in matches.get("scope", [N]))
+by_round_ids = {int(k): v for k, v in (matches.get("by_round") or {}).items()}
+goal_by_id = {g.get("id"): g for g in goals if isinstance(g, dict)}
+sess_by_goal = {}
+for s in sessions:
+    if isinstance(s, dict):
+        sess_by_goal.setdefault(s.get("goal_id") or "", []).append(s)
+fails = set(read_lines("optional.failures"))
 
-goals = load("goals.json") or []
-my_goals = load("my_goals.json") or []
-prev_goals = load("prev_goals.json") or []
-sess_by_goal = load("sessions_by_goal.json") or {}
-errors = api_failed()
+def rounds_of(sid):
+    if f"/rsi/sessions/{sid}/rounds" in fails:
+        return None
+    return load(f"rounds_{sid}.json", None)
 
-# 收集本轮与历史轮的 runs / rounds 数据
-runs_by_goal, comments_by_goal = {}, {}
-for fn in os.listdir(tmp):
-    m = re.match(r"runs_(.+)\.json$", fn)
-    if m:
-        try: runs_by_goal[m.group(1)] = json.load(open(os.path.join(tmp, fn))) or []
-        except Exception: runs_by_goal[m.group(1)] = []
-    m = re.match(r"comments_(.+)\.json$", fn)
-    if m:
-        try: comments_by_goal[m.group(1)] = json.load(open(os.path.join(tmp, fn))) or []
-        except Exception: comments_by_goal[m.group(1)] = []
+def detail_of(sid):
+    if f"/rsi/sessions/{sid}" in fails:
+        return None
+    return load(f"session_{sid}.json", None)
 
-rounds_by_session = {}
-for fn in os.listdir(tmp):
-    m = re.match(r"rounds_(.+)\.json$", fn)
-    if m:
-        try: rounds_by_session[m.group(1)] = json.load(open(os.path.join(tmp, fn))) or []
-        except Exception: rounds_by_session[m.group(1)] = []
+def runs_of(gid):
+    return load(f"runs_{gid}.json", []) or []
 
-def all_runs(goal_ids):
-    out = []
-    for g in goal_ids:
-        out.extend(runs_by_goal.get(g, []))
-    return out
+def metrics_of(det):
+    if not isinstance(det, dict):
+        return {}
+    rep = det.get("report")
+    if isinstance(rep, dict) and isinstance(rep.get("metrics"), dict) and rep["metrics"]:
+        return rep["metrics"]
+    wf = det.get("workflow")
+    if isinstance(wf, dict) and isinstance(wf.get("metrics"), dict) and wf["metrics"]:
+        return wf["metrics"]
+    return {}
 
-def failure_rows(goal_ids):
-    rows = []
-    for r in all_runs(goal_ids):
-        st = r.get("status", "")
-        if st not in ("failed", "cancelled"): continue
-        summary = (r.get("result_summary") or "").strip()
-        err = summary.splitlines()[0] if summary else "(无错误摘要)"
-        if st == "cancelled" and not summary:
-            err = "(被取消，无错误摘要)"
-        rows.append({
-            "id": r.get("id", ""), "status": st,
-            "kind": r.get("run_kind") or r.get("role") or "?",
-            "att": r.get("attempt", 0),
-            "time": ts(r.get("started_at") or r.get("created_at")),
-            "err": err.replace("|", "\\|")[:220],
-            "cause": classify(summary),
-        })
-    # 旧→新排序，便于阅读
-    return rows
+def findings_of(det):
+    if isinstance(det, dict) and isinstance(det.get("findings"), list):
+        return det["findings"]
+    return []
+
+# 生成时间：SOURCE_DATE_EPOCH 可固定（自测时用于逐字节比对两次输出）
+if os.environ.get("SOURCE_DATE_EPOCH", "").strip():
+    now_dt = datetime.fromtimestamp(int(os.environ["SOURCE_DATE_EPOCH"]), tz=timezone.utc)
+else:
+    now_dt = datetime.now(timezone.utc)
+now = now_dt.strftime("%Y-%m-%d %H:%M UTC")
+
+cur_goal_ids = by_round_ids.get(N) or []
+cur_session_ids = [
+    s.get("id") for gid in cur_goal_ids for s in sess_by_goal.get(gid, [])
+    if isinstance(s, dict) and s.get("id")
+]
 
 L = []
 w = L.append
-now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-w(f"# RSI R{N} 轮次演进报告（R{SINCE}→R{N}）")
+w(f"# RSI R{N} 轮次报告")
 w("")
-w(f"> 生成：{now} · 生成器：`scripts/rsi-round-report.sh {N}` · 数据源：daemon API `{API}`（列表端点）+ 本地 git log（{INT_BRANCH}）")
-w("> 本报告自包含：不登录平台即可读懂。指标口径见各节脚注；API 不可达的小节会显式标注。")
-w("")
-if errors:
-    w(f"> ⚠️ 以下 API 路径本次不可达，对应内容已降级处理：{', '.join('`'+e+'`' for e in sorted(set(errors)))}")
-    w("")
-
-# ---------------------------------------------------------------- ① 循环演进视图
-w("## ① 循环演进视图")
-w("")
-w("每轮是一个 train 模式 goal；下图与说明汇总自 rsi 训练会话冻结的工作流（nodes/edges/依赖）。")
-w("")
-# 汇总每轮 goal+session
-round_info = {}  # round_no -> dict
-for g in prev_goals + my_goals:
-    title = g.get("title", "")
-    m = re.search(r"RSI\s*R(\d+)", title)
-    if not m: continue
-    rn = int(m.group(1))
-    gid = g["id"]
-    sessions = sess_by_goal.get(gid, [])
-    runs = runs_by_goal.get(gid, [])
-    info = round_info.setdefault(rn, {"goals": [], "sessions": [], "runs": 0, "failed": 0})
-    info["goals"].append(g)
-    info["sessions"].extend(sessions)
-    info["runs"] += len(runs)
-    info["failed"] += sum(1 for r in runs if r.get("status") in ("failed", "cancelled"))
-
-for rn in sorted(round_info):
-    info = round_info[rn]
-    w(f"### R{rn}：{info['goals'][0].get('title', '')}")
-    w("")
-    st = info["goals"][0].get("status", "?")
-    w(f"- goal 终态：`{st}` · run 总数 {info['runs']}（失败/取消 {info['failed']}）")
-    if not info["sessions"]:
-        w("- 训练会话：未冻结（本轮尚未到达终态或分析未生成）")
-    for s in info["sessions"]:
-        w(f"- 训练会话 `{s['id'][:12]}…`：status=`{s.get('status')}` · {s.get('node_count', 0)} 节点 · 关键路径 {fmt_ms(s.get('critical_path_ms'))} · 首要发现：{s.get('top_title') or '（无）'}")
-        det = load(f"session_{s['id']}.json")
-        if det and det.get("workflow"):
-            wf = det["workflow"]
-            nodes, edges = wf.get("nodes", []), wf.get("edges", [])
-            ag = [n for n in nodes if n.get("kind") == "agent"]
-            ig = [n for n in nodes if n.get("kind") == "integrate"]
-            w(f"  - 图结构：{len(nodes)} 节点 / {len(edges)} 边（agent 节点 {len(ag)}，集成节点 {len(ig)}）")
-            for n in ag:
-                dep = [e["to"][:14] for e in edges if e.get("from") == n["key"] and e.get("kind") == "depends_on"]
-                w(f"    - `{n['key'][:14]}` {n.get('label','')}：{n.get('status')} · attempt {n.get('attempt')} · 耗时 {fmt_ms(n.get('duration_ms'))}" + (f" · 依赖 → {len(dep)} 个节点" if dep else ""))
-            for e in edges:
-                if e.get("kind") == "depends_on":
-                    w(f"    - 依赖边：`{e['from'][:14]}` → `{e['to'][:14]}`")
-    w("")
-
-w("本轮（R%d）在本报告生成时通常仍在进行：以本节上面最后一条为准；收尾时重跑生成器即得终版。" % N)
-w("")
-
-# ---------------------------------------------------------------- ② 过程暴露问题清单
-w("## ② 过程暴露问题清单")
-w("")
-w("本轮（R%d）全部失败/异常 run 逐条；根因分类为生成器启发式（环境/代码/流程），供人工复核。" % N)
-w("")
-rows = failure_rows([g["id"] for g in my_goals])
-if rows:
-    w("| run id | 状态 | 角色 | attempt | 时间 | 错误摘要 | 根因分类 |")
-    w("|---|---|---|---|---|---|---|")
-    for r in rows:
-        w(f"| `{r['id'][:12]}…` | {r['status']} | {r['kind']} | {r['att']} | {r['time']} | {r['err']} | {r['cause']} |")
+w(f"> 生成时间：{now} · 生成器：`scripts/rsi-round-report.sh {N}`")
+if UNTIL == 0:
+    w(f"> 范围：本轮 R{N}；无历史轮可对比（N=1）")
 else:
-    w("（本轮暂无失败/取消 run，或 API 数据不可得）")
-w("")
-w("### 上一轮遗留问题状态")
-w("")
-w(f"承接 R{N} 分析报告（`docs/rsi/analysis-r3.md`）的问题清单，本轮收尾时的状态如下（由本节人工/后续轮更新结论列）：")
-w("")
-w("| 问题 | 上轮状态 | 本轮收尾状态 |")
-w("|---|---|---|")
-w("| AGENTWORK_HOME 泄漏进验证子进程（R2 验证门三连败根因） | 待修（提案 P-A） | 待评审；bench R3 复测确认同一泄漏还击穿 go test 子进程的 t.Setenv 隔离（6 例失败根因 A/A'/B），P-A 实施时应一并覆盖测试进程环境 |")
-w("| rsi_round 轮次编号不按 domain 递增（两轮均 round_no=1） | 待修（提案 P-B） | 待评审 |")
-w("| 基准冷/温缓存口径漂移（跨轮对比混入缓存噪音） | 待修（提案 P-C） | P-C 口径已执行：R3 复测（8295f7a）按冷/温双列产出，跨轮对比采冷列（R2 44.417s → R3 41.285s，约 -7%） |")
-w("| `/rsi` 端点口径不一致（文档写 `/rsi`，实测 404） | 待修（候选任务 3） | 本报告已按真实端点实施，文档口径待统一 |")
-w("| 验证命令 PATH 依赖宿主 shell 配置（go 软链缺失三连败） | 已解决（/usr/local/bin 软链） | 已解决，P-A 落地时固化 PATH 语义 |")
-w("| deliver 因 SSH 私钥权限失败、依赖人工重试 | 已解决（人工修权限） | 待修（候选任务 4：deliver 自动重试） |")
-w("| owner 运行 71 分钟无产出无看护 | 已绕过（人工停止） | 待修（候选任务 5：owner 看护） |")
+    w(f"> 范围：本轮 R{N}；账本对比 R{SINCE}–R{UNTIL}")
+w(f"> API：`{API}` · 集成分支：`{INT_BRANCH}` · 仓库链接基址：`{REPO_URL}`")
+w("> 本报告五节内容全部由 daemon API 数据与本地 git log 派生，不含脚本硬编码的轮次结论；")
+w("> 缺失的可选数据会在对应节显式标注「数据不可得」，不做补造。")
+if fails:
+    w("> 本次可选数据不可得：" + "、".join(f"`{p}`" for p in sorted(fails)))
 w("")
 
-# ---------------------------------------------------------------- ③ 改进点
-w("## ③ 改进点（每条带 commit + diff 链接 + 效果数字）")
+# ── ① 本轮概览 ─────────────────────────────────────────────────────────────
+w("## ① 本轮概览")
 w("")
-w("改进点 = 本轮实施并合入集成分支的已批准提案；commit 链接指向仓库 commit 页，diff 摘要由生成器从 git log 提取，效果数字来自实施前后的基准复测（`benchmark-report*.md`）。")
+w(f"- 本轮 goal 数：{len(cur_goal_ids)}；训练会话数：{len(cur_session_ids)}")
 w("")
-# git log 中提取本轮提交（本工作项的 feat 分支提交 + 集成分支近 30 条）
-cur_log = []
-p = os.path.join(tmp, "gitlog-cur.txt")
-if os.path.exists(p):
-    cur_log = [l.strip() for l in open(p) if l.strip()]
-int_log = []
-p = os.path.join(tmp, "gitlog-int.txt")
-if os.path.exists(p):
-    int_log = [l.strip() for l in open(p) if l.strip()]
-w("**本轮（R%d）实施提交：**" % N)
-w("")
-if cur_log:
-    for line in cur_log:
-        m = re.match(r"^([0-9a-f]{7,})\s+(.*)$", line)
-        if not m: continue
-        sha, msg = m.group(1), m.group(2)
-        w(f"- {clink(sha)} {msg}")
-else:
-    w("（当前分支无提交记录可读）")
-w("")
-w("**集成分支 `%s` 近期提交（含历轮改进）：**" % INT_BRANCH)
-w("")
-if int_log:
-    for line in int_log[:12]:
-        m = re.match(r"^([0-9a-f]{7,})\s+(.*)$", line)
-        if not m: continue
-        sha, msg = m.group(1), m.group(2)
-        w(f"- {clink(sha)} {msg}")
-else:
-    w(f"（本地与远端跟踪引用均未找到 `{INT_BRANCH}`，仅列当前分支提交）")
-w("")
-w("**历轮改进点与效果数字（来源：docs/rsi/proposals.md、benchmark-report-r2.md、benchmark-report-r3.md、impl-notes.md；口径冲突时以最新复测报告为准）：**")
-w("")
-w("| 轮 | 提案 | 改进 | commit | 效果数字（before → after） |")
-w("|---|---|---|---|---|")
-w("| R2 | P1 | 并行化 internal/daemon 独立顶层测试（70 个测试函数加 t.Parallel） | " + clink("e08cb72") + " | internal/daemon 包测试中位 5.911s（R2 复测基准，P1 后保持；R3 复测 5.855s 持平）；详见 benchmark-report-r2.md §3、benchmark-report-r3.md §4 |")
-w("| R2 | P2 | CDN 漂移守卫对畸形响应 fail 改 skip | " + clink("8ca9957") + " | 14 包 0 FAIL（修复前该守卫对畸形响应直接 FAIL） |")
-w("| R2 | P3 | 失败重试引入不可重试错误快速失败 | " + clink("18a8c3c") + " | 确定性错误（如模型不可用）不再烧尽重试预算（R1 曾 12 条 run 同因全败） |")
-w("| R3 | R3-1 | 轮次演进报告生成器 + AGENTS.md 收尾约定 | 本工作项 commit（合入后由下轮报告回填链接） | 可感知性 5 缺口 → 5 节报告覆盖；每轮收尾强制产出 |")
-w("")
-
-# ---------------------------------------------------------------- ④ 跨轮指标对比
-w("## ④ 跨轮指标对比")
-w("")
-w("汇总自各轮 rsi 训练会话冻结的 metrics（`/rsi/sessions/{id}/rounds` 账本；session 未冻结时回退 `/rsi/sessions/{id}` 实时 workflow.metrics，并已标注）。")
-w("注意：R1/R2 的 rsi_round 账本 round_no 均为 1（提案 P-B 待修），故下表按「goal 标题里的轮次号」对齐，而非账本 round_no。")
-w("")
-# 从 rounds 数据聚合每轮指标；rounds 为空时回退 session 详情 workflow.metrics
-metrics_rows = []
-for rn in sorted(round_info):
-    info = round_info[rn]
-    best = None
-    src = ""
-    for s in info["sessions"]:
-        rid = s["id"]
-        rl = rounds_by_session.get(rid) or []
-        if rl:
-            r0 = rl[-1]  # 该 session 最新一条 round
-            if r0.get("metrics"):
-                best, src = r0["metrics"], "rounds"
+for gid in cur_goal_ids:
+    g = goal_by_id.get(gid) or {}
+    w(f"### goal `{gid}` — {cell(g.get('title'), 160)}")
+    w("")
+    w(f"- 状态：`{cell(g.get('status'), 30)}` · 执行模式：`{cell(g.get('execution_mode'), 30)}` · 创建：{ts(g.get('created_at'))} · assignee：`{cell(g.get('assignee_type'), 10)}/{cell(g.get('assignee_id'), 40)}`")
+    sess = sess_by_goal.get(gid, [])
+    if not sess:
+        w("- 训练会话：无（`/rsi/sessions` 未返回该 goal 的会话；数据不可得）")
+    for s in sess:
+        sid = s.get("id") or ""
+        det = detail_of(sid)
+        met = metrics_of(det)
+        node_count = s.get("node_count") or met.get("node_count") or "—"
+        cp = s.get("critical_path_ms") or met.get("critical_path_ms")
+        sp = s.get("parallel_speedup") or met.get("parallel_speedup")
+        w(f"- 训练会话 `{sid}`：status=`{cell(s.get('status'), 20)}` · node_count={fmt_val(node_count)} · critical_path={fmt_ms(cp)} · parallel_speedup={fmt_val(sp) if sp not in (None, '', 0) else '—'} · findings={fmt_val(s.get('finding_count', '—'))}")
+        if s.get("top_title"):
+            w(f"  - 会话首要发现：`{cell(s.get('top_category') or '?', 40)}` · {cell(s.get('top_title'), 160)}")
+        if isinstance(det, dict):
+            wf = det.get("workflow")
+            if isinstance(wf, dict):
+                w(f"  - 图规模：{len(wf.get('nodes') or [])} 节点 / {len(wf.get('edges') or [])} 边 · 冻结={bool(wf.get('frozen'))}")
+                crit = wf.get("critical_path") or []
+                if crit:
+                    w("  - 关键路径（API 字段）：" + " → ".join(f"`{c}`" for c in crit[:8]))
+            else:
+                w("  - 图数据：无（session 尚未装配 workflow）")
         else:
-            # rounds 账本为空（session 未冻结）时，回退到 session 详情的
-            # workflow.metrics（训练页同源实时指标）；再退 report.metrics。
-            det = load(f"session_{rid}.json")
-            if det:
-                wf = det.get("workflow") or {}
-                if wf.get("metrics") and not best:
-                    best, src = wf["metrics"], "session-detail"
-                if not best:
-                    rep = det.get("report") or {}
-                    if rep.get("metrics"):
-                        best, src = rep["metrics"], "session-detail"
-    if best:
-        best = dict(best)
-        best["_src"] = src
-    metrics_rows.append((rn, info, best or {}))
-if metrics_rows:
-    w("| 轮 | 指标来源 | 节点数 | 边数 | 关键路径 | 墙钟 | 工作总量 | 排队等待 | 并行收益 | lane 数 | lane 失衡 | 首要发现 |")
-    w("|---|---|---|---|---|---|---|---|---|---|---|---|")
-    for rn, info, m in metrics_rows:
-        src = ("rounds 账本" if m.get("_src") == "rounds" else "session 实时（未冻结）") if m else "—"
-        w(f"| R{rn} | {src} "
-          f"| {m.get('node_count', info['sessions'][0].get('node_count', '—')) if m else '—'} "
-          f"| {m.get('edge_count', '—') if m else '—'} "
-          f"| {fmt_ms(m.get('critical_path_ms')) if m else '—'} "
-          f"| {fmt_ms(m.get('wall_ms')) if m else '—'} "
-          f"| {fmt_ms(m.get('work_sum_ms')) if m else '—'} "
-          f"| {fmt_ms(m.get('queue_wait_ms')) if m else '—'} "
-          f"| {round(m.get('parallel_speedup'), 2) if m and m.get('parallel_speedup') else '—'} "
-          f"| {m.get('lane_count', '—') if m else '—'} "
-          f"| {round(m.get('lane_imbalance'), 2) if m and m.get('lane_imbalance') else '—'} "
-          f"| {info['sessions'][0].get('top_title') or '—'} |" if info['sessions'] else f"| R{rn} | — | — | — | — | — | — | — | — | — | — | 训练会话未冻结 |")
+            w(f"  - session 详情：数据不可得（`/rsi/sessions/{sid}` 请求失败）")
+        fs = findings_of(det)
+        if not fs:
+            fs = []
+            rl = rounds_of(sid)
+            if isinstance(rl, list):
+                for r in rl:
+                    if isinstance(r, dict) and isinstance(r.get("findings"), list):
+                        fs.extend(r["findings"])
+        if fs:
+            fs = sorted(fs, key=lambda f: (f.get("score") or 0), reverse=True)[:5]
+            w("  - top findings（按 score 降序，最多 5 条）：")
+            w("")
+            w("    | 类别 | 严重度 | 置信度 | 标题 | score |")
+            w("    |---|---|---|---|---|")
+            for f in fs:
+                w(f"    | `{cell(f.get('category'), 40)}` | {cell(f.get('severity'), 20)} | {cell(f.get('confidence'), 10)} | {cell(f.get('title'), 120)} | {fmt_val(f.get('score'))} |")
+        else:
+            w("  - top findings：无（findings 为空或数据不可得）")
     w("")
-    w("解读提示（含 bench R3 复测结论，权威来源 benchmark-report-r3.md）：")
-    w("- `重试放大`（top finding）从 R1「平均每节点 3.5 次 run」降到 R2「2.5 次」，仍是两轮共同首要发现。")
-    w("- R1/R2 的 wall_ms/critical_path 差异部分来自基准任务规格不同（R1 纯基准、R2 含实施），跨轮结论看趋势不看点值。")
-    w("- 基准口径（P-C）：跨轮对比 build 只采冷列——R2 基线 44.417s → R3 新基线 e7c2572 41.285s（约 -7%），R2 已批准提案收益在新基线重建中得到保持；温列（R2 中位 4.387s / R3 中位 4.672s）仅参照不采信。")
-    w("- 测试健康：R2 全绿 → R3 复测 6 例失败（2 包），全部为测试环境隔离缺陷（AGENTWORK_HOME 全局泄漏击穿 t.Setenv 隔离 + digest 跨运行残留），非业务代码缺陷；机器验证门以 `unset AGENTWORK_HOME;` 前缀口径运行为全绿。")
-    w("- R3 行标注「session 实时（未冻结）」表示该会话尚未冻结、数字取自训练页同源的实时 workflow.metrics，收尾冻结后重跑生成器即切换为 rounds 账本口径。")
+
+# ── ② 失败与取消 ───────────────────────────────────────────────────────────
+w("## ② 失败与取消")
+w("")
+w("口径：逐 goal 读取 `/goals/{id}/runs`；失败=`failed`，取消=`cancelled`。"
+  "错误摘要取 `result_summary` 首行，无则标注 `cancel_reason`。")
+w("")
+for gid in cur_goal_ids:
+    runs = [r for r in runs_of(gid) if isinstance(r, dict)]
+    counts = {}
+    for r in runs:
+        counts[r.get("status") or "?"] = counts.get(r.get("status") or "?", 0) + 1
+    known = sum(counts.get(k, 0) for k in ("completed", "failed", "cancelled"))
+    w(f"### goal `{gid}`")
+    w("")
+    w(f"- run 总数 {len(runs)}：completed {counts.get('completed', 0)} · failed {counts.get('failed', 0)} · cancelled {counts.get('cancelled', 0)} · 其他 {len(runs) - known}")
+    bad = [r for r in runs if r.get("status") in ("failed", "cancelled")]
+    if bad:
+        w("")
+        w("| run | 状态 | 角色 | attempt | cancel_reason | 开始 | 结束 | 结果摘要 / 错误 |")
+        w("|---|---|---|---|---|---|---|---|")
+        for r in bad:
+            summary = (r.get("result_summary") or "").strip().splitlines()
+            text = summary[0] if summary else ""
+            if not text:
+                cr = r.get("cancel_reason") or ""
+                text = f"cancel_reason={cr}" if cr else "(无结果摘要)"
+            w(f"| `{cell(r.get('id'), 40)}` | {cell(r.get('status'), 12)} | {cell(r.get('role') or r.get('run_kind'), 20)} "
+              f"| {fmt_val(r.get('attempt', '—'))} | {cell(r.get('cancel_reason'), 30)} "
+              f"| {ts(r.get('started_at') or r.get('queued_at'))} | {ts(r.get('finished_at'))} | {cell(text)} |")
+    else:
+        w("- 无失败/取消 run。")
+    w("")
+
+# ── ③ 提交清单 ─────────────────────────────────────────────────────────────
+w("## ③ 提交清单")
+w("")
+git_meta = {}
+for line in read_lines("git.meta"):
+    k, _, v = line.partition("=")
+    git_meta[k] = v
+mode = git_meta.get("mode", "")
+mode_desc = {
+    "window": "按轮次时间范围过滤（本轮 goal 最早 `created_at` → 该轮 session 最晚 `sealed_at/finished_at/started_at`）。",
+    "fallback-recent30": "轮次时间范围内无 commit，退化为集成分支最近 30 条；这些 commit 不一定都属于本轮，需人工核对。",
+    "recent30": "未取到轮次时间范围，退化为集成分支最近 30 条；不保证都属于本轮。",
+    "head30": f"未找到集成分支 `{INT_BRANCH}`（本地与远端跟踪引用均无），退化为当前 HEAD 最近 30 条；不保证都属于本轮。",
+}.get(mode, "口径未知。")
+w(f"- 命令：`{git_meta.get('cmd', '—')}`")
+w(f"- 口径：{mode_desc}")
+w("")
+git_rows = []
+for line in read_lines("git.tsv"):
+    parts = line.split("\t")
+    if len(parts) >= 2:
+        git_rows.append(parts)
+if git_rows:
+    w("| commit | 日期 | 说明 |")
+    w("|---|---|---|")
+    for parts in git_rows:
+        sha = parts[0] if len(parts) > 0 else ""
+        date = parts[1] if len(parts) > 1 else ""
+        msg = "\t".join(parts[2:]) if len(parts) > 2 else ""
+        w(f"| {clink(sha)} | {cell(date, 12)} | {cell(msg, 200)} |")
 else:
-    w("（训练会话指标不可得）")
+    w("（该口径下没有取到 commit 记录。）")
 w("")
 
-# ---------------------------------------------------------------- ⑤ 下一轮候选任务清单
-w("## ⑤ 下一轮候选任务清单")
+# ── ④ 指标 ─────────────────────────────────────────────────────────────────
+w("## ④ 指标")
 w("")
-w("权威来源：`docs/rsi/analysis-r3.md` 第三节（optimizer 产出，人工挑选成为下一轮任务）。以下为该清单的当前快照：")
+w("口径：以 `/rsi/sessions/{id}/rounds` 轮次账本为权威，metrics 键值原样输出（不改名、不重算）；"
+  "账本为空或不可得时回退 `/rsi/sessions/{id}` 的 `report.metrics` / `workflow.metrics`，并标注来源。"
+  "指标缺失时写「无」。")
 w("")
-w("1. **实施 P-A：验证子进程环境净化**（高优）——R2 验证门三连败 4 条失败 run 同根因（AGENTWORK_HOME 泄漏），R3 前置轮 unset 前缀又引入 PATH 三连败；bench R3 复测进一步确认该泄漏还击穿 go test 子进程隔离（6 例失败，根因 A/A'/B）；收益：同类验证门/测试失败 4+3+6 → 0。")
-w("2. **实施 P-B：rsi_round 按 domain 递增**（中优）——两轮 round_no 均为 1、delta 恒空；收益：R4 报告【跨轮指标对比】首次有真序列。")
-w("3. **`/rsi` 端点口径修正**（低成本高一致性）——补文档为 `/rsi/sessions` 等真实端点，或 handler 加 `GET /rsi` 别名。")
-w("4. **deliver 失败自动重试/退避**（中优）——R2 deliver 因 SSH 私钥权限失败一次后依赖人工推进；外层加一次带延迟的自动重试。")
-w("5. **owner/leader 运行卡顿看护**（中优）——R2 owner run 运行 71 分钟无产出被人工停止；把 watchdog 覆盖 owner 运行。")
+for rn in scope:
+    w(f"### R{rn}")
+    w("")
+    gids = by_round_ids.get(rn) or []
+    if not gids:
+        w("- 未找到标题匹配的 goal（数据不可得）。")
+        w("")
+        continue
+    for gid in gids:
+        g = goal_by_id.get(gid) or {}
+        w(f"- goal `{gid}` — {cell(g.get('title'), 160)}")
+        sess = sess_by_goal.get(gid, [])
+        if not sess:
+            w("  - 训练会话：无（数据不可得）")
+        for s in sess:
+            sid = s.get("id") or ""
+            w(f"  - session `{sid}`（status=`{cell(s.get('status'), 20)}`）")
+            rl = rounds_of(sid)
+            if rl is None:
+                w(f"    - 轮次账本：数据不可得（`/rsi/sessions/{sid}/rounds` 请求失败）")
+            elif not rl:
+                w("    - 轮次账本：空（该会话尚未冻结/分析，或账本无行）")
+            else:
+                for r in rl:
+                    if not isinstance(r, dict):
+                        continue
+                    w(f"    - round_no={fmt_val(r.get('round_no', '?'))} · trigger=`{cell(r.get('trigger'), 20)}` · created={ts(r.get('created_at'))} · 来源：轮次账本")
+                    w(f"      - metrics：{fmt_metrics(r.get('metrics'))}")
+                    if r.get("delta"):
+                        w(f"      - delta：{fmt_metrics(r.get('delta'))}")
+            if rl is None or not rl:
+                det = detail_of(sid)
+                met = metrics_of(det)
+                if met:
+                    src = "report.metrics" if isinstance(det.get("report"), dict) and (det.get("report") or {}).get("metrics") else "workflow.metrics"
+                    w(f"    - 回退来源：session 详情 {src}")
+                    w(f"    - metrics：{fmt_metrics(met)}")
+                elif det is None:
+                    w(f"    - 回退指标：数据不可得（`/rsi/sessions/{sid}` 请求失败）")
+                else:
+                    w("    - 回退指标：无（session 详情既无 report.metrics 也无 workflow.metrics）")
+    w("")
+
+# ── ⑤ 候选项 ───────────────────────────────────────────────────────────────
+w("## ⑤ 候选项")
+w("")
+w("> 候选项由 findings 的 `category` / `severity` / `title` / `suggestion` 派生，"
+  "**需人工判断，不自动采纳**。本清单不是批准列表；实施前须人工评估、补复测计划。")
+w("")
+rows = []
+missing = []
+for rn in scope:
+    for gid in by_round_ids.get(rn) or []:
+        for s in sess_by_goal.get(gid, []):
+            sid = s.get("id") or ""
+            rl = rounds_of(sid)
+            got = False
+            if isinstance(rl, list) and rl:
+                for r in rl:
+                    if not isinstance(r, dict):
+                        continue
+                    rno = r.get("round_no", "?")
+                    fs = r.get("findings")
+                    if isinstance(fs, list):
+                        for f in fs:
+                            if isinstance(f, dict):
+                                rows.append((rn, sid, rno, f))
+                                got = True
+            if not got:
+                det = detail_of(sid)
+                for f in findings_of(det):
+                    if isinstance(f, dict):
+                        rows.append((rn, sid, "—", f))
+                        got = True
+                if not got and rl is None and det is None:
+                    missing.append(f"R{rn} session `{sid}`：轮次账本与 session 详情均不可得")
+rows.sort(key=lambda x: (x[0], -(float(x[3].get("score") or 0))))
+if rows:
+    w(f"- 共 {len(rows)} 条候选项（范围内各轮 findings 汇总，按轮次、score 降序）。")
+    w("")
+    w("| 轮 | session | round_no | 类别 | 严重度 | 置信度 | 标题 | 建议（原文摘要） | finding 状态 |")
+    w("|---|---|---|---|---|---|---|---|---|")
+    for rn, sid, rno, f in rows:
+        w(f"| R{rn} | `{sid}` | {fmt_val(rno)} | `{cell(f.get('category'), 40)}` | {cell(f.get('severity'), 20)} "
+          f"| {cell(f.get('confidence'), 10)} | {cell(f.get('title'), 140)} | {cell(f.get('suggestion'), 180)} "
+          f"| {cell(f.get('status'), 20)} |")
+    dist = {}
+    for _, _, _, f in rows:
+        c = f.get("category") or "?"
+        dist[c] = dist.get(c, 0) + 1
+    w("")
+    w("- 类别分布：" + " · ".join(f"`{k}`×{v}" for k, v in sorted(dist.items(), key=lambda kv: (-kv[1], kv[0]))))
+else:
+    if missing:
+        for m in missing:
+            w(f"- 数据不可得：{m}")
+    w("（范围内 findings 为空，无可派生的候选项。）")
 w("")
 w("---")
 w("")
-w(f"*本报告由 `scripts/rsi-round-report.sh` 自动生成；如与平台数据不一致，以 daemon API 为准。生成时间：{now}。*")
+w(f"*本报告由 `scripts/rsi-round-report.sh {N}` 自动生成；数据以 daemon API 为准。生成时间：{now}。*")
 
-sys.stdout.write("\n".join(L))
+sys.stdout.write("\n".join(L) + "\n")
 PYEOF
 
-# ---------------------------------------------------------------- 落盘
-if [[ "$DRY_RUN" == "1" ]]; then
+if (( DRY_RUN == 1 )); then
   cat "$TMP/report.md"
-else
-  mkdir -p "$(dirname "$OUT")"
-  cp "$TMP/report.md" "$OUT"
-  echo "已生成: $OUT"
+  exit 0
 fi
+
+OUT="${OUT:-$REPO_ROOT/docs/rsi/round-report-r$N.md}"
+mkdir -p "$(dirname "$OUT")"
+OUT_TMP="$(dirname "$OUT")/.$(basename "$OUT").tmp.$$"
+cp "$TMP/report.md" "$OUT_TMP"
+mv -f "$OUT_TMP" "$OUT"
+OUT_TMP=""
+echo "已生成: $OUT"
