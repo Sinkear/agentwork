@@ -34,6 +34,16 @@ export function fmtInt(v: number | null): string {
   return Math.round(v).toLocaleString("zh-CN");
 }
 
+/**
+ * 把 0 / 负数 / 缺失都收窄成 null：这些值在训练分析里表示“还没有测量到”，
+ * 而不是真实结果。展示层统一用 fmt* → 「—」，避免 waiting/skipped 的
+ * 0 节点 / 0ms / 0.00× 被误读成真实指标。
+ */
+export function measured(v: unknown): number | null {
+  const n = asNum(v);
+  return n !== null && n > 0 ? n : null;
+}
+
 export function fmtUsd(v: number | null): string {
   if (v === null) return DASH;
   // 小钱（<$0.01）用 4 位，否则 2 位——$0.00 会让“有成本”看起来像免费。

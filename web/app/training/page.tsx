@@ -5,6 +5,7 @@ import Link from "next/link";
 import { BarChart3, Plus } from "lucide-react";
 import {
   Badge,
+  Button,
   Empty,
   PageBody,
   PageHeader,
@@ -25,6 +26,7 @@ import {
   fmtMs,
   fmtRatio,
   fmtSpeedup,
+  measured,
 } from "@/components/training/format";
 
 // 状态筛选把中间态折成「进行中」：用户关心的是“还没好 / 好了 / 失败”，
@@ -73,6 +75,15 @@ function matchesStatus(status: RsiSessionStatus, filter: StatusFilter): boolean 
 
 function TrainingRow({ session }: { session: RsiSession }) {
   const time = session.started_at ? relTime(session.started_at) : DASH;
+  // 只有 ready 才有“当前报告”。waiting/skipped 的列值是 0，analyzing/failed
+  // 则可能残留上一次分析的列值——都不是当前结果，统一显示「—」。
+  // ready 时 finding_count=0 是真实结果，保留 0。
+  const ready = session.status === "ready";
+  const nodeValue = ready ? fmtInt(measured(session.node_count)) : DASH;
+  const cpValue = ready ? fmtMs(measured(session.critical_path_ms)) : DASH;
+  const speedupValue = ready ? fmtSpeedup(measured(session.parallel_speedup)) : DASH;
+  const findingValue = ready ? fmtInt(session.finding_count) : DASH;
+  const topCategory = ready ? session.top_category : "";
   return (
     <li>
       <Link href={`/training/${session.id}`} className={ROW_GRID}>
@@ -84,11 +95,11 @@ function TrainingRow({ session }: { session: RsiSession }) {
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink-3 md:hidden">
             <Badge status={session.status} />
             <span>{time}</span>
-            <span>{fmtInt(session.node_count)} 节点</span>
-            <span>关键路径 {fmtMs(session.critical_path_ms)}</span>
-            <span>{fmtSpeedup(session.parallel_speedup)}</span>
-            <span>{fmtInt(session.finding_count)} 发现</span>
-            {session.top_category && <span>{categoryLabel(session.top_category)}</span>}
+            <span>{nodeValue} 节点</span>
+            <span>关键路径 {cpValue}</span>
+            <span>{speedupValue}</span>
+            <span>{findingValue} 发现</span>
+            {topCategory && <span>{categoryLabel(topCategory)}</span>}
           </div>
         </div>
 
@@ -101,29 +112,29 @@ function TrainingRow({ session }: { session: RsiSession }) {
         </span>
 
         <span className="hidden text-right font-mono text-xs tabular-nums text-ink-2 md:block">
-          {fmtInt(session.node_count)}
+          {nodeValue}
         </span>
 
         <span className="hidden text-right font-mono text-xs tabular-nums text-ink-2 md:block">
-          {fmtMs(session.critical_path_ms)}
+          {cpValue}
         </span>
 
         <span className="hidden text-right font-mono text-xs tabular-nums text-ink-2 md:block">
-          {fmtSpeedup(session.parallel_speedup)}
+          {speedupValue}
         </span>
 
         <span className="hidden text-right font-mono text-xs tabular-nums text-ink-2 md:block">
-          {fmtInt(session.finding_count)}
+          {findingValue}
         </span>
 
         <span className="hidden min-w-0 md:block">
-          {session.top_category ? (
+          {topCategory ? (
             <>
               <span className="block truncate text-xs text-ink-2">
-                {session.top_title || categoryLabel(session.top_category)}
+                {session.top_title || categoryLabel(topCategory)}
               </span>
               <span className="block font-mono text-[10px] text-ink-3">
-                {categoryLabel(session.top_category)}
+                {categoryLabel(topCategory)}
                 {session.error ? " · 有错误" : ""}
               </span>
             </>
@@ -143,7 +154,13 @@ export default function TrainingPage() {
 
   // 概览跟随时间范围（契约 days 参数），状态筛选只作用于列表。
   const days = range === "7" ? 7 : range === "30" ? 30 : 365;
-  const { data: overview, isLoading: overviewLoading } = useRsiOverview(days);
+  const {
+    data: overview,
+    isLoading: overviewLoading,
+    isError: overviewError,
+    error: overviewErr,
+    refetch: refetchOverview,
+  } = useRsiOverview(days);
 
   const visible = useMemo(() => {
     const cutoff =
@@ -164,10 +181,12 @@ export default function TrainingPage() {
 
   const rangeLabel = range === "7" ? "近 7 天" : range === "30" ? "近 30 天" : "全部时间";
   // overview 在没有任何会话时各项都是 0；显示「0% / 0.00×」会比「—」更像真实值。
-  const hasSessions = (overview?.sessions ?? 0) > 0;
+  // 查询失败时同样不能用 0 冒充数据，全部退化为「—」并给出重试入口。
+  const hasSessions = !overviewError && (overview?.sessions ?? 0) > 0;
   const successRate = hasSessions ? overview?.success_rate ?? null : null;
   const avgSpeedup = hasSessions ? overview?.avg_parallel_speedup ?? null : null;
   const avgRework = hasSessions ? overview?.avg_rework_ratio ?? null : null;
+  const overviewUnavailable = overviewLoading || overviewError;
 
   return (
     <PageBody>
@@ -185,11 +204,27 @@ export default function TrainingPage() {
         }
       />
 
+      {overviewError && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-red-500/25 bg-red-500/10 px-3.5 py-2 text-[11px] text-red-300">
+          <span className="min-w-0 flex-1">
+            训练概览读取失败：
+            {overviewErr instanceof Error ? overviewErr.message : String(overviewErr)}
+          </span>
+          <Button
+            variant="outline"
+            className="h-6 px-2 text-[11px]"
+            onClick={() => void refetchOverview()}
+          >
+            重试
+          </Button>
+        </div>
+      )}
+
       <StatStrip
         items={[
           {
             label: "会话数",
-            value: overviewLoading ? DASH : fmtInt(overview?.sessions ?? null),
+            value: overviewUnavailable ? DASH : fmtInt(overview?.sessions ?? null),
             hint:
               range === "all"
                 ? "训练会话（不含跳过；概览上限 365 天）"
@@ -197,7 +232,7 @@ export default function TrainingPage() {
           },
           {
             label: "成功率",
-            value: overviewLoading ? DASH : fmtRatio(successRate),
+            value: overviewUnavailable ? DASH : fmtRatio(successRate),
             tone:
               successRate === null
                 ? "default"
@@ -210,13 +245,13 @@ export default function TrainingPage() {
           },
           {
             label: "平均并行加速",
-            value: overviewLoading ? DASH : fmtSpeedup(avgSpeedup),
+            value: overviewUnavailable ? DASH : fmtSpeedup(avgSpeedup),
             tone: avgSpeedup !== null && avgSpeedup >= 1.5 ? "ok" : avgSpeedup !== null && avgSpeedup < 1.05 ? "warn" : "default",
             hint: "总工作量 / 关键路径；1× = 完全串行",
           },
           {
             label: "平均返工率",
-            value: overviewLoading ? DASH : fmtRatio(avgRework),
+            value: overviewUnavailable ? DASH : fmtRatio(avgRework),
             tone: avgRework !== null && avgRework >= 0.3 ? "warn" : "default",
             hint: "验证 rejected / 总验证轮次",
           },
@@ -226,17 +261,21 @@ export default function TrainingPage() {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-line bg-surface-2/25 px-3.5 py-2 text-[11px] text-ink-3">
         <span>
           人工等待{" "}
-          <span className="font-mono text-ink-2">{fmtMs(overview?.human_wait_ms ?? null)}</span>
+          <span className="font-mono text-ink-2">
+            {fmtMs(overviewUnavailable ? null : overview?.human_wait_ms ?? null)}
+          </span>
         </span>
         <span>
           验证开销{" "}
           <span className="font-mono text-ink-2">
-            {fmtRatio(overview?.avg_verify_overhead_ratio ?? null)}
+            {fmtRatio(overviewUnavailable ? null : overview?.avg_verify_overhead_ratio ?? null)}
           </span>
         </span>
         <span>
           结构发现{" "}
-          <span className="font-mono text-ink-2">{fmtInt(overview?.findings ?? null)}</span>
+          <span className="font-mono text-ink-2">
+            {overviewUnavailable ? DASH : fmtInt(overview?.findings ?? null)}
+          </span>
         </span>
         <span>
           P95 交付耗时{" "}
@@ -246,7 +285,7 @@ export default function TrainingPage() {
         </span>
       </div>
 
-      <TrainingTrend trend={overview?.trend} loading={overviewLoading} />
+      {!overviewError && <TrainingTrend trend={overview?.trend} loading={overviewLoading} />}
 
       <SectionCard
         title="会话"

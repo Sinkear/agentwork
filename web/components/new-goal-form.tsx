@@ -160,7 +160,7 @@ export function NewGoalForm({
             {(
               [
                 { value: "infer", label: "推理", desc: "只记录基础指标（耗时/状态）" },
-                { value: "train", label: "训练", desc: "完整记录执行 trace，完成后自动分析" },
+                { value: "train", label: "训练", desc: "记录编排与耗时元数据，完成后自动分析" },
               ] as const
             ).map((m) => (
               <label
@@ -188,14 +188,14 @@ export function NewGoalForm({
             ))}
           </div>
           <span className="block text-xs text-ink-3">
-            训练模式会记录执行过程用于“哪块慢”的分析，不训练模型权重。
+            训练模式记录执行编排与耗时元数据，用于“哪块慢”的分析；不训练模型权重，也不保存对话正文。
           </span>
         </div>
 
         {executionMode === "train" && (
           <div className="space-y-3 rounded-md border border-line bg-surface-2/40 p-3">
             <div className="text-xs font-medium text-ink-2">训练高级项</div>
-            <Field label="内容采集" hint="默认只记工具名、参数哈希与长度；完整正文会写内容寻址文件。">
+            <Field label="内容采集" hint="预留字段：当前仅保存该选项，尚未读取工具正文或参数。">
               <select
                 value={contentCapture}
                 onChange={(e) => setContentCapture(e.target.value as "redacted" | "none" | "full")}
@@ -207,7 +207,7 @@ export function NewGoalForm({
               </select>
             </Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="分析预算（美元）" hint="触顶降级为纯规则分析">
+              <Field label="分析预算（美元）" hint="预留字段：当前仅保存上限，尚未触发预算降级">
                 <input
                   type="number"
                   min={0}
@@ -217,7 +217,7 @@ export function NewGoalForm({
                   className={inputCls}
                 />
               </Field>
-              <Field label="采样率（%）" hint="失败样本始终 100% 保留">
+              <Field label="采样率（%）" hint="低于 100% 时随机跳过训练分析；当前不按任务成败豁免">
                 <input
                   type="number"
                   min={1}

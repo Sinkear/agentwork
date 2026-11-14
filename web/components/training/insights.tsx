@@ -27,6 +27,7 @@ import {
   fmtRatio,
   fmtSpeedup,
   fmtTime,
+  measured,
   metricNum,
   severityMeta,
 } from "./format";
@@ -254,8 +255,34 @@ function RoundCard({ round }: { round: RsiRound }) {
 
 export function TrainingInsights({ detail }: { detail: RsiDetail }) {
   const { session, report } = detail;
-  const inFlight = session.status === "waiting" || session.status === "analyzing";
+  const status = session.status;
+  const inFlight = status === "waiting" || status === "analyzing";
   const { data: rounds, isLoading, isError, error } = useRsiRounds(session.id, inFlight);
+
+  // 洞察来自轮次账本；重跑期间/失败后最新一轮可能是旧报告，只有 ready
+  // 才把轮次当成“当前结果”展示（与报告、发现保持同一套可见性规则）。
+  if (status !== "ready") {
+    return (
+      <SectionCard title="洞察">
+        <Empty icon={<History className="h-4 w-4" />}>
+          {status === "waiting"
+            ? "会话还在等待任务进入终态；首次分析完成后会在这里记录第 1 轮（终态分析）。"
+            : status === "analyzing"
+              ? "正在分析当前编排图；完成后会在这里追加新一轮并展示与上一轮的变化。分析完成前不展示旧轮次。"
+              : status === "failed"
+                ? "分析失败，暂无可展示的新轮次；可点「重跑分析」重试。"
+                : status === "skipped"
+                  ? "本次会话未做分析（推理模式或采样未命中），因此没有优化轮次。"
+                  : "还没有可展示的优化轮次。"}
+          {status === "failed" && session.error && (
+            <span className="mt-2 block font-mono text-[11px] text-red-300">
+              {session.error}
+            </span>
+          )}
+        </Empty>
+      </SectionCard>
+    );
+  }
 
   if (isLoading) {
     return (
@@ -301,8 +328,8 @@ export function TrainingInsights({ detail }: { detail: RsiDetail }) {
 
   const latest = list[list.length - 1];
   const latestMetrics = latest.metrics ?? {};
-  const speedup = metricNum(latestMetrics, "parallel_speedup") ?? session.parallel_speedup;
-  const criticalPath = metricNum(latestMetrics, "critical_path_ms") ?? session.critical_path_ms;
+  const speedup = metricNum(latestMetrics, "parallel_speedup") ?? measured(session.parallel_speedup);
+  const criticalPath = metricNum(latestMetrics, "critical_path_ms") ?? measured(session.critical_path_ms);
   const rework = metricNum(latestMetrics, "rework_ratio");
 
   // 最新在上：轮次只会追加，倒序让“刚复测完”的结果第一眼可见。

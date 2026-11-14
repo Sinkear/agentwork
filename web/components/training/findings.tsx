@@ -33,6 +33,27 @@ function FindingStatusChip({ status }: { status: RsiFinding["status"] }) {
   return null;
 }
 
+// 空态/不可用态按状态给文案：分析中、失败、跳过的原因不同，
+// 不能统一说成“没有命中结构规则”（那会被误读成“分析过了但没发现问题”）。
+function emptyCopy(status: string, hasReport: boolean): string {
+  switch (status) {
+    case "waiting":
+      return "会话还在等待任务进入终态；分析开始后这里会列出命中的结构/分派/信息流瓶颈。";
+    case "analyzing":
+      return "正在分析当前编排图；完成后这里会列出命中的结构/分派/信息流瓶颈。分析完成前不展示旧报告里的发现。";
+    case "failed":
+      return "分析失败，没有产出可展示的发现。错误原因见页面顶部；修复后可点「重跑分析」重试。";
+    case "skipped":
+      return "本次会话被跳过（推理模式或采样未命中），没有执行结构分析，因此没有发现。";
+    case "ready":
+      return hasReport
+        ? "本次分析没有命中结构规则：要么编排没有明显异常，要么样本太少不足以判定。"
+        : "会话标记已分析，但报告为空，暂时没有发现可展示。";
+    default:
+      return "当前没有可展示的发现。";
+  }
+}
+
 export function TrainingFindings({ detail }: { detail: RsiDetail }) {
   const update = useUpdateRsiFinding();
   const [err, setErr] = useState("");
@@ -45,6 +66,18 @@ export function TrainingFindings({ detail }: { detail: RsiDetail }) {
     return a.id.localeCompare(b.id);
   });
 
+  const status = detail.session.status;
+  const hasReport = status === "ready" && detail.report != null;
+
+  // 只有 ready 才有“当前报告”：analyzing 的旧报告、failed 的半成品都不展示。
+  if (!hasReport) {
+    return (
+      <SectionCard title="发现">
+        <Empty icon={<EyeOff className="h-5 w-5" />}>{emptyCopy(status, hasReport)}</Empty>
+      </SectionCard>
+    );
+  }
+
   const act = (f: RsiFinding, status: "confirmed" | "dismissed") => {
     setErr("");
     update.mutate(
@@ -54,14 +87,9 @@ export function TrainingFindings({ detail }: { detail: RsiDetail }) {
   };
 
   if (findings.length === 0) {
-    const inFlight = ["waiting", "analyzing"].includes(detail.session.status);
     return (
       <SectionCard title="发现">
-        <Empty icon={<EyeOff className="h-5 w-5" />}>
-          {inFlight
-            ? "分析还在进行；报告生成后这里会列出命中的结构/分派/信息流瓶颈。"
-            : "本次分析没有命中结构规则：要么编排没有明显异常，要么样本太少不足以判定。"}
-        </Empty>
+        <Empty icon={<EyeOff className="h-5 w-5" />}>{emptyCopy(status, hasReport)}</Empty>
       </SectionCard>
     );
   }
