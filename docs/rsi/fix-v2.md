@@ -20,6 +20,7 @@
 | 7 | `a84b611` | depends_on 门控 liveness、dispatch 锚点、机器验证行、retry 门控 |
 | 8 | `65c342f` | docs/RSI.md + playbook 指标与轮次约定校准 |
 | 9 | `761271c` | Retry 清空上一轮 headline 指标，避免旧值残留 |
+| 10 | `b007146` | OCR 复核修复：`created_at` 损坏时 queue split 归零 + 回归测试；detail 指标仅 ready 展示；报告脚本 ID 校验 / score 排序健壮性；schema 轮次注释改为 per-domain |
 
 ## 2. 场景 → 修复 → 是否生效
 
@@ -56,6 +57,7 @@
 - `go vet ./...`：无输出。
 - `web: npx tsc --noEmit`：exit 0；`npm run build`：19/19 页面，exit 0。
 - 报告脚本：fixture `R3 --since R1 --until R3 --dry-run` → exit 0、五节；死 API → exit 1、无输出文件；`bash -n` 通过。
+- OCR 复核：`ocr delegate preview --from ae12054 --to HEAD` 20 个可审文件（tests/docs 默认排除）；复核后 `b007146` 新增 queue 解析防护回归用例，`go test ./...` 仍全绿，web 构建仍 19/19。
 
 ### 指标口径前后对比（可复算）
 
@@ -81,7 +83,7 @@
 
 ## 5. 合并与使用
 
-- 分支基于 `ae12054`，可直接以 `agentwork-int-v2-fix` 合入 `agentwork-int-v2`（9 个提交，无外部依赖变更）。
+- 分支基于 `ae12054`，可直接以 `agentwork-int-v2-fix` 合入 `agentwork-int-v2` 或提 PR 到 `main`（共 13 个提交，含 3 个文档提交，无外部依赖变更）。
 - 若只取部分：指标/规则必须与 `docs/RSI.md` 同批合入，否则文档口径超前；gating 与 workflow 指标互不依赖，可分开。
 - 首次启动会跑 store 迁移：`sub_goal.dispatch_comment_id`、`rsi_round` 等；迁移是增量/幂等的，`workflow_edge` 保留。
 - 复盘入口：本文件 + `docs/rsi/review-v2.md`（问题场景与审查证据）+ `docs/RSI.md`（最终指标口径）。

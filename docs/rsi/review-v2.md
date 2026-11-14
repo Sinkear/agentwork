@@ -459,11 +459,12 @@ tracked 的根 AGENTS.md 会导致“平台注入未跟踪 AGENTS.md + 集成 me
 
 ## 10. 修复落地（2026-11-14）
 
-"修后可拿"范围的修复已落在独立分支 `agentwork-int-v2-fix`（worktree `/home/sinkear/developer/agentwork-v2-fix`，基线 `ae12054`，未 push），逐项场景→修复→证据见 `docs/rsi/fix-v2.md`。要点：
+"修后可拿"范围的修复已落在分支 `agentwork-int-v2-fix`（worktree `/home/sinkear/developer/agentwork-v2-fix`，基线 `ae12054`，已 push 到 origin），逐项场景→修复→证据见 `docs/rsi/fix-v2.md`。要点：
 
 - 指标核心：CP 扇入重复计数修正；推断 seq 边移出 CP；review 与执行分离统计；`parallel_speedup=work_sum/wall`；`serialization_loss=wall-cp`；队列等待拆依赖/派发；human_wait 进入 metrics；retry 放大取最大 Attempt；baseline/轮次按 domain。
 - 门控 liveness：依赖失败/取消级联失败仍 gated 的子任务；释放 run 保留 dispatch 锚点；机器验证补 `verification_result` 行；RetrySubGoal 不得绕过门控。
 - 工程项：P2 缺码默认 FAIL + 到期 allowlist；gitignore 所有 exclude 先 check-ignore；link 生产调用点 handler-first + 幂等 StartReadLoop；报告脚本改为数据驱动、fail-loud；Training UI 状态化；文档指标口径校准。
 - 验证：`go test ./...` 全绿；`go vet ./...` 无输出；web `tsc --noEmit` / `next build` 通过；报告脚本 fixture 五节 + 死 API exit 1；指标前后对比与 23 行场景表见 `fix-v2.md`。
+- OCR 复核（2026-11-14）：`ocr delegate preview --from ae12054 --to HEAD` 覆盖 20 个可审文件（tests/docs 被默认排除），逐文件复核后追加 `b007146`：queue split 在 `created_at` 损坏时归零（+回归测试）、detail 指标仅 ready 展示、报告脚本校验 API ID 并容忍脏 score、schema 轮次注释 per-domain；复核未发现新的阻断项，其余为已在文档记录的低风险/边界项。
 
 仍未解决（见 `fix-v2.md` §4）：P-A `AGENTWORK_HOME` 泄漏未实现；link 未做真实 daemon 集成；循环 depends_on 未拒绝；retry 链无 dispatch 锚点；全仓 286 个 755 文件未清理；CLI/MCP 创建 goal 仍缺 execution_mode/depends_on；workflow_edge 仍作预留表；报告脚本仅 fixture 验证；UI 无 live daemon 截图。
