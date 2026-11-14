@@ -184,21 +184,35 @@ func pruneStaleGoalWorkdirs() {
 // profile IS its own file and gets committed).
 func gitAddExcludeArgs(ctx context.Context, wt string, excludeProfile bool) []string {
 	excludes := []string{}
-	for _, dir := range projectSkillsDirs() {
-		excludes = append(excludes, ":(exclude)"+dir)
-	}
 	// Git subtlety (live: R3/R4 runs burned retry budgets on it): an
-	// exclude pathspec NAMING a git-ignored file makes `git add` exit 1
+	// exclude pathspec NAMING a git-ignored path makes `git add` exit 1
 	// ("paths are ignored ... use -f") even though the add would have
-	// skipped the file anyway. So: a git-ignored AGENTS.md is left
-	// unnamed (add -A skips it silently); the exclude is only for a
-	// NON-ignored file we must keep out of the commit. Mirrors the
-	// daemon-side commitRunChanges check-ignore guard, inverted.
-	// check-ignore exits 0 when the file IS git-ignored.
-	if _, err := runGit(ctx, wt, "check-ignore", "-q", "AGENTS.md"); err != nil && excludeProfile {
+	// skipped the path anyway. So: a git-ignored path is left unnamed
+	// (add -A skips it silently); the exclude is only for a NON-ignored
+	// path we must keep out of the commit. Applies to EVERY exclude, not
+	// just AGENTS.md — a repo ignoring .claude/ hit the same exit 1 through
+	// the project-skills pathspec. Mirrors the daemon-side
+	// commitRunChanges check-ignore guard, inverted (no --force: the point
+	// is to never name an ignored path).
+	for _, dir := range projectSkillsDirs() {
+		if !gitIgnored(ctx, wt, dir) {
+			excludes = append(excludes, ":(exclude)"+dir)
+		}
+	}
+	if excludeProfile && !gitIgnored(ctx, wt, "AGENTS.md") {
 		excludes = append(excludes, ":(exclude)AGENTS.md")
 	}
 	return excludes
+}
+
+// gitIgnored reports whether path is matched by the workdir's ignore rules.
+// `git check-ignore -q` exits 0 for "ignored", 1 for "not ignored", and 128
+// for a fatal error (e.g. wt is not a git repo) — a fatal error is NOT
+// "ignored", so the caller keeps the exclude (the previous behavior) instead
+// of relying on an unverifiable ignore state.
+func gitIgnored(ctx context.Context, wt, path string) bool {
+	_, err := runGit(ctx, wt, "check-ignore", "-q", path)
+	return err == nil
 }
 
 func commitAndPush(ctx context.Context, p link.RunDispatchParams, wt, repo, branch, runID, pushedProfile string) (string, error) {
