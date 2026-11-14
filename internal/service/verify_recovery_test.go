@@ -41,7 +41,7 @@ func newVerifyFixture(t *testing.T) *verifyFixture {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, qa, "agent", a)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", b, qa, nil, "agent", a)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestCreateSubGoalRejectsSelfVerification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	_, err = gs.CreateSubGoal(ctx, g.ID, "self-verified", "d", a, a, "agent", a)
+	_, err = gs.CreateSubGoal(ctx, g.ID, "self-verified", "d", a, a, nil, "agent", a)
 	if err == nil || !strings.Contains(err.Error(), "player-referee") {
 		t.Fatalf("self-verification must be rejected, got %v", err)
 	}
@@ -529,7 +529,7 @@ func TestCreateSubGoalRejectsSelfVerification(t *testing.T) {
 		t.Fatalf("rejected self-verification must not create a sub-goal, got %d", subs)
 	}
 	// Verifier == goal owner (a) with a DIFFERENT assignee (b) is legal.
-	if _, err := gs.CreateSubGoal(ctx, g.ID, "refereed", "d", b, a, "agent", a); err != nil {
+	if _, err := gs.CreateSubGoal(ctx, g.ID, "refereed", "d", b, a, nil, "agent", a); err != nil {
 		t.Fatalf("goal owner as verifier of another agent's work must be allowed: %v", err)
 	}
 }

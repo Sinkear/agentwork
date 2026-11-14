@@ -76,7 +76,7 @@ func newVerifySweeperFixture(t *testing.T) *verifySweeperFixture {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", assignee, verifier, "agent", owner)
+	sg, err := gs.CreateSubGoal(ctx, g.ID, "work item", "sub", assignee, verifier, nil, "agent", owner)
 	if err != nil {
 		t.Fatalf("create sub-goal: %v", err)
 	}
