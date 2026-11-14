@@ -96,13 +96,13 @@ export default function TrainingDetailPage() {
   const displayFindingCount = ready ? findingCount : null;
   const findingText =
     displayFindingCount === null ? "尚无数据" : `${fmtInt(displayFindingCount)} 条`;
-  const displayCp = measured(session.critical_path_ms);
-  const displaySpeedup = measured(session.parallel_speedup);
+  const displayCp = ready ? measured(session.critical_path_ms) : null;
+  const displaySpeedup = ready ? measured(session.parallel_speedup) : null;
   const canRetry = RETRYABLE.includes(status);
   const inFlight = IN_FLIGHT.includes(status);
 
-  // 后端 GetSession 目前不回填 top_category/top_title（scanSession 没扫这两列），
-  // 详情页只能先用 findings 里分数最高的一条兜底；不要为此改后端。
+  // 后端 GetSession 现在会回填 top_category/top_title；findings 最高分的兜底
+  // 仍然保留，用于旧数据或两者不一致时。
   const topFinding = [...(findings ?? [])].sort((a, b) => {
     const sa = typeof a.score === "number" && Number.isFinite(a.score) ? a.score : -Infinity;
     const sb = typeof b.score === "number" && Number.isFinite(b.score) ? b.score : -Infinity;

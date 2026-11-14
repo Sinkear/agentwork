@@ -106,6 +106,38 @@ func TestBuildGoalWorkflowQueueAndHumanWaitSplit(t *testing.T) {
 	}
 }
 
+// A malformed/empty sub_goal.created_at must keep dependency/dispatch wait at
+// 0 (unknown) instead of subtracting epoch 0 from a dependency's real epoch
+// timestamp (~55 years of fake wait). Regression for the OCR finding.
+func TestBuildGoalWorkflowQueueSplitSkipsBadCreatedAt(t *testing.T) {
+	st, gsvc, rsi := newRSITestEnv(t)
+	g := mkRSIGoal(t, gsvc, "queue-bad-created", "infer")
+	base := time.Now().UTC().Add(-2 * time.Hour)
+	for _, q := range []struct {
+		id, deps string
+	}{
+		{"sg-a", "[]"},
+		{"sg-b", `["sg-a"]`},
+	} {
+		if _, err := st.DB().Exec(`INSERT INTO sub_goal (id,goal_id,title,assignee_id,verifier_id,status,depends_on,created_at)
+		 VALUES (?,?,'task','ag-1','ag-v','verified',?,'')`, q.id, g.ID, q.deps); err != nil {
+			t.Fatalf("sub_goal: %v", err)
+		}
+	}
+	insertRun(t, st, "r-a", g.ID, "sg-a", "subgoal", base, base.Add(20*time.Minute))
+	insertRun(t, st, "r-b", g.ID, "sg-b", "subgoal", base.Add(80*time.Minute), base.Add(90*time.Minute))
+
+	gf, err := rsi.BuildGoalWorkflow(context.Background(), g.ID)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	for _, k := range []string{"dependency_wait_ms", "dispatch_wait_ms", "queue_wait_ms"} {
+		if got := mi(gf.Metrics, k); got != 0 {
+			t.Fatalf("%s = %d, want 0 when created_at is unparseable", k, got)
+		}
+	}
+}
+
 func TestAnalyzeRoundLedgerAcrossDomainSessions(t *testing.T) {
 	st, gsvc, rsi := newRSITestEnv(t)
 	ctx := context.Background()

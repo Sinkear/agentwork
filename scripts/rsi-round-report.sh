@@ -308,8 +308,11 @@ then
 fi
 
 # 拉取范围内每轮 goal 的 runs（必需）/ comments（可选）与 session 详情/账本（可选）
+# ID 来自 daemon API，但仍校验字符集：它同时进入 URL 和 $TMP 文件名，
+# 不能让异常数据把路径拼出 TMP（例如含 / 或 ..）。
 while IFS=$'\t' read -r kind rn ident; do
   [[ -n "$kind" ]] || continue
+  [[ "$ident" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || die2 "API 返回了非法 ID：$ident（plan.tsv）"
   case "$kind" in
     runs)     require_fetch "/goals/$ident/runs" "$TMP/runs_$ident.json" ;;
     comments) optional_fetch "/goals/$ident/comments" "$TMP/comments_$ident.json" ;;
@@ -374,7 +377,7 @@ fi
 
 # ── 渲染五节报告
 python3 - "$TMP" "$N" "$SINCE" "$UNTIL" "$REPO_URL" "$API" "$INT_BRANCH" > "$TMP/report.md" <<'PYEOF'
-import json, os, sys
+import json, math, os, sys
 from datetime import datetime, timezone
 
 tmp = sys.argv[1]
@@ -723,7 +726,14 @@ for rn in scope:
                         got = True
                 if not got and rl is None and det is None:
                     missing.append(f"R{rn} session `{sid}`：轮次账本与 session 详情均不可得")
-rows.sort(key=lambda x: (x[0], -(float(x[3].get("score") or 0))))
+def score_of(f):
+    """findings.score 排序键：非数值/NaN 一律按 0，避免一条脏数据毁掉整份报告。"""
+    s = f.get("score")
+    if isinstance(s, (int, float)) and not isinstance(s, bool) and math.isfinite(s):
+        return float(s)
+    return 0.0
+
+rows.sort(key=lambda x: (x[0], -score_of(x[3])))
 if rows:
     w(f"- 共 {len(rows)} 条候选项（范围内各轮 findings 汇总，按轮次、score 降序）。")
     w("")

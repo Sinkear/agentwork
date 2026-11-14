@@ -16,7 +16,7 @@ import (
 // "inferred" (dashed in the UI). Inferred edges are DISPLAY EVIDENCE ONLY:
 // the critical-path DP ignores them, otherwise two independent tasks that
 // merely happened to run one after the other would be chained into a fake
-// dependency and every serial execution would report speedup 1.0."
+// dependency and every serial execution would report speedup 1.0.
 
 // WorkflowNode is one node of the orchestration graph. kind:
 // goal|agent|verify|review|consult|integrate.
@@ -204,21 +204,23 @@ func (s *RSIService) BuildGoalWorkflow(ctx context.Context, goalID string) (*Wor
 			n.StartedAtMS, n.EndedAtMS, n.DurationMS = w.start, w.end, w.busy
 			// Split queue time into dependency gate wait and dispatch delay:
 			// ready_at = max(sub_goal.created_at, latest dependency run end).
-			createdMS, _ := parseTimeMS(r.createdAt)
-			readyMS := createdMS
-			for _, dep := range depsMap[id] {
-				if wd := wins[dep]; wd != nil && wd.end > readyMS {
-					readyMS = wd.end
+			// A malformed/empty created_at must not turn a dependency's epoch
+			// timestamp into a ~55-year "wait": without a valid creation anchor
+			// both split metrics are unknown and stay 0.
+			createdMS, createdOK := parseTimeMS(r.createdAt)
+			if createdOK {
+				readyMS := createdMS
+				for _, dep := range depsMap[id] {
+					if wd := wins[dep]; wd != nil && wd.end > readyMS {
+						readyMS = wd.end
+					}
 				}
-			}
-			if readyMS < createdMS {
-				readyMS = createdMS
-			}
-			if readyMS > createdMS {
-				depWait += readyMS - createdMS
-			}
-			if w.start > 0 && readyMS > 0 && w.start > readyMS {
-				dispatchWait += w.start - readyMS
+				if readyMS > createdMS {
+					depWait += readyMS - createdMS
+				}
+				if w.start > 0 && w.start > readyMS {
+					dispatchWait += w.start - readyMS
+				}
 			}
 		}
 		graph.Nodes = append(graph.Nodes, n)
