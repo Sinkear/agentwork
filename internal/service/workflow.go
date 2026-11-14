@@ -13,7 +13,10 @@ import (
 // and no span collection, so the graph can never drift from execution state.
 // Declared dependencies live in sub_goal.depends_on; every other relation is
 // derived from structure or, when only time-order suggests it, marked
-// "inferred" (dashed in the UI, L1 evidence only).
+// "inferred" (dashed in the UI). Inferred edges are DISPLAY EVIDENCE ONLY:
+// the critical-path DP ignores them, otherwise two independent tasks that
+// merely happened to run one after the other would be chained into a fake
+// dependency and every serial execution would report speedup 1.0."
 
 // WorkflowNode is one node of the orchestration graph. kind:
 // goal|agent|verify|review|consult|integrate.
@@ -180,7 +183,18 @@ func (s *RSIService) BuildGoalWorkflow(ctx context.Context, goalID string) (*Wor
 		return nil, err
 	}
 
-	var queueWait int64
+	// Declared dependencies, decoded once: used for gating-aware wait metrics
+	// and for the explicit depends_on edges below.
+	depsMap := map[string][]string{}
+	for _, id := range sgOrder {
+		var deps []string
+		if err := json.Unmarshal([]byte(sgRows[id].dependsOn), &deps); err != nil {
+			continue
+		}
+		depsMap[id] = deps
+	}
+
+	var depWait, dispatchWait int64
 	for _, id := range sgOrder {
 		r := sgRows[id]
 		n := WorkflowNode{Key: "sg:" + id, Kind: "agent", Label: r.title, AssigneeID: r.assignee,
@@ -188,8 +202,23 @@ func (s *RSIService) BuildGoalWorkflow(ctx context.Context, goalID string) (*Wor
 		if w := wins[id]; w != nil {
 			n.Attempt = w.attempts
 			n.StartedAtMS, n.EndedAtMS, n.DurationMS = w.start, w.end, w.busy
-			if ms, ok := parseTimeMS(r.createdAt); ok && n.StartedAtMS > ms {
-				queueWait += n.StartedAtMS - ms
+			// Split queue time into dependency gate wait and dispatch delay:
+			// ready_at = max(sub_goal.created_at, latest dependency run end).
+			createdMS, _ := parseTimeMS(r.createdAt)
+			readyMS := createdMS
+			for _, dep := range depsMap[id] {
+				if wd := wins[dep]; wd != nil && wd.end > readyMS {
+					readyMS = wd.end
+				}
+			}
+			if readyMS < createdMS {
+				readyMS = createdMS
+			}
+			if readyMS > createdMS {
+				depWait += readyMS - createdMS
+			}
+			if w.start > 0 && readyMS > 0 && w.start > readyMS {
+				dispatchWait += w.start - readyMS
 			}
 		}
 		graph.Nodes = append(graph.Nodes, n)
@@ -241,8 +270,8 @@ func (s *RSIService) BuildGoalWorkflow(ctx context.Context, goalID string) (*Wor
 
 	// ── verification nodes (one per sub-goal, rounds aggregated) ────────
 	type vState struct {
-		node    WorkflowNode
-		runIDs  []string
+		node   WorkflowNode
+		runIDs []string
 	}
 	vmap := map[string]*vState{}
 	vrows, err := s.st.DB().QueryContext(ctx,
@@ -369,7 +398,23 @@ func (s *RSIService) BuildGoalWorkflow(ctx context.Context, goalID string) (*Wor
 	}
 
 	computeWorkflowMetrics(graph)
-	graph.Metrics["queue_wait_ms"] = queueWait
+	graph.Metrics["dependency_wait_ms"] = depWait
+	graph.Metrics["dispatch_wait_ms"] = dispatchWait
+	// queue_wait_ms kept as a compatibility alias; new readers should use the
+	// split fields so dependency gating is not mistaken for dispatch delay.
+	graph.Metrics["queue_wait_ms"] = depWait + dispatchWait
+	// Human gate wait is entity-level (gate_decision), not derivable from run
+	// windows. The share uses wall+wait so "占比" can never exceed 100%.
+	var humanWaitMS int64
+	_ = s.st.DB().QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(review_duration),0)*1000 FROM gate_decision WHERE goal_id=?`, goalID).Scan(&humanWaitMS)
+	graph.Metrics["human_wait_ms"] = humanWaitMS
+	wall := mi(graph.Metrics, "wall_ms")
+	share := 0.0
+	if denom := wall + humanWaitMS; denom > 0 {
+		share = float64(humanWaitMS) / float64(denom)
+	}
+	graph.Metrics["human_wait_share"] = share
 	return graph, nil
 }
 
@@ -406,6 +451,13 @@ func computeWorkflowMetrics(g *WorkflowGraph) {
 
 	preds := map[string][]string{} // target → sources (already processed earlier)
 	for _, e := range g.Edges {
+		// Inferred seq edges are evidence for display/queue analysis only. They
+		// must not constrain the critical path: a pure time-order relation is
+		// not a dependency, and admitting it makes every serial run look like
+		// a 1.0-speedup chain.
+		if e.Source == "inferred" {
+			continue
+		}
 		if _, ok := byKey[e.From]; !ok {
 			continue
 		}
@@ -421,6 +473,12 @@ func computeWorkflowMetrics(g *WorkflowGraph) {
 	}
 	best := map[string]dp{}
 	for _, n := range order {
+		// Review runs are unattributed by construction; letting one relax as
+		// its own chain made a 120-min review the "critical path" of a 30-min
+		// execution. They stay on the graph and in review_busy_ms only.
+		if n.Kind == "review" {
+			continue
+		}
 		d := dp{length: n.DurationMS}
 		for _, from := range preds[n.Key] {
 			p, ok := best[from]
@@ -433,8 +491,11 @@ func computeWorkflowMetrics(g *WorkflowGraph) {
 			if pn.StartedAtMS > 0 && n.StartedAtMS > 0 && pn.StartedAtMS+pn.DurationMS > n.StartedAtMS {
 				continue
 			}
-			if p.length+d.length > d.length {
-				d = dp{length: p.length + d.length, prev: from}
+			// Chain length = predecessor chain + THIS node's busy time. Using
+			// d.length here would double-count every fan-in predecessor.
+			cand := p.length + n.DurationMS
+			if cand > d.length || (cand == d.length && from < d.prev) {
+				d = dp{length: cand, prev: from}
 			}
 		}
 		best[n.Key] = d
@@ -443,10 +504,14 @@ func computeWorkflowMetrics(g *WorkflowGraph) {
 	path := []string{}
 	var tail string
 	var cpMS int64
-	for k, b := range best {
-		if b.length > cpMS {
+	// Deterministic tail selection: walk the start-time-sorted order and break
+	// equal-length ties by node key. Map iteration order must never decide the
+	// critical path (400 runs of equal nodes previously split 361/39).
+	for _, n := range order {
+		b := best[n.Key]
+		if b.length > cpMS || (b.length == cpMS && cpMS > 0 && (tail == "" || n.Key < tail)) {
 			cpMS = b.length
-			tail = k
+			tail = n.Key
 		}
 	}
 	for tail != "" {
@@ -461,19 +526,26 @@ func computeWorkflowMetrics(g *WorkflowGraph) {
 		}
 	}
 
-	// Aggregates.
-	var workSum, maxNode, wallStart, wallEnd, verifyBusy int64
+	// Aggregates. Review runs are real elapsed work but have no attribution
+	// edge, so they are reported separately instead of inflating work_sum /
+	// speedup / lane imbalance (a review node with no incoming edge would
+	// otherwise become its own critical path and inflate speedup).
+	var workSum, maxNode, wallStart, wallEnd, verifyBusy, reviewBusy int64
 	lane := map[string]int64{}
 	for i := range g.Nodes {
 		n := &g.Nodes[i]
 		if n.DurationMS <= 0 {
 			continue
 		}
+		if n.Kind == "review" {
+			reviewBusy += n.DurationMS
+			continue
+		}
 		workSum += n.DurationMS
 		if n.DurationMS > maxNode {
 			maxNode = n.DurationMS
 		}
-		if n.Kind == "verify" || n.Kind == "review" {
+		if n.Kind == "verify" {
 			verifyBusy += n.DurationMS
 		}
 		if n.AssigneeID != "" {
@@ -491,7 +563,7 @@ func computeWorkflowMetrics(g *WorkflowGraph) {
 		wall = 0
 	}
 
-	// Parallel width peak: sweep of busy intervals.
+	// Parallel width peak: sweep of work intervals (review excluded).
 	type iv struct {
 		t     int64
 		delta int
@@ -499,6 +571,9 @@ func computeWorkflowMetrics(g *WorkflowGraph) {
 	ints := []iv{}
 	for i := range g.Nodes {
 		n := &g.Nodes[i]
+		if n.Kind == "review" {
+			continue
+		}
 		if n.StartedAtMS > 0 && n.EndedAtMS > n.StartedAtMS {
 			ints = append(ints, iv{t: n.StartedAtMS, delta: 1}, iv{t: n.EndedAtMS, delta: -1})
 		}
@@ -524,17 +599,32 @@ func computeWorkflowMetrics(g *WorkflowGraph) {
 		}
 	}
 
-	serLoss := cpMS - maxNode
+	// serialization_loss = actual wall - dependency-constrained minimum wall.
+	// (The old cp-maxNode formula measured imbalance, not lost time.)
+	serLoss := wall - cpMS
 	if serLoss < 0 {
 		serLoss = 0
 	}
+	// parallel_speedup is actual throughput vs. one-lane execution:
+	// work_sum/wall. 1.0 = fully serial, 2.0 = two lanes' worth of work in
+	// the same wall. The old work/cp ratio was an average parallelism along
+	// the chain, not a speedup.
 	speedup := 0.0
-	if cpMS > 0 {
-		speedup = float64(workSum) / float64(cpMS)
+	if wall > 0 {
+		speedup = float64(workSum) / float64(wall)
 	}
 	verifyOverhead := 0.0
+	reviewOverhead := 0.0
 	if workSum > 0 {
 		verifyOverhead = float64(verifyBusy) / float64(workSum)
+		reviewOverhead = float64(reviewBusy) / float64(workSum)
+	}
+	var maxAttempts int
+	for i := range g.Nodes {
+		n := &g.Nodes[i]
+		if n.Kind == "agent" && n.Attempt > maxAttempts {
+			maxAttempts = n.Attempt
+		}
 	}
 	rework := 0.0
 	if verifyRounds > 0 {
@@ -563,6 +653,9 @@ func computeWorkflowMetrics(g *WorkflowGraph) {
 	m["serialization_loss_ms"] = serLoss
 	m["parallel_width_peak"] = peak
 	m["verify_overhead_ratio"] = verifyOverhead
+	m["review_busy_ms"] = reviewBusy
+	m["review_overhead_ratio"] = reviewOverhead
+	m["retry_amplification"] = float64(maxAttempts)
 	m["verify_rounds"] = verifyRounds
 	m["rework_ratio"] = rework
 	m["consult_count"] = consultCount
