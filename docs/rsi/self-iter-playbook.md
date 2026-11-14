@@ -62,7 +62,7 @@ curl -s localhost:47813/goals/$GOAL/sub-goals | python3 -m json.tool
 tail -f /tmp/agentwork-daemon.log
 
 # ⑤ sg-O 完成后：训练页读分析，review 批准提案；需要 builder 时再建 sg-Bd（depends_on sg-O）
-# ⑥ 复测对比：GET /rsi/sessions/{id}/rounds 或 GET /rsi/overview 的 trend
+# ⑥ 复测对比：GET /rsi/sessions/{id}/rounds（轮次账本）或 /rsi/overview 的 trend（同样逐条取自 rsi_round）
 ```
 
 ## 4. 指标怎么读（回答「为什么比裸 agent 慢」）
@@ -71,31 +71,48 @@ tail -f /tmp/agentwork-daemon.log
 
 | 指标 | 含义 | 慢的证据 |
 |---|---|---|
-| `queue_wait_ms` | sg 创建→首 run 认领的等待 | 明显大于 0 = 派发链路开销 |
-| `critical_path_ms` / `parallel_speedup` | 关键链时长 / 工作总量÷关键链 | speedup 低 = 串行化浪费 |
-| `serialization_loss_ms` | 并行损失（关键链 − 最长单节点） | 大 = 依赖声明过度或分派太碎 |
-| `verify_overhead_ratio` | (verify+review 忙时)÷工作忙时 | 大 = 校验流程吃掉执行时间 |
-| `human_wait_ms` share | 人工 gate 等待占比 | 大 = 评审粒度太细 |
-| `retry_amplification` | Σattempts÷节点数 | >1 = 一次性成功率低（环境/prompt 问题） |
-| findings（9 类） | 结构瓶颈的机器判据 | serial_chain / merge_candidate / ping_pong… |
+| `dependency_wait_ms` | sg 创建→其依赖全部 run 结束（ready）的累计等待 | 大 = 依赖门控太长（前置链没并行） |
+| `dispatch_wait_ms` | ready→首个 sub_goal run 开始的累计等待 | 大 = 派发/认领链路开销 |
+| `queue_wait_ms` | **legacy 兼容别名** = 上两者之和 | 仅用于旧报表；新分析看拆分字段 |
+| `critical_path_ms` | explicit 依赖链的最短墙钟（排除 inferred seq） | 接近 wall = 依赖过度串行 |
+| `parallel_speedup` | work_sum ÷ wall（实际吞吐加速比；串行=1.0） | 接近 1 = 没吃到并行 |
+| `serialization_loss_ms` | wall − critical_path（排队/派发/抖动） | 大 = 依赖声明过度或分派太碎 |
+| `verify_overhead_ratio` | verify 忙时÷work_sum（review 单独计） | 大 = 校验流程吃掉执行时间 |
+| `review_busy_ms` / `review_overhead_ratio` | 评审忙时 / 评审忙时÷work_sum | 大 = 评审粒度太细或评审本身慢 |
+| `human_wait_share` | human_wait_ms÷(wall+human_wait)（0..1） | ≥0.30 = 人工闸门是主要等待 |
+| `retry_amplification` | agent 节点的**最大** attempt（float） | ≥2 = 单个子任务反复重试 |
+| findings（9 类 + human_wait） | 结构/分派/信息流瓶颈的机器判据 | serial_chain / merge_candidate / ping_pong… |
 
-判定「可优化」四条件：统计显著（对比基线中位数）、可归因（finding+具体 span）、可干预（改 depends_on/分派/闸门粒度）、可回滚。
+判定「可优化」四条件：统计显著（对比**同 domain** baseline 中位数；样本 <5 时 baseline 为空，只做单次观察，不声称显著）、可归因（finding + 具体节点/边）、可干预（改 depends_on/分派/闸门粒度）、可回滚。
 
 ## 5. 铁律
 
-- **T6**：平台代码的自改必须走「人工批准提案 → builder 实施 → 下一轮复测」；任何自动改元层的路径都不允许。
+- **T6**：平台代码的自改必须走「人工批准提案 → builder 实施 → 下一轮复测」；任何自动改元层的路径都不允许。该约束是协作约定，**无代码强制**（没有拦截器或守卫，违反只能靠 review 发现）。
 - sg-O 只读：分析 agent 不得修改业务代码。
-- 提案上限 3 条/轮，按预期收益排序；复测计划必须写进提案（下一轮 sg-B 如何验证）。
+- 提案上限 3 条/轮，按预期收益排序（约定，无代码强制）；复测计划必须写进提案（下一轮 sg-B 如何验证）。
 - bench 的任务每轮保持同构；改基准 = 重新建立基线（旧趋势作废）。
 
 ## 6. 每轮收尾：轮次演进报告（强制协作约定）
 
 - 每个 RSI 自迭代 goal（R1、R2、…）到达终态前，**必须**运行
-  `scripts/rsi-round-report.sh <轮次号N>`，生成 `docs/rsi/round-report-r<N>.md`
-  并随本轮交付一并提交（commit message 用 `docs(rsi): R<N> 轮次演进报告`）。
-- 报告固定五节，缺一不可：【① 循环演进视图】【② 过程暴露问题清单】
-  【③ 改进点（每条带 commit+diff 链接+效果数字）】【④ 跨轮指标对比】
-  【⑤ 下一轮候选任务清单】。
+  `scripts/rsi-round-report.sh <轮次号N>`（N 可写 `3` 或 `R3`），生成
+  `docs/rsi/round-report-r<N>.md` 并随本轮交付一并提交（commit message 用
+  `docs(rsi): R<N> 轮次演进报告`）。
+- 报告固定五节，缺一不可，节名与生成器输出一致：
+  【① 本轮概览】【② 失败与取消】【③ 提交清单】【④ 指标】【⑤ 候选项】。
+  - ① 本轮概览：goals/sessions、node_count、critical_path、parallel_speedup、top findings；
+  - ② 失败与取消：run 明细、attempt、result_summary / cancel_reason；
+  - ③ 提交清单：git log 区间（`--int-branch` + 轮次时间窗），**不是**逐条改进的
+    commit+diff 链接；diff 需点开 commit 查看，效果数字仍来自基准复测报告；
+  - ④ 指标：每个 session / `rsi_round` 的 metrics 与 delta（缺失写「无」）；
+  - ⑤ 候选项：从 findings 的 category / severity / title / suggestion 派生，
+    **需人工判断，不自动采纳**（不是批准列表）。
+- 生成器是数据驱动的：脚本不含任何轮次结论/数字；必需 API 失败会 stderr + 退出码 1
+  且不写输出文件；可选数据缺失在对应节标注「数据不可得」。`--dry-run` 只输出到
+  stdout 便于审阅。轮次标题匹配同时支持 `RSI R<N>` 与 `RSI 自迭代 R<N>`。
+- ③ 的 commit 范围按集成分支（默认 `agentwork-int`）+ 本轮时间窗（goal 最早
+  `created_at` → session 最晚 `sealed_at/finished_at`）过滤；区间内无 commit 时
+  退化最近 30 条，并在报告中标注口径。
 - 报告必须自包含：不依赖读者登录平台即可理解；数据源为 daemon API 列表端点
   （`/rsi/sessions`、`/rsi/sessions/{id}`、`/goals`、`/goals/{id}/runs`、
   `/goals/{id}/comments`、`/rsi/sessions/{id}/rounds`）与本地 git log。
