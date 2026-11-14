@@ -283,6 +283,7 @@ CREATE TABLE IF NOT EXISTS sub_goal (
     execution_attempt INTEGER NOT NULL DEFAULT 0,
     quality_iteration INTEGER NOT NULL DEFAULT 0,
     depends_on        TEXT NOT NULL DEFAULT '[]', -- JSON array of sub_goal ids declared by the leader; '' edges are inferred at read time (workflow_edge)
+    dispatch_comment_id TEXT NOT NULL DEFAULT '', -- the leader's dispatch comment for THIS work item ('' on legacy rows): a run born LATER (wakeDependentsTx, after the deps verify) carries it as run.trigger_comment_id, so the assignee's report still threads to the dispatch even when the first run was gated
     created_at        TEXT NOT NULL
 );
 

@@ -114,6 +114,12 @@ func Open(path string) (*Store, error) {
 		// trace. Sub-goal gains declared dependencies; rsi_report freezes the
 		// orchestration graph; trace_span is retired outright.
 		`ALTER TABLE sub_goal ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'`,
+		// Gating liveness + anchor (2026-11-14): a gated sub-goal's dispatch
+		// comment id is persisted at creation so the run released LATER by
+		// wakeDependentsTx can still carry the causal anchor as its
+		// trigger_comment_id (without the column the wake path had to pass "",
+		// and the report comment lost its dispatch parent). Old rows read ''.
+		`ALTER TABLE sub_goal ADD COLUMN dispatch_comment_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE rsi_report ADD COLUMN workflow_json TEXT NOT NULL DEFAULT '{}'`,
 		// training_session: span counters retire with trace_span; workflow
 		// summary columns take their place. Old trace_count/cost_usd columns
